@@ -1465,6 +1465,25 @@ def readSolidityStrata' (strataPath : String) : IO (Array (Strata.Solidity.Comma
   | .ok r => pure r
   | .error msg => exitFailure msg
 
+/-- Derive the original .sol source path from a .solidity.st.ion path. -/
+def ionPathToSolidityPath (ionPath : String) : Option String :=
+  if ionPath.endsWith ".solidity.st.ion" then
+    let basePath := ionPath.dropEnd ".solidity.st.ion".length |>.toString
+    some (basePath ++ ".sol")
+  else
+    none
+
+/-- Try to read Solidity source file for source location reconstruction. -/
+def tryReadSoliditySource (ionPath : String) : IO (Option (String × String)) := do
+  match ionPathToSolidityPath ionPath with
+  | none => return none
+  | some solPath =>
+    try
+      let content ← IO.FS.readFile solPath
+      return some (solPath, content)
+    catch _ =>
+      return none
+
 def solAnalyzeLaurelCommand : Command where
   name := "solAnalyzeLaurel"
   args := [ "file" ]
@@ -1474,6 +1493,7 @@ def solAnalyzeLaurelCommand : Command where
     let verbose := pflags.getBool "verbose"
     let filePath := v[0]
     let cmds ← readSolidityStrata' filePath
+    let solSourceOpt ← tryReadSoliditySource filePath
     if cmds.size != 1 then
       exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
     let cmd := cmds[0]!
@@ -1481,8 +1501,13 @@ def solAnalyzeLaurelCommand : Command where
     if verbose then
       IO.println "==== Solidity AST (Ion) loaded ===="
 
+    -- Derive the source file path for metadata
+    let sourcePathForMetadata := match solSourceOpt with
+      | some (solPath, _) => solPath
+      | none => filePath
+
     -- Translate Solidity AST → Laurel
-    match Strata.Solidity.solidityToLaurel cmd with
+    match Strata.Solidity.solidityToLaurel cmd sourcePathForMetadata with
     | .error e =>
       exitFailure s!"Solidity to Laurel translation failed: {e}"
     | .ok laurelProgram =>
@@ -1509,11 +1534,33 @@ def solAnalyzeLaurelCommand : Command where
                   verbose := .quiet,
                   solver := "z3" }))
 
-        -- Print results
+        -- Print results with source locations
         IO.println "\n==== Verification Results ===="
         let mut s := ""
         for vcResult in vcResults do
-          s := s ++ s!"{vcResult.obligation.label}: {Std.format vcResult.result}\n"
+          let (locationPrefix, locationSuffix) := match Imperative.getFileRange vcResult.obligation.metadata with
+            | some fr =>
+              if fr.range.isNone then ("", "")
+              else
+                match solSourceOpt with
+                | some (solPath, srcText) =>
+                  match fr.file with
+                  | .file path =>
+                    if path == solPath then
+                      let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
+                      match vcResult.result with
+                      | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
+                      | _ => ("", s!" (at line {pos.line}, col {pos.column})")
+                    else
+                      match vcResult.result with
+                      | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
+                      | _ => ("", s!" (at byte {fr.range.start})")
+                | none =>
+                  match vcResult.result with
+                  | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
+                  | _ => ("", s!" (at byte {fr.range.start})")
+            | none => ("", "")
+          s := s ++ s!"{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
         IO.println s
 
 structure CommandGroup where

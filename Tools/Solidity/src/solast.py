@@ -25,7 +25,7 @@ if str(_tools_python) not in sys.path:
 
 import amazon.ion.simpleion as ion
 import strata.base as strata
-from strata.base import Dialect, Program, StrLit, Seq, OptionArg
+from strata.base import Dialect, Program, SourceRange, StrLit, Seq, OptionArg
 
 from .base_dialect import gen_dialect
 
@@ -93,6 +93,22 @@ class Converter:
     def __init__(self, dialect: Dialect):
         self.d = dialect
 
+    @staticmethod
+    def _source_range(node: dict) -> SourceRange | None:
+        """Parse the solc `src` field (offset:length:fileIndex) into a SourceRange."""
+        src = node.get("src")
+        if src is None:
+            return None
+        parts = src.split(":")
+        if len(parts) < 2:
+            return None
+        try:
+            offset = int(parts[0])
+            length = int(parts[1])
+            return SourceRange(offset, offset + length)
+        except (ValueError, IndexError):
+            return None
+
     def _str(self, v) -> StrLit:
         return StrLit(str(v) if v is not None else "")
 
@@ -127,24 +143,26 @@ class Converter:
 
     def convert_type_name(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
+        ann = self._source_range(node)
         if nt == "ElementaryTypeName":
-            return self.d.ElementaryTypeName(self._str(node.get("name")))
+            return self.d.ElementaryTypeName(self._str(node.get("name")), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
-        return self.d.ElementaryTypeName(self._str(ts))
+        return self.d.ElementaryTypeName(self._str(ts), ann=ann)
 
     def convert_node(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
+        ann = self._source_range(node)
 
         if nt == "PragmaDirective":
             return self.d.PragmaDirective(
-                self._seq_strings(node.get("literals")))
+                self._seq_strings(node.get("literals")), ann=ann)
 
         if nt == "ContractDefinition":
             return self.d.ContractDefinition(
                 self._str(node.get("name")),
                 self._str(node.get("contractKind", "contract")),
-                self._seq_nodes(node.get("nodes")))
+                self._seq_nodes(node.get("nodes")), ann=ann)
 
         if nt == "FunctionDefinition":
             return self.d.FunctionDefinition(
@@ -154,96 +172,96 @@ class Converter:
                 self._str(node.get("visibility", "")),
                 self.convert_node(node["parameters"]),
                 self.convert_node(node["returnParameters"]),
-                self._opt_node(node.get("body")))
+                self._opt_node(node.get("body")), ann=ann)
 
         if nt == "ParameterList":
             return self.d.ParameterList(
-                self._seq_nodes(node.get("parameters", [])))
+                self._seq_nodes(node.get("parameters", [])), ann=ann)
 
         if nt == "VariableDeclaration":
             return self.d.VariableDeclaration(
                 self._str(node.get("name", "")),
                 self._opt_type_name(node.get("typeName")),
                 self._bool_str(node.get("stateVariable", False)),
-                self._bool_str(node.get("constant", False)))
+                self._bool_str(node.get("constant", False)), ann=ann)
 
         if nt == "Block":
             return self.d.Block(
-                self._seq_nodes(node.get("statements", [])))
+                self._seq_nodes(node.get("statements", [])), ann=ann)
 
         if nt == "ExpressionStatement":
             return self.d.ExpressionStatement(
-                self.convert_node(node["expression"]))
+                self.convert_node(node["expression"]), ann=ann)
 
         if nt == "Return":
             return self.d.Return(
-                self._opt_node(node.get("expression")))
+                self._opt_node(node.get("expression")), ann=ann)
 
         if nt == "IfStatement":
             return self.d.IfStatement(
                 self.convert_node(node["condition"]),
                 self.convert_node(node["trueBody"]),
-                self._opt_node(node.get("falseBody")))
+                self._opt_node(node.get("falseBody")), ann=ann)
 
         if nt == "WhileStatement":
             return self.d.WhileStatement(
                 self.convert_node(node["condition"]),
-                self.convert_node(node["body"]))
+                self.convert_node(node["body"]), ann=ann)
 
         if nt == "ForStatement":
             return self.d.ForStatement(
                 self._opt_node(node.get("initializationExpression")),
                 self._opt_node(node.get("condition")),
                 self._opt_node(node.get("loopExpression")),
-                self.convert_node(node["body"]))
+                self.convert_node(node["body"]), ann=ann)
 
         if nt == "VariableDeclarationStatement":
             return self.d.VariableDeclarationStatement(
                 self._seq_opt_nodes(node.get("declarations", [])),
-                self._opt_node(node.get("initialValue")))
+                self._opt_node(node.get("initialValue")), ann=ann)
 
         if nt == "Assignment":
             return self.d.Assignment(
                 self.convert_node(node["leftHandSide"]),
                 self.convert_node(node["rightHandSide"]),
-                self._str(node.get("operator", "=")))
+                self._str(node.get("operator", "=")), ann=ann)
 
         if nt == "BinaryOperation":
             return self.d.BinaryOperation(
                 self.convert_node(node["leftExpression"]),
                 self.convert_node(node["rightExpression"]),
-                self._str(node.get("operator")))
+                self._str(node.get("operator")), ann=ann)
 
         if nt == "UnaryOperation":
             return self.d.UnaryOperation(
                 self.convert_node(node["subExpression"]),
                 self._str(node.get("operator")),
-                self._bool_str(node.get("prefix", True)))
+                self._bool_str(node.get("prefix", True)), ann=ann)
 
         if nt == "FunctionCall":
             return self.d.FunctionCall(
                 self.convert_node(node["expression"]),
                 self._seq_nodes(node.get("arguments", [])),
-                self._str(node.get("kind", "functionCall")))
+                self._str(node.get("kind", "functionCall")), ann=ann)
 
         if nt == "Identifier":
             return self.d.Identifier(
-                self._str(node.get("name")))
+                self._str(node.get("name")), ann=ann)
 
         if nt == "Literal":
             return self.d.Literal(
                 self._str(node.get("value", "")),
-                self._str(node.get("kind", "number")))
+                self._str(node.get("kind", "number")), ann=ann)
 
         if nt == "MemberAccess":
             return self.d.MemberAccess(
                 self.convert_node(node["expression"]),
-                self._str(node.get("memberName")))
+                self._str(node.get("memberName")), ann=ann)
 
         if nt == "IndexAccess":
             return self.d.IndexAccess(
                 self.convert_node(node["baseExpression"]),
-                self._opt_node(node.get("indexExpression")))
+                self._opt_node(node.get("indexExpression")), ann=ann)
 
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.
@@ -257,7 +275,8 @@ class Converter:
         if ast.get("nodeType") != "SourceUnit":
             print(f"Expected SourceUnit, got {ast.get('nodeType')}", file=sys.stderr)
             sys.exit(1)
-        return self.d.SourceUnit(self._seq_nodes(ast.get("nodes", [])))
+        ann = self._source_range(ast)
+        return self.d.SourceUnit(self._seq_nodes(ast.get("nodes", [])), ann=ann)
 
 
 # ---------------------------------------------------------------------------

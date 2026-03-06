@@ -9,6 +9,7 @@ import Strata.Languages.Laurel.LaurelToCoreTranslator
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Solidity.SolidityDialect
 import Strata.Languages.Solidity.ReadSolidity
+import Strata.DL.Imperative.MetaData
 
 /-!
 # Solidity AST → Laurel Translation (Phase 1)
@@ -36,11 +37,26 @@ open Laurel
 
 def defaultMetadata : Imperative.MetaData Core.Expression := #[]
 
+/-- Convert a SourceRange and file URI to Laurel metadata with file range info. -/
+def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Expression :=
+  if sr.isNone then #[]
+  else
+    #[⟨ Imperative.MetaDataElem.Field.label "fileRange",
+        .fileRange ⟨ uri, sr.start, sr.stop ⟩ ⟩]
+
+/-- Translation context carrying the source file URI for metadata. -/
+structure TransCtx where
+  uri : Uri
+
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
 
 def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
   { val := expr, md := defaultMetadata }
+
+/-- Create a StmtExprMd with source location metadata. -/
+def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
+  { val := expr, md := sourceRangeToMd ctx.uri sr }
 
 /-! ## Translation Error -/
 
@@ -98,7 +114,7 @@ def mkNonNegPrecond (paramName : String) : StmtExprMd :=
 mutual
 
 /-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr. -/
-partial def translateExpr (n : Solidity.node SourceRange)
+partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>
@@ -117,8 +133,8 @@ partial def translateExpr (n : Solidity.node SourceRange)
     | k => throw (.unsupported s!"Literal kind: {k}")
 
   | .BinaryOperation _ left right opAnn => do
-    let l ← translateExpr left
-    let r ← translateExpr right
+    let l ← translateExpr ctx left
+    let r ← translateExpr ctx right
     let op ← match opAnn.val with
       | "+" => .ok Operation.Add
       | "-" => .ok Operation.Sub
@@ -137,7 +153,7 @@ partial def translateExpr (n : Solidity.node SourceRange)
     return mkStmtExprMd (.PrimitiveOp op [l, r])
 
   | .UnaryOperation _ sub opAnn prefixAnn => do
-    let subExpr ← translateExpr sub
+    let subExpr ← translateExpr ctx sub
     if prefixAnn.val == "true" then
       match opAnn.val with
       | "!" => return mkStmtExprMd (.PrimitiveOp .Not [subExpr])
@@ -171,20 +187,20 @@ partial def translateExpr (n : Solidity.node SourceRange)
         return mkStmtExprMd (.Assign [subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
-  | .FunctionCall _ fnExpr argsSeq _kindAnn => do
+  | .FunctionCall sr fnExpr argsSeq _kindAnn => do
     -- Check for require/assert special forms
     match fnExpr with
     | .Identifier _ nameAnn =>
-      let args ← argsSeq.val.toList.mapM translateExpr
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
       match nameAnn.val with
       | "require" =>
         -- require(cond) or require(cond, msg) → assume(cond)
         match args with
-        | cond :: _ => return mkStmtExprMd (.Assume cond)
+        | cond :: _ => return mkStmtExprMdAnn ctx sr (.Assume cond)
         | [] => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
-        | [cond] => return mkStmtExprMd (.Assert cond)
+        | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | funcName =>
         return mkStmtExprMd (.StaticCall funcName args)
@@ -192,22 +208,22 @@ partial def translateExpr (n : Solidity.node SourceRange)
       return mkStmtExprMd .Hole  -- unsupported complex call target
 
   | .MemberAccess _ exprNode memberAnn => do
-    let obj ← translateExpr exprNode
+    let obj ← translateExpr ctx exprNode
     return mkStmtExprMd (.FieldSelect obj memberAnn.val)
 
   | .IndexAccess _ baseNode indexOpt => do
-    let base ← translateExpr baseNode
+    let base ← translateExpr ctx baseNode
     match indexOpt with
     | .some_node _ idx => do
-      let idxExpr ← translateExpr idx
+      let idxExpr ← translateExpr ctx idx
       -- Map read: m[k] → StaticCall "map_select" [m, k]
       return mkStmtExprMd (.StaticCall "map_select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
   | .Assignment _ lhs rhs opAnn => do
-    let lhsExpr ← translateExpr lhs
-    let rhsExpr ← translateExpr rhs
+    let lhsExpr ← translateExpr ctx lhs
+    let rhsExpr ← translateExpr ctx rhs
     let rhs' ← match opAnn.val with
       | "=" => pure rhsExpr
       | "+=" => pure (mkStmtExprMd (.PrimitiveOp .Add [lhsExpr, rhsExpr]))
@@ -221,36 +237,36 @@ partial def translateExpr (n : Solidity.node SourceRange)
   | _ => throw (.unsupported s!"Expression node type")
 
 /-- Translate a Solidity DDM node (statement context) to Laurel StmtExpr. -/
-partial def translateStmt (n : Solidity.node SourceRange)
+partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Block _ stmtsSeq => do
-    let stmts ← stmtsSeq.val.toList.mapM translateStmt
+    let stmts ← stmtsSeq.val.toList.mapM (translateStmt ctx)
     return mkStmtExprMd (.Block stmts none)
 
-  | .ExpressionStatement _ expr => translateExpr expr
+  | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return _ exprOpt =>
     match exprOpt with
     | .some_node _ expr => do
-      let e ← translateExpr expr
+      let e ← translateExpr ctx expr
       return mkStmtExprMd (.Return (some e))
     | .missing_node _ =>
       return mkStmtExprMd (.Return none)
 
   | .IfStatement _ cond thenBody elseOpt => do
-    let condExpr ← translateExpr cond
-    let thenStmt ← translateStmt thenBody
+    let condExpr ← translateExpr ctx cond
+    let thenStmt ← translateStmt ctx thenBody
     let elseStmt ← match elseOpt with
       | .some_node _ elseBody => do
-        let e ← translateStmt elseBody
+        let e ← translateStmt ctx elseBody
         pure (some e)
       | .missing_node _ => pure none
     return mkStmtExprMd (.IfThenElse condExpr thenStmt elseStmt)
 
   | .WhileStatement _ cond body => do
-    let condExpr ← translateExpr cond
-    let bodyStmt ← translateStmt body
+    let condExpr ← translateExpr ctx cond
+    let bodyStmt ← translateStmt ctx body
     return mkStmtExprMd (.While condExpr [] none bodyStmt)
 
   | .ForStatement _ initOpt condOpt loopOpt body => do
@@ -259,18 +275,18 @@ partial def translateStmt (n : Solidity.node SourceRange)
     -- Init
     match initOpt with
     | .some_node _ initNode => do
-      let s ← translateStmt initNode
+      let s ← translateStmt ctx initNode
       stmts := [s]
     | .missing_node _ => pure ()
     -- Condition (default to true if missing)
     let condExpr ← match condOpt with
-      | .some_node _ condNode => translateExpr condNode
+      | .some_node _ condNode => translateExpr ctx condNode
       | .missing_node _ => pure (mkStmtExprMd (.LiteralBool true))
     -- Loop body + increment
-    let bodyStmt ← translateStmt body
+    let bodyStmt ← translateStmt ctx body
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
-        let loopStmt ← translateStmt loopNode
+        let loopStmt ← translateStmt ctx loopNode
         pure (mkStmtExprMd (.Block [bodyStmt, loopStmt] none))
       | .missing_node _ => pure bodyStmt
     let whileStmt := mkStmtExprMd (.While condExpr [] none loopBody)
@@ -290,7 +306,7 @@ partial def translateStmt (n : Solidity.node SourceRange)
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
         let initVal ← match initOpt with
           | .some_node _ initNode => do
-            let e ← translateExpr initNode
+            let e ← translateExpr ctx initNode
             pure (some e)
           | .missing_node _ => pure none
         return mkStmtExprMd (.LocalVariable nameAnn.val solTy.highType initVal)
@@ -301,17 +317,17 @@ partial def translateStmt (n : Solidity.node SourceRange)
     | _ =>
       throw (.unsupported "Tuple/multi-variable declarations (e.g., (uint a, uint b) = ...)")
 
-  | .Assignment _ _ _ _ => translateExpr n
+  | .Assignment _ _ _ _ => translateExpr ctx n
 
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops)
-  | _ => translateExpr n
+  | _ => translateExpr ctx n
 
 end
 
 /-! ## Function Translation -/
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure. -/
-def translateFunction (fn : Solidity.node SourceRange)
+def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
   | .FunctionDefinition _ nameAnn _kindAnn _mutAnn _visAnn params retParams bodyOpt => do
@@ -353,7 +369,7 @@ def translateFunction (fn : Solidity.node SourceRange)
     -- Translate body
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
-        let b ← translateStmt bodyNode
+        let b ← translateStmt ctx bodyNode
         pure (.Transparent b)
       | .missing_node _ =>
         pure (.Abstract [])
@@ -374,7 +390,7 @@ def translateFunction (fn : Solidity.node SourceRange)
 /-! ## Contract Translation -/
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures. -/
-def translateContract (contract : Solidity.node SourceRange)
+def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
   | .ContractDefinition _ _nameAnn _kindAnn nodesSeq => do
@@ -384,7 +400,7 @@ def translateContract (contract : Solidity.node SourceRange)
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ _ _ _ _ _ _ _ => do
-        let proc ← translateFunction member
+        let proc ← translateFunction ctx member
         procedures := procedures ++ [proc]
       | .VariableDeclaration _ _ _ _ _ =>
         -- State variables — Phase 2
@@ -396,9 +412,11 @@ def translateContract (contract : Solidity.node SourceRange)
 
 /-! ## Top-Level Translation -/
 
-/-- Translate a Solidity SourceUnit (top-level AST) to a Laurel Program. -/
-def solidityToLaurel (cmd : Solidity.Command SourceRange)
+/-- Translate a Solidity SourceUnit (top-level AST) to a Laurel Program.
+    `solFilePath` is the path to the original .sol file, used for source location metadata. -/
+def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : String := "")
     : Except TranslationError Laurel.Program := do
+  let ctx : TransCtx := { uri := .file solFilePath }
   match cmd with
   | .SourceUnit _ nodesSeq => do
     let mut allProcedures : List Procedure := []
@@ -407,7 +425,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange)
     for node in nodesSeq.val do
       match node with
       | .ContractDefinition _ _ _ _ => do
-        let (procs, types) ← translateContract node
+        let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
