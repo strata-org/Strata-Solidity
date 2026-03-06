@@ -51,6 +51,10 @@ structure TransCtx where
   uri : Option Uri
   /-- Map from struct name to ordered list of field names. -/
   structFields : List (String × List String) := []
+  /-- Enclosing contract name (for constructor naming). -/
+  contractName : String := ""
+  /-- State-variable fields of the enclosing contract (for constructor outputs). -/
+  contractFields : List Field := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -90,7 +94,7 @@ structure SolType where
 deriving Inhabited
 
 /-- Translate a Solidity type name string to Laurel HighType.
-    Phase 1: uint256/int256 → TInt, bool → TBool, address → TInt. -/
+    Phase 1: uint256/int256 → TInt, bool → TBool, address → TInt, bytes32 → TInt. -/
 def translateTypeName (name : String) : SolType :=
   if name == "bool" then { highType := mkHighTypeMd .TBool, solName := name }
   else if name == "address" then { highType := mkHighTypeMd .TInt, solName := name }
@@ -295,6 +299,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       return mkStmtExprMd .Hole  -- unsupported complex call target
 
   | .MemberAccess _ exprNode memberAnn => do
+    -- msg.sender → Identifier "msg_sender" (implicit parameter)
+    match exprNode with
+    | .Identifier _ baseNameAnn =>
+      if baseNameAnn.val == "msg" && memberAnn.val == "sender" then
+        return mkStmtExprMd (.Identifier "msg_sender")
+      else pure ()
+    | _ => pure ()
     let obj ← translateExpr ctx exprNode
     -- TODO: `.length` intercept is not type-aware. This incorrectly rewrites
     -- `string.length`, `bytes.length`, and struct fields named `length` as
@@ -432,12 +443,20 @@ end
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition _ nameAnn _kindAnn _mutAnn _visAnn params retParams bodyOpt => do
-    let funcName := nameAnn.val
+  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt => do
+    let isConstructor := kindAnn.val == "constructor"
+    let funcName := if isConstructor then s!"{ctx.contractName}_constructor"
+                    else nameAnn.val
+    let isPure := mutAnn.val == "pure"
 
     -- Translate parameters, tracking Solidity types for bounds
     let mut inputs : List Parameter := []
     let mut preconditions : List StmtExprMd := []
+
+    -- Add implicit msg_sender parameter for non-pure functions
+    if !isPure then
+      inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
+      preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
 
     match params with
     | .ParameterList _ paramsSeq =>
@@ -455,7 +474,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     | _ => throw (.internalError "Expected ParameterList for parameters")
 
     -- Translate return parameters
-    let outputs ← match retParams with
+    let baseOutputs ← match retParams with
       | .ParameterList _ retSeq =>
         retSeq.val.toList.mapM fun param =>
           match param with
@@ -467,6 +486,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             pure ({ name := outName, type := solTy.highType } : Parameter)
           | _ => throw (.unsupported "Non-VariableDeclaration in return parameters")
       | _ => throw (.internalError "Expected ParameterList for return parameters")
+
+    -- For constructors, add contract state fields as implicit output parameters
+    let outputs := if isConstructor then
+      let fieldOutputs := ctx.contractFields.map fun f =>
+        ({ name := f.name, type := f.type } : Parameter)
+      baseOutputs ++ fieldOutputs
+    else baseOutputs
 
     -- Translate body
     let body ← match bodyOpt with
@@ -567,7 +593,9 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Solidity version or import mechanism allows cross-contract struct
     -- references within the same file, this lookup will need to be lifted
     -- to the SourceUnit level.
-    let fnCtx := { ctx with structFields := structFieldMap }
+    let fnCtx := { ctx with structFields := structFieldMap,
+                            contractName := nameAnn.val,
+                            contractFields := fields }
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ _ _ _ _ _ _ _ => do
