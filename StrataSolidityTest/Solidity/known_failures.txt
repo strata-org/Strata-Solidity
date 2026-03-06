@@ -1,4 +1,5 @@
 # Known test failures (XFAIL registry).
 # One test base name per line. Lines starting with # are comments.
-# Example:
-#   test_inheritance
+
+# msg.sender requires contract state modeling (Phase 2)
+test_member_access

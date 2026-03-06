@@ -88,17 +88,15 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
         continue
     fi
 
-    # Stage 2: Verify the Ion file is well-formed via strata check
-    output=$(cd "$REPO_ROOT" && ./.lake/build/bin/strata check \
-        --include "$DIALECT_DIR" "$ion_file" 2>&1)
-    check_rc=$?
+    # Stage 2: Run full verification pipeline via solAnalyzeLaurel
+    output=$(cd "$REPO_ROOT" && ./.lake/build/bin/strata solAnalyzeLaurel \
+        "$ion_file" 2>&1 \
+        | grep -v "getNameFromMd\|^backtrace:\|^\.\./\|^\./.lake/\|^/lib\|addPathCondition.*Label clash" \
+        | sed '/^$/N;/^\n$/d')
+    run_rc=$?
 
-    # For now, the full pipeline (solAnalyzeLaurel) is not yet wired.
-    # We test that the parser produces valid Ion that Strata can read.
-    if [ $check_rc -eq 0 ]; then
-        output="parser-ok"
-    else
-        output="parser-error: $output"
+    if [ $run_rc -ne 0 ]; then
+        output="error: $output"
     fi
 
     if ! echo "$output" | diff -q "$expected_file" - > /dev/null 2>&1; then

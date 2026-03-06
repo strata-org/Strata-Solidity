@@ -1460,13 +1460,61 @@ private def printIndented (indent : Nat) (s : String) (width : Nat := 80) : IO U
 -- Solidity commands
 -- ---------------------------------------------------------------------------
 
+def readSolidityStrata' (strataPath : String) : IO (Array (Strata.Solidity.Command Strata.SourceRange)) := do
+  match ← Strata.Solidity.readSolidityStrata strataPath |>.toBaseIO with
+  | .ok r => pure r
+  | .error msg => exitFailure msg
+
 def solAnalyzeLaurelCommand : Command where
   name := "solAnalyzeLaurel"
   args := [ "file" ]
   flags := [{ name := "verbose", help := "Enable verbose output." }]
-  help := "Verify a Solidity Ion program via the Laurel pipeline (not yet implemented)."
-  callback := fun _v _pflags => do
-    exitFailure "solAnalyzeLaurel: Solidity front-end not yet implemented."
+  help := "Verify a Solidity Ion program via the Laurel pipeline. Translates Solidity AST to Laurel to Core, then runs SMT verification."
+  callback := fun v pflags => do
+    let verbose := pflags.getBool "verbose"
+    let filePath := v[0]
+    let cmds ← readSolidityStrata' filePath
+    if cmds.size != 1 then
+      exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
+    let cmd := cmds[0]!
+
+    if verbose then
+      IO.println "==== Solidity AST (Ion) loaded ===="
+
+    -- Translate Solidity AST → Laurel
+    match Strata.Solidity.solidityToLaurel cmd with
+    | .error e =>
+      exitFailure s!"Solidity to Laurel translation failed: {e}"
+    | .ok laurelProgram =>
+      if verbose then
+        IO.println "\n==== Laurel Program ===="
+        IO.println f!"{laurelProgram}"
+
+      -- Translate Laurel → Core
+      match Strata.Laurel.translate laurelProgram with
+      | .error diagnostics =>
+        exitFailure s!"Laurel to Core translation failed: {diagnostics}"
+      | .ok (coreProgram, _modifiesDiags) =>
+        if verbose then
+          IO.println "\n==== Core Program ===="
+          IO.print coreProgram
+
+        -- Verify using Core verifier
+        let vcResults ← IO.FS.withTempDir (fun tempDir =>
+            EIO.toIO
+              (fun f => IO.Error.userError (toString f))
+              (Core.verify coreProgram tempDir .none
+                { VerifyOptions.default with
+                  stopOnFirstError := false,
+                  verbose := .quiet,
+                  solver := "z3" }))
+
+        -- Print results
+        IO.println "\n==== Verification Results ===="
+        let mut s := ""
+        for vcResult in vcResults do
+          s := s ++ s!"{vcResult.obligation.label}: {Std.format vcResult.result}\n"
+        IO.println s
 
 structure CommandGroup where
   name : String
