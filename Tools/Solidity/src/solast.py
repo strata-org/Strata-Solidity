@@ -45,10 +45,18 @@ def invoke_solc(sol_path: str) -> dict:
         capture_output=True,
         text=True,
     )
+    # solc --standard-json returns 0 even on compilation errors, reporting
+    # them in the JSON output instead.  A non-zero exit code indicates an
+    # infrastructure-level failure (e.g. binary crash, bad JSON input).
     if result.returncode != 0:
-        print(f"solc failed:\n{result.stderr}", file=sys.stderr)
+        print(f"solc exited with code {result.returncode}:\n{result.stderr}",
+              file=sys.stderr)
         sys.exit(1)
-    output = json.loads(result.stdout)
+    try:
+        output = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"solc produced invalid JSON: {exc}", file=sys.stderr)
+        sys.exit(1)
     errors = output.get("errors", [])
     fatal = [e for e in errors if e.get("severity") == "error"]
     if fatal:
@@ -61,7 +69,7 @@ def invoke_solc(sol_path: str) -> dict:
 def sol_to_strata(sol_path: str, output_path: str) -> None:
     """Convert a .sol file to Ion binary via solc JSON AST.
 
-    Currently a stub — prints the solc AST JSON to stdout for debugging.
+    Currently a stub — writes the solc AST JSON to output_path.
     Full Ion serialization will be added in a follow-up task.
     """
     output = invoke_solc(sol_path)
@@ -69,7 +77,7 @@ def sol_to_strata(sol_path: str, output_path: str) -> None:
     for _name, info in sources.items():
         ast = info.get("ast")
         if ast is not None:
-            print(json.dumps(ast, indent=2))
+            Path(output_path).write_text(json.dumps(ast, indent=2) + "\n")
             return
     print("No AST found in solc output", file=sys.stderr)
     sys.exit(1)

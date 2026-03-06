@@ -96,4 +96,11 @@ done
 echo ""
 echo "Results: $passed passed, $failed failed, $xfailed xfail, $xpassed xpass, $skipped skipped"
 
-[ "$failed" -eq 0 ] && [ "$xpassed" -eq 0 ]
+# Fail if any test failed, any unexpected pass, or no tests actually ran.
+actual_ran=$((passed + xfailed))
+if [ "$failed" -ne 0 ] || [ "$xpassed" -ne 0 ]; then
+    exit 1
+elif [ "$actual_ran" -eq 0 ]; then
+    echo "ERROR: no tests actually ran (all skipped). Add expected files or test cases."
+    exit 1
+fi

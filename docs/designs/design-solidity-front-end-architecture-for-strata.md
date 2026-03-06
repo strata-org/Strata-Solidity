@@ -166,9 +166,9 @@ New files:
 | `Strata/Languages/Solidity/SolidityDialect.lean` | DDM dialect registration in Lean |
 | `Strata/Languages/Solidity/ReadSolidity.lean` | Read Ion, produce typed Lean AST |
 | `Strata/Languages/Solidity/SolToLaurel.lean` | Translate Solidity AST → Laurel Program |
-| `StrataMain.lean` | Add `solAnalyze` command |
+| `StrataMain.lean` | Add `solAnalyzeLaurel` command |
 | `StrataTest/Languages/Solidity/tests/*.sol` | Test Solidity source files |
-| `StrataTest/Languages/Solidity/run_sol_analyze.sh` | Test runner script |
+| `StrataTest/Languages/Solidity/run_sol_analyze_laurel.sh` | Test runner script |
 
 The Python script `solast.py` would:
 1. Invoke `solc --ast-json <file.sol>` to get the compiler's AST
@@ -347,9 +347,9 @@ New files:
 |------|---------|
 | `Strata/Languages/Solidity/SolJsonToLaurel.lean` | Parse JSON AST, translate to Laurel |
 | `Strata/Languages/Solidity/SolTypes.lean` | Solidity type definitions and mapping |
-| `StrataMain.lean` | Add `solAnalyze` command |
+| `StrataMain.lean` | Add `solAnalyzeLaurel` command |
 | `StrataTest/Languages/Solidity/tests/*.sol` | Test files |
-| `StrataTest/Languages/Solidity/run_sol_analyze.sh` | Test runner |
+| `StrataTest/Languages/Solidity/run_sol_analyze_laurel.sh` | Test runner |
 
 #### b. Internal Representation
 
@@ -429,7 +429,7 @@ rejects programs that rely on wrapping arithmetic.
 Deliverables:
 - `Tools/Solidity/src/solast.py` — dialect definition + `solc` JSON → Ion
 - `Strata/Languages/Solidity/SolToLaurel.lean` — core translation
-- `StrataMain.lean` — `solAnalyze` command
+- `StrataMain.lean` — `solAnalyzeLaurel` command
 - 5+ integration tests
 
 **Phase 2 — Contract state and mappings**
