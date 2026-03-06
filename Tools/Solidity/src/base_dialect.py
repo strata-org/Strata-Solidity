@@ -167,4 +167,8 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("name", Init.Str()),
         Sol.type_name())
 
+    Sol.add_op("UserDefinedTypeName",
+        ArgDecl("name", Init.Str()),
+        Sol.type_name())
+
     return Sol

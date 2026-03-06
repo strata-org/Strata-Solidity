@@ -153,6 +153,11 @@ class Converter:
         ann = self._source_range(node)
         if nt == "ElementaryTypeName":
             return self.d.ElementaryTypeName(self._str(node.get("name")), ann=ann)
+        if nt == "UserDefinedTypeName":
+            # Extract name from nested IdentifierPath (pathNode.name)
+            path_node = node.get("pathNode", {})
+            name = path_node.get("name", "")
+            return self.d.UserDefinedTypeName(self._str(name), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
         return self.d.ElementaryTypeName(self._str(ts), ann=ann)

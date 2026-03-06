@@ -96,6 +96,8 @@ def translateTypeName (name : String) : SolType :=
 def translateTypeNode (tn : Solidity.type_name SourceRange) : SolType :=
   match tn with
   | .ElementaryTypeName _ nameAnn => translateTypeName nameAnn.val
+  | .UserDefinedTypeName _ nameAnn =>
+    { highType := mkHighTypeMd (.UserDefined ⟨nameAnn.val, none⟩), solName := nameAnn.val }
 
 /-- Is this a Solidity unsigned integer type? -/
 def SolType.isUint (st : SolType) : Bool :=
