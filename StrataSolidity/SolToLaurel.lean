@@ -83,10 +83,6 @@ def translateTypeNode (tn : Solidity.type_name SourceRange) : SolType :=
 def SolType.isUint (st : SolType) : Bool :=
   st.solName.startsWith "uint"
 
-/-- Is this a Solidity signed integer type? -/
-def SolType.isInt (st : SolType) : Bool :=
-  st.solName.startsWith "int" && !st.solName.startsWith "int " -- not "int " prefix
-
 /-- Is this a Solidity address type? -/
 def SolType.isAddress (st : SolType) : Bool :=
   st.solName == "address"
@@ -146,9 +142,24 @@ partial def translateExpr (n : Solidity.node SourceRange)
       match opAnn.val with
       | "!" => return mkStmtExprMd (.PrimitiveOp .Not [subExpr])
       | "-" => return mkStmtExprMd (.PrimitiveOp .Neg [subExpr])
+      | "++" =>
+        -- Prefix ++i: desugar to i = i + 1
+        let one := mkStmtExprMd (.LiteralInt 1)
+        let add := mkStmtExprMd (.PrimitiveOp .Add [subExpr, one])
+        return mkStmtExprMd (.Assign [subExpr] add)
+      | "--" =>
+        -- Prefix --i: desugar to i = i - 1
+        let one := mkStmtExprMd (.LiteralInt 1)
+        let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
+        return mkStmtExprMd (.Assign [subExpr] sub')
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
     else
-      -- Postfix operators (e.g., i++) — desugar to i = i + 1
+      -- Postfix operators (e.g., i++).
+      -- NOTE: This desugaring produces the *new* value (i + 1), which is correct
+      -- when i++ appears as a standalone statement. In expression context (e.g.,
+      -- x = i++), Solidity evaluates to the *old* value. Phase 1 only supports
+      -- statement-level usage; expression-context semantics require a temp variable
+      -- and are deferred to a later phase.
       match opAnn.val with
       | "++" =>
         let one := mkStmtExprMd (.LiteralInt 1)
@@ -194,6 +205,19 @@ partial def translateExpr (n : Solidity.node SourceRange)
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
+  | .Assignment _ lhs rhs opAnn => do
+    let lhsExpr ← translateExpr lhs
+    let rhsExpr ← translateExpr rhs
+    let rhs' ← match opAnn.val with
+      | "=" => pure rhsExpr
+      | "+=" => pure (mkStmtExprMd (.PrimitiveOp .Add [lhsExpr, rhsExpr]))
+      | "-=" => pure (mkStmtExprMd (.PrimitiveOp .Sub [lhsExpr, rhsExpr]))
+      | "*=" => pure (mkStmtExprMd (.PrimitiveOp .Mul [lhsExpr, rhsExpr]))
+      | "/=" => pure (mkStmtExprMd (.PrimitiveOp .Div [lhsExpr, rhsExpr]))
+      | "%=" => pure (mkStmtExprMd (.PrimitiveOp .Mod [lhsExpr, rhsExpr]))
+      | o => throw (.unsupported s!"Assignment operator: {o}")
+    return mkStmtExprMd (.Assign [lhsExpr] rhs')
+
   | _ => throw (.unsupported s!"Expression node type")
 
 /-- Translate a Solidity DDM node (statement context) to Laurel StmtExpr. -/
@@ -204,7 +228,7 @@ partial def translateStmt (n : Solidity.node SourceRange)
     let stmts ← stmtsSeq.val.toList.mapM translateStmt
     return mkStmtExprMd (.Block stmts none)
 
-  | .ExpressionStatement _ expr => translateStmt expr
+  | .ExpressionStatement _ expr => translateExpr expr
 
   | .Return _ exprOpt =>
     match exprOpt with
@@ -254,11 +278,11 @@ partial def translateStmt (n : Solidity.node SourceRange)
     return mkStmtExprMd (.Block stmts none)
 
   | .VariableDeclarationStatement _ declsSeq initOpt => do
-    -- Extract variable name and type from the first declaration
+    -- Extract variable declarations
     let decls := declsSeq.val.toList
     match decls with
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
-    | declOpt :: _ =>
+    | [declOpt] =>
       match declOpt with
       | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const) =>
         let solTy := match typeNameOpt with
@@ -274,11 +298,10 @@ partial def translateStmt (n : Solidity.node SourceRange)
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
+    | _ =>
+      throw (.unsupported "Tuple/multi-variable declarations (e.g., (uint a, uint b) = ...)")
 
-  | .Assignment _ lhs rhs _opAnn => do
-    let lhsExpr ← translateExpr lhs
-    let rhsExpr ← translateExpr rhs
-    return mkStmtExprMd (.Assign [lhsExpr] rhsExpr)
+  | .Assignment _ _ _ _ => translateExpr n
 
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops)
   | _ => translateExpr n

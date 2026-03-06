@@ -9,7 +9,7 @@
 # For each tests/test_*.sol file with a matching expected/*.expected file,
 # the script:
 #   1. Invokes solc + solast.py to produce an Ion file
-#   2. Runs `strata solAnalyzeLaurel` on the Ion file   (TODO — stub)
+#   2. Runs `strata solAnalyzeLaurel` on the Ion file
 #   3. Diffs the output against expected/*.expected
 #
 # Tests listed in known_failures.txt are treated as XFAIL: a failure is
@@ -93,7 +93,7 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
         "$ion_file" 2>&1 \
         | grep -v "getNameFromMd\|^backtrace:\|^\.\./\|^\./.lake/\|^/lib\|addPathCondition.*Label clash" \
         | sed '/^$/N;/^\n$/d')
-    run_rc=$?
+    run_rc=${PIPESTATUS[0]}
 
     if [ $run_rc -ne 0 ]; then
         output="error: $output"

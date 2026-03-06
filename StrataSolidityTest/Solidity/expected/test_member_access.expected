@@ -1,1 +1,6 @@
-parser-ok
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
+Exception: ❌ Type checking error.
+[result := (~Box..compositeVal! (~readField ($heap : Heap) (msg : Composite) ~))] No free variables are allowed here!
+Free Variables: [msg]
+
+Run strata --help for additional help.
