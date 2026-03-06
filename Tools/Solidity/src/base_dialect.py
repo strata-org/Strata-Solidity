@@ -156,6 +156,12 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("indexExpression", Sol.opt_node()),
         Sol.node())
 
+    # -- Structs --
+    Sol.add_op("StructDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("members", Init.Seq(Sol.node())),
+        Sol.node())
+
     # -- Type names --
     Sol.add_op("ElementaryTypeName",
         ArgDecl("name", Init.Str()),

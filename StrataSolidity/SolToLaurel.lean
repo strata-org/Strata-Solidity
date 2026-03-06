@@ -392,6 +392,17 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
 /-! ## Contract Translation -/
 
+/-- Translate a Solidity StructDefinition member (VariableDeclaration) to a Laurel Field. -/
+def translateStructMember (member : Solidity.node SourceRange)
+    : Except TranslationError Field := do
+  match member with
+  | .VariableDeclaration _ nameAnn typeNameOpt _ _ =>
+    let solTy := match typeNameOpt with
+      | .some_type_name _ tn => translateTypeNode tn
+      | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+    return { name := nameAnn.val, isMutable := true, type := solTy.highType }
+  | _ => throw (.unsupported "Non-VariableDeclaration in struct member list")
+
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
@@ -405,6 +416,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | .FunctionDefinition _ _ _ _ _ _ _ _ => do
         let proc ← translateFunction ctx member
         procedures := procedures ++ [proc]
+      | .StructDefinition _ nameAnn membersSeq => do
+        let fields ← membersSeq.val.toList.mapM translateStructMember
+        types := types ++ [.Composite {
+          name := nameAnn.val
+          extending := []
+          fields := fields
+          instanceProcedures := []
+        }]
       | .VariableDeclaration _ _ _ _ _ =>
         -- State variables — Phase 2
         pure ()

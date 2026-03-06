@@ -270,6 +270,11 @@ class Converter:
                 self.convert_node(node["baseExpression"]),
                 self._opt_node(node.get("indexExpression")), ann=ann)
 
+        if nt == "StructDefinition":
+            return self.d.StructDefinition(
+                self._str(node.get("name")),
+                self._seq_nodes(node.get("members", [])), ann=ann)
+
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.
         # TODO: consider a dedicated UnsupportedNode dialect op for
