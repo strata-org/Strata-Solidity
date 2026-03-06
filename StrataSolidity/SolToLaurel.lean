@@ -6,6 +6,7 @@
 
 import Strata.Languages.Laurel.Laurel
 import Strata.Languages.Laurel.LaurelToCoreTranslator
+import Strata.Languages.Laurel.Grammar.ConcreteToAbstractTreeTranslator
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Solidity.SolidityDialect
 import Strata.Languages.Solidity.ReadSolidity
@@ -37,16 +38,15 @@ open Laurel
 
 def defaultMetadata : Imperative.MetaData Core.Expression := #[]
 
-/-- Convert a SourceRange and file URI to Laurel metadata with file range info. -/
+/-- Convert a SourceRange and file URI to Laurel metadata with file range info.
+    Reuses the existing `SourceRange.toMetaData` from the Laurel grammar translator. -/
 def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Expression :=
   if sr.isNone then #[]
-  else
-    #[⟨ Imperative.MetaDataElem.Field.label "fileRange",
-        .fileRange ⟨ uri, sr.start, sr.stop ⟩ ⟩]
+  else Laurel.SourceRange.toMetaData uri sr
 
 /-- Translation context carrying the source file URI for metadata. -/
 structure TransCtx where
-  uri : Uri
+  uri : Option Uri
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -56,7 +56,9 @@ def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
 
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
-  { val := expr, md := sourceRangeToMd ctx.uri sr }
+  match ctx.uri with
+  | some uri => { val := expr, md := sourceRangeToMd uri sr }
+  | none => { val := expr, md := defaultMetadata }
 
 /-! ## Translation Error -/
 
@@ -195,8 +197,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       match nameAnn.val with
       | "require" =>
         -- require(cond) or require(cond, msg) → assume(cond)
+        -- No source metadata: assume nodes don't generate VCs
         match args with
-        | cond :: _ => return mkStmtExprMdAnn ctx sr (.Assume cond)
+        | cond :: _ => return mkStmtExprMd (.Assume cond)
         | [] => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
@@ -413,10 +416,11 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
 /-! ## Top-Level Translation -/
 
 /-- Translate a Solidity SourceUnit (top-level AST) to a Laurel Program.
-    `solFilePath` is the path to the original .sol file, used for source location metadata. -/
-def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : String := "")
+    `solFilePath` is the path to the original .sol file, used for source location metadata.
+    Pass `none` to skip metadata construction. -/
+def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option String := none)
     : Except TranslationError Laurel.Program := do
-  let ctx : TransCtx := { uri := .file solFilePath }
+  let ctx : TransCtx := { uri := solFilePath.map .file }
   match cmd with
   | .SourceUnit _ nodesSeq => do
     let mut allProcedures : List Procedure := []

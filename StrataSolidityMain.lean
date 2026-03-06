@@ -232,6 +232,40 @@ def tryReadPythonSource (ionPath : String) : IO (Option (String × String)) := d
     catch _ =>
       return none
 
+/-- Format VC results with source location information.
+    `sourceOpt` is `some (sourcePath, sourceText)` when the original source is available.
+    NOTE: `SourceRange.start` is `String.Pos.Raw` (byte offset) while `FileMap.toPosition`
+    expects a UTF-8 code-point offset. These coincide for ASCII sources but diverge for
+    multi-byte UTF-8 characters. This is a known pre-existing issue (see SourceRange.lean). -/
+def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
+    (sourceOpt : Option (String × String)) (linePrefix : String := "") : String := Id.run do
+  let mut s := ""
+  for vcResult in vcResults do
+    let (locationPrefix, locationSuffix) := match Imperative.getFileRange vcResult.obligation.metadata with
+      | some fr =>
+        if fr.range.isNone then ("", "")
+        else
+          match sourceOpt with
+          | some (srcPath, srcText) =>
+            match fr.file with
+            | .file path =>
+              if path == srcPath then
+                let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
+                match vcResult.result with
+                | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
+                | _ => ("", s!" (at line {pos.line}, col {pos.column})")
+              else
+                match vcResult.result with
+                | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
+                | _ => ("", s!" (at byte {fr.range.start})")
+          | none =>
+            match vcResult.result with
+            | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
+            | _ => ("", s!" (at byte {fr.range.start})")
+      | none => ("", "")
+    s := s ++ s!"{linePrefix}{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
+  return s
+
 def pyAnalyzeCommand : Command where
   name := "pyAnalyze"
   args := [ "file" ]
@@ -281,36 +315,7 @@ def pyAnalyzeCommand : Command where
       let vcResults ← match options.vcDirectory with
                       | .none => IO.FS.withTempDir runVerification
                       | .some tempDir => runVerification tempDir
-      let mut s := ""
-      for vcResult in vcResults do
-        -- Build location string based on available metadata
-        let (locationPrefix, locationSuffix) := match Imperative.getFileRange vcResult.obligation.metadata with
-          | some fr =>
-            if fr.range.isNone then ("", "")
-            else
-              -- Convert byte offset to line/column if we have the source
-              match pySourceOpt with
-              | some (pyPath, srcText) =>
-                -- Check if this metadata is from the Python source (not CorePrelude)
-                match fr.file with
-                | .file path =>
-                  if path == pyPath then
-                    let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
-                    -- For failures, show at beginning; for passes, show at end
-                    match vcResult.result with
-                    | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
-                    | _ => ("", s!" (at line {pos.line}, col {pos.column})")
-                  else
-                    -- From CorePrelude or other source, show byte offsets
-                    match vcResult.result with
-                    | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                    | _ => ("", s!" (at byte {fr.range.start})")
-              | none =>
-                match vcResult.result with
-                | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                | _ => ("", s!" (at byte {fr.range.start})")
-          | none => ("", "")
-        s := s ++ s!"\n{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
+      let s := formatVcResultsWithLocation vcResults pySourceOpt (linePrefix := "\n")
       IO.println s
       -- Output in SARIF format if requested
       if outputSarif then
@@ -472,31 +477,7 @@ def pyAnalyzeLaurelCommand : Command where
 
           -- Print results
           IO.println "\n==== Verification Results ===="
-          let mut s := ""
-          for vcResult in vcResults do
-            let (locationPrefix, locationSuffix) := match Imperative.getFileRange vcResult.obligation.metadata with
-              | some fr =>
-                if fr.range.isNone then ("", "")
-                else
-                  match pySourceOpt with
-                  | some (pyPath, srcText) =>
-                    match fr.file with
-                    | .file path =>
-                      if path == pyPath then
-                        let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
-                        match vcResult.result with
-                        | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
-                        | _ => ("", s!" (at line {pos.line}, col {pos.column})")
-                      else
-                        match vcResult.result with
-                        | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                        | _ => ("", s!" (at byte {fr.range.start})")
-                  | none =>
-                    match vcResult.result with
-                    | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                    | _ => ("", s!" (at byte {fr.range.start})")
-              | none => ("", "")
-            s := s ++ s!"{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
+          let s := formatVcResultsWithLocation vcResults pySourceOpt
           IO.println s
           -- Output in SARIF format if requested
           if outputSarif then
@@ -1507,7 +1488,7 @@ def solAnalyzeLaurelCommand : Command where
       | none => filePath
 
     -- Translate Solidity AST → Laurel
-    match Strata.Solidity.solidityToLaurel cmd sourcePathForMetadata with
+    match Strata.Solidity.solidityToLaurel cmd (some sourcePathForMetadata) with
     | .error e =>
       exitFailure s!"Solidity to Laurel translation failed: {e}"
     | .ok laurelProgram =>
@@ -1536,31 +1517,7 @@ def solAnalyzeLaurelCommand : Command where
 
         -- Print results with source locations
         IO.println "\n==== Verification Results ===="
-        let mut s := ""
-        for vcResult in vcResults do
-          let (locationPrefix, locationSuffix) := match Imperative.getFileRange vcResult.obligation.metadata with
-            | some fr =>
-              if fr.range.isNone then ("", "")
-              else
-                match solSourceOpt with
-                | some (solPath, srcText) =>
-                  match fr.file with
-                  | .file path =>
-                    if path == solPath then
-                      let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
-                      match vcResult.result with
-                      | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
-                      | _ => ("", s!" (at line {pos.line}, col {pos.column})")
-                    else
-                      match vcResult.result with
-                      | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                      | _ => ("", s!" (at byte {fr.range.start})")
-                | none =>
-                  match vcResult.result with
-                  | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                  | _ => ("", s!" (at byte {fr.range.start})")
-            | none => ("", "")
-          s := s ++ s!"{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
+        let s := formatVcResultsWithLocation vcResults solSourceOpt
         IO.println s
 
 structure CommandGroup where
