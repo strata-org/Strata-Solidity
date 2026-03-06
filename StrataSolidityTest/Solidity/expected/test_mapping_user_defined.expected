@@ -3,7 +3,7 @@ PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapPar
 Exception: ❌ Type checking error.
 [$heap := (~updateField
  ($heap : Heap)
- (~map_select (voters : Composite) (voter : int))
+ (~select (voters : Composite) (voter : int))
  ~
  (~BoxComposite (w : int)))] No free variables are allowed here!
 Free Variables: [voters]

@@ -1,5 +1,5 @@
 Exception: ❌ Type checking error.
-[result := (~map_select (data : Composite) (key : int))] No free variables are allowed here!
+[result := (~select (data : Composite) (key : int))] No free variables are allowed here!
 Free Variables: [data]
 
 Run strata --help for additional help.

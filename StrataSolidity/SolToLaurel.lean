@@ -226,12 +226,17 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- Map read: m[k] → StaticCall "map_select" [m, k]
-      return mkStmtExprMd (.StaticCall "map_select" [base, idxExpr])
+      -- Map read: m[k] → StaticCall "select" [m, k]
+      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
   | .Assignment _ lhs rhs opAnn => do
+    -- Detect map write (IndexAccess on LHS) and reject early
+    match lhs with
+    | .IndexAccess _ _ _ =>
+      throw (.unsupported "map write (requires heap parameterization)")
+    | _ => pure ()
     let lhsExpr ← translateExpr ctx lhs
     let rhsExpr ← translateExpr ctx rhs
     let rhs' ← match opAnn.val with

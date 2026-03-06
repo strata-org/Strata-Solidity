@@ -1,11 +1,3 @@
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
-Assignments with multiple target but without a RHS call should not be constructed
-Exception: test_mapping_basic.sol(305-343) ❌ Type checking error.
-[assert [assert(305)] ((~Int.Ge : (arrow int (arrow int bool)))
- (~map_select (balances : Composite) (~Box..compositeVal! (~readField ($heap : Heap) (msg : Composite) ~)))
- (amount : int))] No free variables are allowed here!
-Free Variables: [balances, msg]
+Exception: Solidity to Laurel translation failed: Unsupported: map write (requires heap parameterization)
 
 Run strata --help for additional help.
