@@ -156,6 +156,11 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("indexExpression", Sol.opt_node()),
         Sol.node())
 
+    # -- Type conversion expressions --
+    Sol.add_op("ElementaryTypeNameExpression",
+        ArgDecl("typeName", Init.Str()),
+        Sol.node())
+
     # -- Structs --
     Sol.add_op("StructDefinition",
         ArgDecl("name", Init.Str()),
@@ -174,6 +179,10 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("MappingType",
         ArgDecl("keyType", Sol.type_name()),
         ArgDecl("valueType", Sol.type_name()),
+        Sol.type_name())
+
+    Sol.add_op("ArrayTypeName",
+        ArgDecl("baseType", Sol.type_name()),
         Sol.type_name())
 
     return Sol

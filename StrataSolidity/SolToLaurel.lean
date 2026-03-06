@@ -103,6 +103,9 @@ def translateTypeNode (tn : Solidity.type_name SourceRange) : SolType :=
     let k := (translateTypeNode keyTn).highType
     let v := (translateTypeNode valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
+  | .ArrayTypeName _ baseTn =>
+    let elem := (translateTypeNode baseTn).highType
+    { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
 
 /-- Is this a Solidity unsigned integer type? -/
 def SolType.isUint (st : SolType) : Bool :=
@@ -214,12 +217,36 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | funcName =>
         return mkStmtExprMd (.StaticCall funcName args)
+    | .MemberAccess _ baseNode memberAnn =>
+      -- Handle array.push(val): desugar to store at current length, then increment length
+      if memberAnn.val == "push" then do
+        let base ← translateExpr ctx baseNode
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        match args with
+        | [val] => return mkStmtExprMd (.StaticCall "array_push" [base, val])
+        | _ => throw (.typeError "push() expects exactly one argument")
+      else do
+        -- General method call: obj.method(args) → StaticCall "method" (obj :: args)
+        let base ← translateExpr ctx baseNode
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return mkStmtExprMd (.StaticCall memberAnn.val (base :: args))
+    | .ElementaryTypeNameExpression _ typeNameAnn =>
+      -- Type conversion: address(0), uint256(x), etc. → pass through the argument
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+      match args with
+      | [arg] => return arg  -- identity cast for Phase 1 (all integers are TInt)
+      | _ => throw (.typeError s!"Type cast {typeNameAnn.val}() expects exactly one argument")
     | _ =>
       return mkStmtExprMd .Hole  -- unsupported complex call target
 
   | .MemberAccess _ exprNode memberAnn => do
     let obj ← translateExpr ctx exprNode
-    return mkStmtExprMd (.FieldSelect obj memberAnn.val)
+    -- Array .length: translate to StaticCall so it doesn't hit heap parameterization
+    -- (TMap types are not composite, so FieldSelect would fail in the Core pipeline)
+    if memberAnn.val == "length" then
+      return mkStmtExprMd (.StaticCall "array_length" [obj])
+    else
+      return mkStmtExprMd (.FieldSelect obj memberAnn.val)
 
   | .IndexAccess _ baseNode indexOpt => do
     let base ← translateExpr ctx baseNode

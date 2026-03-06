@@ -173,6 +173,13 @@ class Converter:
             return self.d.MappingType(
                 self.convert_type_name(key_node),
                 self.convert_type_name(val_node), ann=ann)
+        if nt == "ArrayTypeName":
+            base_node = node.get("baseType")
+            if base_node is None:
+                print("Error: ArrayTypeName missing baseType", file=sys.stderr)
+                sys.exit(1)
+            return self.d.ArrayTypeName(
+                self.convert_type_name(base_node), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
         return self.d.ElementaryTypeName(self._str(ts), ann=ann)
@@ -289,6 +296,14 @@ class Converter:
             return self.d.IndexAccess(
                 self.convert_node(node["baseExpression"]),
                 self._opt_node(node.get("indexExpression")), ann=ann)
+
+        if nt == "ElementaryTypeNameExpression":
+            # Type conversion expression, e.g. address(0).
+            # Extract the type name string from the nested typeName node.
+            tn = node.get("typeName", {})
+            type_name = tn.get("name", "") if isinstance(tn, dict) else str(tn)
+            return self.d.ElementaryTypeNameExpression(
+                self._str(type_name), ann=ann)
 
         if nt == "StructDefinition":
             return self.d.StructDefinition(

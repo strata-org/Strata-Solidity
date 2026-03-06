@@ -12,3 +12,8 @@ test_mapping_basic
 test_mapping_user_defined
 test_mapping_nested
 test_mapping_pure
+
+# Array operations need Core pipeline support (Phase 4)
+test_array_basic
+test_array_struct
+test_array_length
