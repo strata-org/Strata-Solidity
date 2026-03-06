@@ -3,3 +3,6 @@
 
 # msg.sender requires contract state modeling (Phase 2)
 test_member_access
+
+# Uses Phase 2+ features (mappings, arrays, constructors, storage)
+test_ballot

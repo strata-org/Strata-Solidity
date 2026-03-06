@@ -397,9 +397,9 @@ def translateStructMember (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
   | .VariableDeclaration _ nameAnn typeNameOpt _ _ =>
-    let solTy := match typeNameOpt with
-      | .some_type_name _ tn => translateTypeNode tn
-      | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+    let solTy ← match typeNameOpt with
+      | .some_type_name _ tn => pure (translateTypeNode tn)
+      | .missing_type_name _ => throw (.internalError "Struct member missing type name")
     return { name := nameAnn.val, isMutable := true, type := solTy.highType }
   | _ => throw (.unsupported "Non-VariableDeclaration in struct member list")
 
