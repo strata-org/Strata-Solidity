@@ -1,0 +1,5 @@
+
+==== Verification Results ====
+assert(0): ✅ pass
+assert(0): ✅ pass
+set_result_calls_Int.SafeMod_0: ✅ pass
