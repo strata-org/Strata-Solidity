@@ -2,9 +2,11 @@
 pragma solidity ^0.8.0;
 
 /// Test: struct constructor calls (structConstructorCall kind).
-/// Verifies that Proposal({name: x, voteCount: 0}) translates through
+/// Verifies that Point({x: a, y: b}) translates through
 /// the pipeline without errors. Field access verification on constructed
 /// structs requires heap parameterization improvements (tracked separately).
+/// NOTE: Assertions only check argument properties, not constructed struct
+/// fields — field-access assertions are the intended next step.
 contract TestStructConstructor {
     struct Point {
         uint256 x;

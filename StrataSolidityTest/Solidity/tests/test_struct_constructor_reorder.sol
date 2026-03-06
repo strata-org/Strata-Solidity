@@ -4,6 +4,8 @@ pragma solidity ^0.8.0;
 /// Test: struct constructor with named arguments in non-declaration order.
 /// Verifies that argument reordering works correctly when names differ
 /// from the struct field declaration order.
+/// NOTE: Assertions only check argument properties, not constructed struct
+/// fields — field-access assertions are the intended next step.
 contract TestStructConstructorReorder {
     struct Pair {
         uint256 first;

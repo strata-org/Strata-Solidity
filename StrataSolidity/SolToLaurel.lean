@@ -209,7 +209,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- Check the FunctionCall kind
     match kindAnn.val with
     | "structConstructorCall" =>
-      -- Struct constructor: Proposal({name: x, voteCount: 0})
+      -- Struct constructor: Point({x: a, y: b})
       -- Translate to StaticCall to a synthetic constructor.
       -- The constructor procedure is emitted by translateContract for each struct.
       let structName ← match fnExpr with
@@ -222,20 +222,33 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- synthetic constructor takes args in field-declaration order.
       let orderedArgs ← match ctx.structFields.lookup structName with
         | some fieldOrder =>
-          if names.isEmpty then pure args
+          if names.isEmpty then
+            -- solc always populates names for structConstructorCall;
+            -- empty names with multiple args is unexpected/malformed AST.
+            if args.length > 1 then
+              throw (.internalError
+                s!"structConstructorCall '{structName}' has {args.length} args but no names")
+            else pure args
           else
-            -- Build name→arg map, then look up in field order
-            let nameArgPairs := names.zip args
-            fieldOrder.mapM fun fieldName =>
-              match nameArgPairs.lookup fieldName with
-              | some arg => pure arg
-              | none => throw (.internalError
-                  s!"struct constructor missing field '{fieldName}'")
+            if names.length != fieldOrder.length then
+              throw (.internalError
+                s!"struct constructor '{structName}' arity mismatch: \
+                   {names.length} args but {fieldOrder.length} fields")
+            else
+              -- Build name→arg map, then look up in field order
+              let nameArgPairs := names.zip args
+              fieldOrder.mapM fun fieldName =>
+                match nameArgPairs.lookup fieldName with
+                | some arg => pure arg
+                | none => throw (.internalError
+                    s!"struct constructor missing field '{fieldName}'")
         | none => pure args  -- No struct info available; pass as-is
       return mkStmtExprMd (.StaticCall (s!"{structName}_constructor") orderedArgs)
     | "typeConversion" =>
       -- Type conversion: address(0), uint256(x), etc.
       -- Phase 1: identity cast (all integers are TInt)
+      -- TODO: Preserve target type name as metadata/annotation so Phase 3
+      -- bitvector work can identify conversion sites without re-parsing.
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
       match args with
       | [arg] => return arg
@@ -518,15 +531,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         -- Record field order for argument reordering
         structFieldMap := structFieldMap ++ [(sNameAnn.val, sFields.map (·.name.text))]
         -- Emit a synthetic constructor procedure for the struct.
-        -- Signature: S_constructor(f1: T1, f2: T2, ...) returns (result: S)
-        -- Postconditions: result.fi == fi for each field
+        -- Signature: S_constructor(f1: T1, f2: T2, ...) returns (__ctor_result: S)
+        -- Postconditions: __ctor_result.fi == fi for each field
+        -- Uses "__ctor_result" to avoid collision with struct fields named "result".
         let ctorInputs := sFields.map fun f =>
           ({ name := f.name, type := f.type } : Parameter)
         let ctorOutput : Parameter :=
-          { name := "result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
+          { name := "__ctor_result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
         let postconds := sFields.map fun f =>
           let resultField := mkStmtExprMd (.FieldSelect
-            (mkStmtExprMd (.Identifier "result")) f.name)
+            (mkStmtExprMd (.Identifier "__ctor_result")) f.name)
           let paramRef := mkStmtExprMd (.Identifier f.name)
           mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
         procedures := procedures ++ [{
@@ -549,6 +563,10 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- Pass 2: translate functions with struct field info available
+    -- TODO: structFieldMap is local to each ContractDefinition. If a future
+    -- Solidity version or import mechanism allows cross-contract struct
+    -- references within the same file, this lookup will need to be lifted
+    -- to the SourceUnit level.
     let fnCtx := { ctx with structFields := structFieldMap }
     for member in nodesSeq.val do
       match member with
