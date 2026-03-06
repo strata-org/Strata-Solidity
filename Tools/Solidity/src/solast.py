@@ -57,18 +57,18 @@ def invoke_solc(sol_path: str) -> dict:
     if result.returncode != 0:
         print(f"solc exited with code {result.returncode}:\n{result.stderr}",
               file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_PARSE_FAILURE)
     try:
         output = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         print(f"solc produced invalid JSON: {exc}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_PARSE_FAILURE)
     errors = output.get("errors", [])
     fatal = [e for e in errors if e.get("severity") == "error"]
     if fatal:
         for e in fatal:
             print(e["formattedMessage"], file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_PARSE_FAILURE)
     return output
 
 
@@ -80,7 +80,7 @@ def get_ast(solc_output: dict) -> dict:
         if ast is not None:
             return ast
     print("No AST found in solc output", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(EXIT_PARSE_FAILURE)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +190,13 @@ class Converter:
                 self.convert_node(node["condition"]),
                 self.convert_node(node["body"]))
 
+        if nt == "ForStatement":
+            return self.d.ForStatement(
+                self._opt_node(node.get("initializationExpression")),
+                self._opt_node(node.get("condition")),
+                self._opt_node(node.get("loopExpression")),
+                self.convert_node(node["body"]))
+
         if nt == "VariableDeclarationStatement":
             return self.d.VariableDeclarationStatement(
                 self._seq_opt_nodes(node.get("declarations", [])),
@@ -238,14 +245,18 @@ class Converter:
                 self.convert_node(node["baseExpression"]),
                 self._opt_node(node.get("indexExpression")))
 
-        # Unsupported node type — emit as Identifier with the nodeType as name
-        # so the pipeline doesn't crash on unknown nodes.
-        print(f"Warning: unsupported nodeType '{nt}', emitting as Identifier",
+        # Unsupported node type — fail explicitly so downstream stages
+        # don't silently produce incorrect verification results.
+        # TODO: consider a dedicated UnsupportedNode dialect op for
+        #       partial-pipeline testing once more node types are added.
+        print(f"Error: unsupported Solidity AST nodeType '{nt}'",
               file=sys.stderr)
-        return self.d.Identifier(self._str(f"__unsupported_{nt}__"))
+        sys.exit(1)
 
     def convert_source_unit(self, ast: dict) -> strata.Operation:
-        assert ast.get("nodeType") == "SourceUnit"
+        if ast.get("nodeType") != "SourceUnit":
+            print(f"Expected SourceUnit, got {ast.get('nodeType')}", file=sys.stderr)
+            sys.exit(1)
         return self.d.SourceUnit(self._seq_nodes(ast.get("nodes", [])))
 
 
@@ -254,7 +265,8 @@ class Converter:
 # ---------------------------------------------------------------------------
 
 # Error code for sol_to_strata on parse failure.
-exit_parse_failure = 100
+# (reserved for future use in invoke_solc / get_ast error paths)
+EXIT_PARSE_FAILURE = 100
 
 
 def write_dialect(dialect: Dialect, dir_path: Path):

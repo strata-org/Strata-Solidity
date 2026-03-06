@@ -76,7 +76,8 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
     # Stage 1: solc + solast.py → Ion
     ion_file="$TESTS_DIR/${base_name}.solidity.st.ion"
     if ! (cd "$TOOLS_SOL" && python3 -m src.solast sol_to_strata \
-            "$test_file" "$ion_file") 2>/dev/null; then
+            --dialect "$DIALECT_DIR/Solidity.dialect.st.ion" \
+            "$test_file" "$ion_file"); then
         if is_xfail "$base_name"; then
             echo "XFAIL: $base_name (solc/parser failure)"
             xfailed=$((xfailed + 1))

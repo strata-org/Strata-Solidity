@@ -100,6 +100,13 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("body", Sol.node()),
         Sol.node())
 
+    Sol.add_op("ForStatement",
+        ArgDecl("initializationExpression", Sol.opt_node()),
+        ArgDecl("condition", Sol.opt_node()),
+        ArgDecl("loopExpression", Sol.opt_node()),
+        ArgDecl("body", Sol.node()),
+        Sol.node())
+
     Sol.add_op("VariableDeclarationStatement",
         ArgDecl("declarations", Init.Seq(Sol.opt_node())),
         ArgDecl("initialValue", Sol.opt_node()),
