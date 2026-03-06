@@ -8,7 +8,7 @@
 #
 # For each tests/test_*.sol file with a matching expected/*.expected file,
 # the script:
-#   1. Invokes solc + solast.py to produce an Ion file  (TODO — stub)
+#   1. Invokes solc + solast.py to produce an Ion file
 #   2. Runs `strata solAnalyzeLaurel` on the Ion file   (TODO — stub)
 #   3. Diffs the output against expected/*.expected
 #
@@ -22,6 +22,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
 EXPECTED_DIR="$SCRIPT_DIR/expected"
 KNOWN_FAILURES="$SCRIPT_DIR/known_failures.txt"
+TOOLS_SOL="$REPO_ROOT/Tools/Solidity"
+DIALECT_DIR="$TOOLS_SOL/dialects"
 
 passed=0
 failed=0
@@ -50,6 +52,15 @@ if ! (cd "$REPO_ROOT" && lake exe strata --help > /dev/null 2>&1); then
     exit 1
 fi
 
+# Ensure dialect is generated
+if [ ! -f "$DIALECT_DIR/Solidity.dialect.st.ion" ]; then
+    echo "Generating Solidity dialect..."
+    (cd "$TOOLS_SOL" && python3 -m src.solast dialect "$DIALECT_DIR") || {
+        echo "ERROR: failed to generate Solidity dialect."
+        exit 1
+    }
+fi
+
 for test_file in "$TESTS_DIR"/test_*.sol; do
     [ -f "$test_file" ] || continue
     base_name=$(basename "$test_file" .sol)
@@ -62,16 +73,32 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
         continue
     fi
 
-    # --- Pipeline stages (stubs — will be filled in later tasks) ---
     # Stage 1: solc + solast.py → Ion
-    # ion_file="$TESTS_DIR/${base_name}.solidity.st.ion"
-    # python3 "$REPO_ROOT/Tools/Solidity/src/solast.py" sol_to_strata \
-    #     "$test_file" "$ion_file"
+    ion_file="$TESTS_DIR/${base_name}.solidity.st.ion"
+    if ! (cd "$TOOLS_SOL" && python3 -m src.solast sol_to_strata \
+            "$test_file" "$ion_file") 2>/dev/null; then
+        if is_xfail "$base_name"; then
+            echo "XFAIL: $base_name (solc/parser failure)"
+            xfailed=$((xfailed + 1))
+        else
+            echo "FAIL:  $base_name (solc/parser failure)"
+            failed=$((failed + 1))
+        fi
+        continue
+    fi
 
-    # Stage 2: strata solAnalyzeLaurel → verification output
-    # output=$(cd "$REPO_ROOT" && ./.lake/build/bin/strata solAnalyzeLaurel "$ion_file")
+    # Stage 2: Verify the Ion file is well-formed via strata check
+    output=$(cd "$REPO_ROOT" && ./.lake/build/bin/strata check \
+        --include "$DIALECT_DIR" "$ion_file" 2>&1)
+    check_rc=$?
 
-    output="(pipeline not yet wired)"
+    # For now, the full pipeline (solAnalyzeLaurel) is not yet wired.
+    # We test that the parser produces valid Ion that Strata can read.
+    if [ $check_rc -eq 0 ]; then
+        output="parser-ok"
+    else
+        output="parser-error: $output"
+    fi
 
     if ! echo "$output" | diff -q "$expected_file" - > /dev/null 2>&1; then
         if is_xfail "$base_name"; then
@@ -92,6 +119,9 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
         fi
     fi
 done
+
+# Clean up generated Ion files
+rm -f "$TESTS_DIR"/*.solidity.st.ion
 
 echo ""
 echo "Results: $passed passed, $failed failed, $xfailed xfail, $xpassed xpass, $skipped skipped"
