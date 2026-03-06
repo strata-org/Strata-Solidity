@@ -3,3 +3,7 @@
 assert(0): ✅ pass
 assert(0): ✅ pass
 assert(0): ✅ pass
+assert(0): ✅ pass
+assert(0): ✅ pass
+assert(0): ✅ pass
+assert(0): ❌ fail
