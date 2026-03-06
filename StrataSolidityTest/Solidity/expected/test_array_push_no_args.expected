@@ -1,0 +1,3 @@
+error: Exception: Solidity to Laurel translation failed: Unsupported: push() with no arguments (returns storage reference)
+
+Run strata --help for additional help.

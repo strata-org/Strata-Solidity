@@ -105,6 +105,9 @@ def translateTypeNode (tn : Solidity.type_name SourceRange) : SolType :=
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
   | .ArrayTypeName _ baseTn =>
     let elem := (translateTypeNode baseTn).highType
+    -- NOTE: Design doc specifies `TMap Nat T` but Laurel's HighType has no TNat variant,
+    -- so we use TInt as the key type. This means array indices can be negative in the SMT
+    -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
     { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
 
 /-- Is this a Solidity unsigned integer type? -/
@@ -218,13 +221,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | funcName =>
         return mkStmtExprMd (.StaticCall funcName args)
     | .MemberAccess _ baseNode memberAnn =>
-      -- Handle array.push(val): desugar to store at current length, then increment length
+      -- Handle array.push(val): emit StaticCall "array_push" [base, val]
       if memberAnn.val == "push" then do
         let base ← translateExpr ctx baseNode
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         match args with
         | [val] => return mkStmtExprMd (.StaticCall "array_push" [base, val])
-        | _ => throw (.typeError "push() expects exactly one argument")
+        | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
+        | _ => throw (.typeError "push() expects at most one argument")
       else do
         -- General method call: obj.method(args) → StaticCall "method" (obj :: args)
         let base ← translateExpr ctx baseNode
@@ -241,20 +245,25 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .MemberAccess _ exprNode memberAnn => do
     let obj ← translateExpr ctx exprNode
-    -- Array .length: translate to StaticCall so it doesn't hit heap parameterization
-    -- (TMap types are not composite, so FieldSelect would fail in the Core pipeline)
+    -- TODO: `.length` intercept is not type-aware. This incorrectly rewrites
+    -- `string.length`, `bytes.length`, and struct fields named `length` as
+    -- `array_length` calls. Needs type-aware dispatch to distinguish arrays
+    -- from other types with a `.length` member.
     if memberAnn.val == "length" then
       return mkStmtExprMd (.StaticCall "array_length" [obj])
     else
       return mkStmtExprMd (.FieldSelect obj memberAnn.val)
 
-  | .IndexAccess _ baseNode indexOpt => do
+  | .IndexAccess sr baseNode indexOpt => do
     let base ← translateExpr ctx baseNode
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- Map read: m[k] → StaticCall "select" [m, k]
-      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      -- Guard: assert idx >= 0 (arrays are TMap TInt T but Solidity indices are uint256)
+      let guard := mkStmtExprMdAnn ctx sr (.Assert
+        (mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, mkStmtExprMd (.LiteralInt 0)])))
+      let sel := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      return mkStmtExprMd (.Block [guard, sel] none)
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
