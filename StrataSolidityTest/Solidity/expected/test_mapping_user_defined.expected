@@ -1,0 +1,11 @@
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName weight did not resolve to a field
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName weight did not resolve to a field
+Exception: ❌ Type checking error.
+[$heap := (~updateField
+ ($heap : Heap)
+ (~map_select (voters : Composite) (voter : int))
+ ~
+ (~BoxComposite (w : int)))] No free variables are allowed here!
+Free Variables: [voters]
+
+Run strata --help for additional help.

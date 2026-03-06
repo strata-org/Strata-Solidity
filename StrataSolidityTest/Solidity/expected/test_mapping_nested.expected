@@ -1,0 +1,10 @@
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName sender did not resolve to a field
+Assignments with multiple target but without a RHS call should not be constructed
+Exception: test_mapping_nested.sol(345-394) ❌ Type checking error.
+[assert [assert(345)] ((~map_select
+  (~map_select (allowances : Composite) (~Box..compositeVal! (~readField ($heap : Heap) (msg : Composite) ~)))
+  (spender : int)) == (amount : int))] No free variables are allowed here!
+Free Variables: [allowances, msg]
+
+Run strata --help for additional help.

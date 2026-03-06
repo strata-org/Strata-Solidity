@@ -164,6 +164,15 @@ class Converter:
                 print("Error: UserDefinedTypeName missing pathNode.name", file=sys.stderr)
                 sys.exit(1)
             return self.d.UserDefinedTypeName(self._str(name), ann=ann)
+        if nt == "Mapping":
+            key_node = node.get("keyType")
+            val_node = node.get("valueType")
+            if key_node is None or val_node is None:
+                print("Error: Mapping missing keyType or valueType", file=sys.stderr)
+                sys.exit(1)
+            return self.d.MappingType(
+                self.convert_type_name(key_node),
+                self.convert_type_name(val_node), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
         return self.d.ElementaryTypeName(self._str(ts), ann=ann)

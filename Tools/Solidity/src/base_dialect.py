@@ -171,4 +171,9 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("name", Init.Str()),
         Sol.type_name())
 
+    Sol.add_op("MappingType",
+        ArgDecl("keyType", Sol.type_name()),
+        ArgDecl("valueType", Sol.type_name()),
+        Sol.type_name())
+
     return Sol

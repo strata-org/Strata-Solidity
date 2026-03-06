@@ -6,3 +6,9 @@ test_member_access
 
 # Uses Phase 2+ features (mappings, arrays, constructors, storage)
 test_ballot
+
+# Mapping state variables need heap parameterization (Phase 2)
+test_mapping_basic
+test_mapping_user_defined
+test_mapping_nested
+test_mapping_pure
