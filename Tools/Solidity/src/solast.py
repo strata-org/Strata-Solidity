@@ -125,10 +125,17 @@ class Converter:
             return self.d.missing_type_name()
         return self.d.some_type_name(self.convert_type_name(node))
 
+    # Node types that carry no verification semantics and should be
+    # silently dropped from sequences (e.g. NatSpec documentation).
+    _SKIP_NODE_TYPES = frozenset({"StructuredDocumentation"})
+
     def _seq_nodes(self, nodes) -> Seq:
         if nodes is None:
             return Seq(())
-        return Seq(tuple(self.convert_node(n) for n in nodes))
+        return Seq(tuple(
+            self.convert_node(n) for n in nodes
+            if n.get("nodeType") not in self._SKIP_NODE_TYPES
+        ))
 
     def _seq_opt_nodes(self, nodes) -> Seq:
         """For arrays that may contain null entries (e.g. VariableDeclarationStatement.declarations)."""
