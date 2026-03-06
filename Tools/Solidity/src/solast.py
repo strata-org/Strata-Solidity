@@ -276,7 +276,8 @@ class Converter:
             return self.d.FunctionCall(
                 self.convert_node(node["expression"]),
                 self._seq_nodes(node.get("arguments", [])),
-                self._str(node.get("kind", "functionCall")), ann=ann)
+                self._str(node.get("kind", "functionCall")),
+                self._seq_strings(node.get("names")), ann=ann)
 
         if nt == "Identifier":
             return self.d.Identifier(

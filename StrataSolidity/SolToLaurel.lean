@@ -45,9 +45,12 @@ def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Ex
   if sr.isNone then #[]
   else Laurel.SourceRange.toMetaData uri sr
 
-/-- Translation context carrying the source file URI for metadata. -/
+/-- Translation context carrying the source file URI for metadata
+    and struct field orders for argument reordering. -/
 structure TransCtx where
   uri : Option Uri
+  /-- Map from struct name to ordered list of field names. -/
+  structFields : List (String × List String) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -202,8 +205,43 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         return mkStmtExprMd (.Assign [subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
-  | .FunctionCall sr fnExpr argsSeq _kindAnn => do
-    -- Check for require/assert special forms
+  | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
+    -- Check the FunctionCall kind
+    match kindAnn.val with
+    | "structConstructorCall" =>
+      -- Struct constructor: Proposal({name: x, voteCount: 0})
+      -- Translate to StaticCall to a synthetic constructor.
+      -- The constructor procedure is emitted by translateContract for each struct.
+      let structName ← match fnExpr with
+        | .Identifier _ nameAnn => pure nameAnn.val
+        | _ => throw (.unsupported "struct constructor with non-Identifier expression")
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+      let names := namesSeq.val.toList.map (·.val)
+      -- Reorder args to match struct field-declaration order.
+      -- solc provides args in the order of the `names` array, but the
+      -- synthetic constructor takes args in field-declaration order.
+      let orderedArgs ← match ctx.structFields.lookup structName with
+        | some fieldOrder =>
+          if names.isEmpty then pure args
+          else
+            -- Build name→arg map, then look up in field order
+            let nameArgPairs := names.zip args
+            fieldOrder.mapM fun fieldName =>
+              match nameArgPairs.lookup fieldName with
+              | some arg => pure arg
+              | none => throw (.internalError
+                  s!"struct constructor missing field '{fieldName}'")
+        | none => pure args  -- No struct info available; pass as-is
+      return mkStmtExprMd (.StaticCall (s!"{structName}_constructor") orderedArgs)
+    | "typeConversion" =>
+      -- Type conversion: address(0), uint256(x), etc.
+      -- Phase 1: identity cast (all integers are TInt)
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+      match args with
+      | [arg] => return arg
+      | _ => throw (.typeError "Type conversion expects exactly one argument")
+    | _ =>
+    -- Regular function call (kind = "functionCall")
     match fnExpr with
     | .Identifier _ nameAnn =>
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
@@ -455,7 +493,8 @@ def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
-    functions are emitted as static procedures. -/
+    functions are emitted as static procedures.
+    Two-pass: first collect struct definitions (for field order), then translate functions. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
@@ -463,12 +502,11 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
+    let mut structFieldMap : List (String × List String) := ctx.structFields
 
+    -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _ _ _ _ _ _ _ => do
-        let proc ← translateFunction ctx member
-        procedures := procedures ++ [proc]
       | .StructDefinition _ sNameAnn membersSeq => do
         let sFields ← membersSeq.val.toList.mapM (translateFieldDecl "struct member")
         types := types ++ [.Composite {
@@ -477,13 +515,47 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           fields := sFields
           instanceProcedures := []
         }]
+        -- Record field order for argument reordering
+        structFieldMap := structFieldMap ++ [(sNameAnn.val, sFields.map (·.name.text))]
+        -- Emit a synthetic constructor procedure for the struct.
+        -- Signature: S_constructor(f1: T1, f2: T2, ...) returns (result: S)
+        -- Postconditions: result.fi == fi for each field
+        let ctorInputs := sFields.map fun f =>
+          ({ name := f.name, type := f.type } : Parameter)
+        let ctorOutput : Parameter :=
+          { name := "result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
+        let postconds := sFields.map fun f =>
+          let resultField := mkStmtExprMd (.FieldSelect
+            (mkStmtExprMd (.Identifier "result")) f.name)
+          let paramRef := mkStmtExprMd (.Identifier f.name)
+          mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
+        procedures := procedures ++ [{
+          name := s!"{sNameAnn.val}_constructor"
+          inputs := ctorInputs
+          outputs := [ctorOutput]
+          preconditions := []
+          determinism := .deterministic none
+          decreases := none
+          isFunctional := true
+          body := .Abstract postconds
+          md := default
+        }]
       | .VariableDeclaration _ _ _ stateVarAnn _ =>
         if stateVarAnn.val == "true" then do
           let field ← translateFieldDecl "state variable" member
           fields := fields ++ [field]
         else
           pure ()
-      | _ => pure ()  -- Skip unsupported members
+      | _ => pure ()
+
+    -- Pass 2: translate functions with struct field info available
+    let fnCtx := { ctx with structFields := structFieldMap }
+    for member in nodesSeq.val do
+      match member with
+      | .FunctionDefinition _ _ _ _ _ _ _ _ => do
+        let proc ← translateFunction fnCtx member
+        procedures := procedures ++ [proc]
+      | _ => pure ()
 
     -- Emit a CompositeType for the contract only when it has state-variable fields.
     -- Contracts with no fields produce no CompositeType to avoid IR noise.
