@@ -405,12 +405,26 @@ def translateStructMember (member : Solidity.node SourceRange)
     return { name := nameAnn.val, isMutable := true, type := solTy.highType }
   | _ => throw (.unsupported "Non-VariableDeclaration in struct member list")
 
-/-- Translate a Solidity ContractDefinition to Laurel types and procedures. -/
+/-- Translate a state-variable VariableDeclaration to a Laurel Field. -/
+def translateStateVariable (member : Solidity.node SourceRange)
+    : Except TranslationError Field := do
+  match member with
+  | .VariableDeclaration _ nameAnn typeNameOpt _ _ =>
+    let solTy ← match typeNameOpt with
+      | .some_type_name _ tn => pure (translateTypeNode tn)
+      | .missing_type_name _ => throw (.internalError "State variable missing type name")
+    return { name := nameAnn.val, isMutable := true, type := solTy.highType }
+  | _ => throw (.internalError "Expected VariableDeclaration for state variable")
+
+/-- Translate a Solidity ContractDefinition to Laurel types and procedures.
+    Contracts become a CompositeType with state variables as fields and
+    functions as instance procedures. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ _nameAnn _kindAnn nodesSeq => do
+  | .ContractDefinition _ nameAnn _kindAnn nodesSeq => do
     let mut procedures : List Procedure := []
+    let mut fields : List Field := []
     let mut types : List TypeDefinition := []
 
     for member in nodesSeq.val do
@@ -418,18 +432,32 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | .FunctionDefinition _ _ _ _ _ _ _ _ => do
         let proc ← translateFunction ctx member
         procedures := procedures ++ [proc]
-      | .StructDefinition _ nameAnn membersSeq => do
-        let fields ← membersSeq.val.toList.mapM translateStructMember
+      | .StructDefinition _ sNameAnn membersSeq => do
+        let sFields ← membersSeq.val.toList.mapM translateStructMember
         types := types ++ [.Composite {
-          name := nameAnn.val
+          name := sNameAnn.val
           extending := []
-          fields := fields
+          fields := sFields
           instanceProcedures := []
         }]
-      | .VariableDeclaration _ _ _ _ _ =>
-        -- State variables — Phase 2
-        pure ()
+      | .VariableDeclaration _ _ _ stateVarAnn _ =>
+        if stateVarAnn.val == "true" then do
+          let field ← translateStateVariable member
+          fields := fields ++ [field]
+        else
+          pure ()
       | _ => pure ()  -- Skip unsupported members
+
+    -- Wrap the contract as a CompositeType with fields.
+    -- Procedures are emitted as staticProcedures (not instanceProcedures) because
+    -- the Laurel→Core pipeline only translates staticProcedures for verification.
+    let contractType : TypeDefinition := .Composite {
+      name := nameAnn.val
+      extending := []
+      fields := fields
+      instanceProcedures := []
+    }
+    types := types ++ [contractType]
 
     return (procedures, types)
   | _ => throw (.internalError "Expected ContractDefinition")
