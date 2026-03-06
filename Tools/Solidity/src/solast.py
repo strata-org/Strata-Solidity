@@ -155,8 +155,14 @@ class Converter:
             return self.d.ElementaryTypeName(self._str(node.get("name")), ann=ann)
         if nt == "UserDefinedTypeName":
             # Extract name from nested IdentifierPath (pathNode.name)
-            path_node = node.get("pathNode", {})
+            path_node = node.get("pathNode")
+            if path_node is None:
+                print("Error: UserDefinedTypeName missing pathNode", file=sys.stderr)
+                sys.exit(1)
             name = path_node.get("name", "")
+            if not name:
+                print("Error: UserDefinedTypeName missing pathNode.name", file=sys.stderr)
+                sys.exit(1)
             return self.d.UserDefinedTypeName(self._str(name), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
