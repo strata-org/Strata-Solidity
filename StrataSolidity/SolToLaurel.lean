@@ -13,17 +13,18 @@ import Strata.Languages.Solidity.ReadSolidity
 import Strata.DL.Imperative.MetaData
 
 /-!
-# Solidity AST → Laurel Translation (Phase 1)
+# Solidity AST → Laurel Translation
 
 Translates the Solidity DDM AST (produced by solc → solast.py → Ion)
 into the Laurel intermediate representation.
 
-## Phase 1 scope
+## Scope
 - Pure/view functions with value types (uint256, int256, bool, address)
 - `require(cond)` → assume, `assert(cond)` → assert
 - if/else, while, for loops, return, variable declarations, assignments
 - Arithmetic and comparison operators
-- Contracts as CompositeType with fields + instance procedures
+- Contracts as CompositeType with state-variable fields + static procedures
+- Struct definitions as CompositeType
 
 ## Design (Option A from design doc)
 Uses `solc --ast-json` via the external Python tooling; this module
@@ -394,31 +395,22 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
 /-! ## Contract Translation -/
 
-/-- Translate a Solidity StructDefinition member (VariableDeclaration) to a Laurel Field. -/
-def translateStructMember (member : Solidity.node SourceRange)
+/-- Translate a VariableDeclaration to a Laurel Field.
+    Shared helper for struct members and state variables.
+    Reads the `constant` annotation to set `isMutable` correctly. -/
+def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ _ =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode tn)
-      | .missing_type_name _ => throw (.internalError "Struct member missing type name")
-    return { name := nameAnn.val, isMutable := true, type := solTy.highType }
-  | _ => throw (.unsupported "Non-VariableDeclaration in struct member list")
-
-/-- Translate a state-variable VariableDeclaration to a Laurel Field. -/
-def translateStateVariable (member : Solidity.node SourceRange)
-    : Except TranslationError Field := do
-  match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ _ =>
-    let solTy ← match typeNameOpt with
-      | .some_type_name _ tn => pure (translateTypeNode tn)
-      | .missing_type_name _ => throw (.internalError "State variable missing type name")
-    return { name := nameAnn.val, isMutable := true, type := solTy.highType }
-  | _ => throw (.internalError "Expected VariableDeclaration for state variable")
+      | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
+    return { name := nameAnn.val, isMutable := constAnn.val != "true", type := solTy.highType }
+  | _ => throw (.internalError s!"Expected VariableDeclaration for {errCtx}")
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
-    Contracts become a CompositeType with state variables as fields and
-    functions as instance procedures. -/
+    Contracts become a CompositeType with state variables as fields;
+    functions are emitted as static procedures. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
@@ -433,7 +425,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         let proc ← translateFunction ctx member
         procedures := procedures ++ [proc]
       | .StructDefinition _ sNameAnn membersSeq => do
-        let sFields ← membersSeq.val.toList.mapM translateStructMember
+        let sFields ← membersSeq.val.toList.mapM (translateFieldDecl "struct member")
         types := types ++ [.Composite {
           name := sNameAnn.val
           extending := []
@@ -442,22 +434,22 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         }]
       | .VariableDeclaration _ _ _ stateVarAnn _ =>
         if stateVarAnn.val == "true" then do
-          let field ← translateStateVariable member
+          let field ← translateFieldDecl "state variable" member
           fields := fields ++ [field]
         else
           pure ()
       | _ => pure ()  -- Skip unsupported members
 
-    -- Wrap the contract as a CompositeType with fields.
-    -- Procedures are emitted as staticProcedures (not instanceProcedures) because
-    -- the Laurel→Core pipeline only translates staticProcedures for verification.
-    let contractType : TypeDefinition := .Composite {
-      name := nameAnn.val
-      extending := []
-      fields := fields
-      instanceProcedures := []
-    }
-    types := types ++ [contractType]
+    -- Emit a CompositeType for the contract only when it has state-variable fields.
+    -- Contracts with no fields produce no CompositeType to avoid IR noise.
+    if !fields.isEmpty then
+      let contractType : TypeDefinition := .Composite {
+        name := nameAnn.val
+        extending := []
+        fields := fields
+        instanceProcedures := []
+      }
+      types := types ++ [contractType]
 
     return (procedures, types)
   | _ => throw (.internalError "Expected ContractDefinition")
