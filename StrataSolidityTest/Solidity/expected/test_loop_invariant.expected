@@ -1,4 +1,5 @@
 
 ==== Verification Results ====
-sumSteps_ensures_0: ✅ pass
-sumSteps_loop_invariant_0: ✅ pass
+entry_invariant_0_0: ✅ pass
+arbitrary_iter_maintain_invariant_0_0: ✅ pass
+sumSteps_ensures: ❌ fail

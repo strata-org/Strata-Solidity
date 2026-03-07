@@ -95,9 +95,10 @@ structure TransCtx where
   -- TODO: Add a debug/trace flag that prints the generated Laurel IR for each function.
   -- This would help catch issues like uninitialized storage refs, missing $heap threading,
   -- and Block wrapper problems during development.
-  /-- Contract-level invariants (from `_strata_invariant` in constructor).
-      Conjoined with every public function's pre- and postconditions. -/
-  contractInvariants : List StmtExprMd := []
+  /-- Contract-level invariant DDM nodes (from `_strata_invariant` in constructor).
+      Stored as raw DDM nodes and re-translated per function context so that
+      state variable references resolve correctly in each function. -/
+  contractInvariantNodes : List (Solidity.node SourceRange) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -363,6 +364,33 @@ def extractContractInvariants (bodyStmts : List (Solidity.node SourceRange))
       else none
     | _ => none
 
+/-- Rewrite mapping state variable references in an old() expression to their
+    `_in` input parameter versions. For array state vars, also rewrite
+    `name_length` to `name_length_in`.
+    This desugars `old(balances[to])` to `select(balances_in, to)`. -/
+partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVars : List String)
+    (expr : StmtExprMd) : StmtExprMd :=
+  let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars e
+  match expr.val with
+  | .Identifier name =>
+    if mappingStateVars.contains name.text then
+      { expr with val := .Identifier s!"{name.text}_in" }
+    else
+      -- Check for array length references: name_length → name_length_in
+      let isArrayLength := arrayStateVars.any fun av => name.text == s!"{av}_length"
+      if isArrayLength then
+        { expr with val := .Identifier s!"{name.text}_in" }
+      else expr
+  | .PrimitiveOp op args =>
+    { expr with val := .PrimitiveOp op (args.map rewrite) }
+  | .StaticCall callee args =>
+    { expr with val := .StaticCall callee (args.map rewrite) }
+  | .FieldSelect target fieldName =>
+    { expr with val := .FieldSelect (rewrite target) fieldName }
+  | .IfThenElse cond thenBr elseBr =>
+    { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
+  | _ => expr
+
 mutual
 
 /-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr. -/
@@ -528,15 +556,15 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | [cond] => return mkStmtExprMd (.Assert cond)  -- placeholder; extracted by translateFunction
         | _ => throw (.typeError "_strata_post() expects exactly one argument")
       | "_strata_old" | "_strata_old_uint" | "_strata_old_int" | "_strata_old_bool" =>
-        -- old(expr): wraps expression in Old for pre-state reference in postconditions.
-        -- Validate that the inner argument is a simple Identifier; the Core translator
-        -- only supports old() on bare variable references (see LaurelToCoreTranslator.lean).
-        match argsSeq.val.toList with
-        | [.Identifier _ _] => pure ()
-        | [_] => throw (.unsupported s!"{nameAnn.val}() currently only supports simple variable references")
-        | _ => throw (.typeError s!"{nameAnn.val}() expects exactly one argument")
+        -- old(expr): reference pre-state values in postconditions.
+        -- Desugared by rewriting mapping state variable references to their
+        -- `_in` input parameter versions. Scalar state vars accessed via
+        -- `FieldSelect self "name"` already refer to the pre-state (self is
+        -- the input parameter). User parameters are already `_param` versions.
         match args with
-        | [inner] => return mkStmtExprMd (.Old inner)
+        | [inner] =>
+          let rewritten := rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars inner
+          return rewritten
         | _ => throw (.typeError s!"{nameAnn.val}() expects exactly one argument")
       | "_strata_loop_invariant" =>
         -- Loop invariant: intercepted by translateStmt for loops.
@@ -1051,8 +1079,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           | some argNode => some <$> translateExpr bodyCtx argNode
           | none => pure none
         -- Rewrite precondition expressions: user parameter names → _param names
+        -- and mapping state var names → _in names (preconditions reference pre-state)
         let userParamNames := userParamInfo.map (·.1)
         let specPreExprs := specPreExprs.map (rewriteParamRefs userParamNames)
+        let specPreExprs := if !isPure && !isView && !isConstructor then
+          specPreExprs.map (rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars)
+        else specPreExprs
         -- Translate extracted postcondition expressions
         let specPostExprs ← postNodes.filterMapM fun n => do
           match extractCallArg n with
@@ -1084,18 +1116,35 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
         let bodyExpr := if preamble.isEmpty then b
           else mkStmtExprMd (.Block (preamble ++ [b]) none)
+        -- Translate contract invariant nodes in this function's body context.
+        -- This ensures state variable references resolve correctly:
+        -- - In the constructor: state vars are output parameters (Identifier "counter")
+        -- - In non-pure functions: state vars go through FieldSelect self "counter"
+        -- Contract invariants only apply to non-pure functions.
+        let contractInvariants ← if isPure then pure []
+          else ctx.contractInvariantNodes.mapM (translateExpr bodyCtx)
+        -- Rewrite invariant expressions: user parameter names → _param names
+        let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
-        let allPosts := specPostExprs ++ ctx.contractInvariants
+        let allPosts := specPostExprs ++ contractInvariants
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr)
         else
           pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr) [])
       | .missing_node _ =>
-        pure ([], ctx.contractInvariants, if ctx.contractInvariants.isEmpty then .Abstract []
-          else .Abstract ctx.contractInvariants)
+        -- No body: translate invariants with base context (no locals)
+        let contractInvariants ← if isPure then pure []
+          else ctx.contractInvariantNodes.mapM (translateExpr ctx)
+        pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
+          else .Abstract contractInvariants)
 
     -- Add spec preconditions + contract invariants to the preconditions list
-    let allPreconditions := preconditions ++ specPres ++ (if isConstructor then [] else ctx.contractInvariants)
+    -- Contract invariants only apply to non-pure, non-constructor functions.
+    -- Re-translate invariant nodes in the body context for correct scoping.
+    let applicableInvariantPres ← if isPure || isConstructor then pure []
+      else ctx.contractInvariantNodes.mapM (translateExpr bodyCtx)
+    let applicableInvariantPres := applicableInvariantPres.map (rewriteParamRefs (userParamInfo.map (·.1)))
+    let allPreconditions := preconditions ++ specPres ++ applicableInvariantPres
 
     return {
       name := funcName
@@ -1218,12 +1267,10 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 3: Extract contract invariants from constructor body
     -- _strata_invariant calls in the constructor are conjoined with every
     -- public function's pre- and postconditions.
-    -- TODO (Bug 3): Invariants are translated using baseFnCtx (constructor context)
-    -- and injected verbatim into every function. If an invariant references state
-    -- variables, the `self` parameter must exist in the target function's scope.
-    -- For pure functions or functions without non-mapping state, `self` may not
-    -- be in scope. Invariant expressions should be re-translated per function
-    -- context or validated against each function's parameter list.
+    -- We store the raw DDM nodes and re-translate them per function context,
+    -- so that state variable references resolve correctly in each function
+    -- (e.g., as output parameters in the constructor, as FieldSelect self "name"
+    -- in non-pure functions).
     let sfm := structFieldMap
     let baseFnCtx : TransCtx :=
       { ctx with structFields := sfm
@@ -1233,53 +1280,33 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions }
-    let mut contractInvariants : List StmtExprMd := []
+    let mut contractInvariantNodes : List (Solidity.node SourceRange) := []
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ _ kindAnn _ _ _ _ bodyOpt =>
         if kindAnn.val == "constructor" then
           match bodyOpt with
           | .some_node _ (.Block _ stmtsSeq) =>
-            let invNodes := extractContractInvariants stmtsSeq.val.toList
-            for invNode in invNodes do
-              let invExpr ← translateExpr baseFnCtx invNode
-              contractInvariants := contractInvariants ++ [invExpr]
+            contractInvariantNodes := extractContractInvariants stmtsSeq.val.toList
           | _ => pure ()
       | _ => pure ()
 
-    -- Pass 4: translate functions with struct field info, state context, and invariants
-    -- TODO: structFieldMap is local to each ContractDefinition. If a future
-    -- Solidity version or import mechanism allows cross-contract struct
-    -- references within the same file, this lookup will need to be lifted
-    -- to the SourceUnit level.
-    let fnCtx := { baseFnCtx with contractInvariants := contractInvariants }
+    -- Pass 4: translate functions with struct field info, state context, and invariant nodes
+    -- Invariant nodes are re-translated per function so that state variable references
+    -- resolve correctly in each function's context.
+    let fnCtx := { baseFnCtx with contractInvariantNodes := contractInvariantNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _ _ _ _ _ _ _ => do
-        let proc ← translateFunction fnCtx member
-        procedures := procedures ++ [proc]
+      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ => do
+        -- Skip _strata_* stub functions (only needed for solc compilation)
+        if fnNameAnn.val.startsWith "_strata_" then pure ()
+        else do
+          let proc ← translateFunction fnCtx member
+          procedures := procedures ++ [proc]
       | _ => pure ()
 
-    -- If there are contract invariants, emit a synthetic invariant-check procedure.
-    -- NOTE: This procedure is currently a placeholder for future use. Its
-    -- preconditions equal its (Abstract) postconditions, making it trivially
-    -- satisfied. It does not add verification value in its current form.
-    -- TODO: Either give it a body that exercises the invariant (e.g., checks
-    -- that the invariant is self-consistent after constructor execution), or
-    -- remove it once invariant injection into public functions is robust.
-    if !contractInvariants.isEmpty then
-      let invProcName := s!"{nameAnn.val}_invariant"
-      procedures := procedures ++ [{
-        name := invProcName
-        inputs := []
-        outputs := []
-        preconditions := contractInvariants
-        determinism := .deterministic none
-        decreases := none
-        isFunctional := false
-        body := .Abstract contractInvariants
-        md := default
-      }]
+    -- Contract invariants are checked via injection into public functions'
+    -- pre/postconditions. No separate invariant procedure is needed.
 
     -- Emit a CompositeType for the contract only when it has non-mapping state-variable fields.
     -- Mapping fields are passed as explicit parameters, not stored on the heap.

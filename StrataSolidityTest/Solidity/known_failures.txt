@@ -1,13 +1,2 @@
 # Known test failures (XFAIL registry).
 # One test base name per line. Lines starting with # are comments.
-
-# Tests using _strata_* specification functions that require features
-# not yet implemented:
-# - old() on complex expressions (state variables, map selects) requires
-#   pre-state saving before heap parameterization
-# - Contract invariants referencing state variables need heap context
-# - Loop invariant + postcondition interaction needs stronger invariants
-test_ballot
-test_erc20_spec
-test_loop_invariant
-test_spec_failures

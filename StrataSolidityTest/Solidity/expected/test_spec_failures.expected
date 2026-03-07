@@ -1,5 +1,8 @@
 
 ==== Verification Results ====
-wrongPostcondition_ensures_0: ❌ fail
-SpecFailures_invariant_0: ❌ fail
-badLoopInvariant_loop_invariant_0: ❌ fail
+SpecFailures_ctor_ensures: ❌ fail
+wrongPostcondition_ensures: ❌ fail
+breakInvariant_ensures_0: 🟡 unknown
+breakInvariant_ensures_1: 🟡 unknown
+entry_invariant_0_0: ✅ pass
+arbitrary_iter_maintain_invariant_0_0: ❌ fail
