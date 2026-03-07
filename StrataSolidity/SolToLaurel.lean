@@ -67,6 +67,12 @@ structure TransCtx where
   /-- Storage reference aliases: maps alias name to its alias info.
       Field accesses `alias.field` are desugared to `Identifier "alias__field"`. -/
   storageAliases : List (String × StorageAlias) := []
+  /-- Names of state variables in the enclosing contract.
+      Used to translate bare identifiers to `FieldSelect self "name"`. -/
+  stateVarNames : List String := []
+  /-- Names of non-pure functions in the enclosing contract.
+      Internal calls to these functions need `self` threaded through. -/
+  nonPureFunctions : List String := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -183,7 +189,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>
-    return mkStmtExprMd (.Identifier nameAnn.val)
+    -- If this identifier is a state variable, translate to FieldSelect on self
+    if ctx.stateVarNames.contains nameAnn.val then
+      return mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) nameAnn.val)
+    else
+      return mkStmtExprMd (.Identifier nameAnn.val)
 
   | .Literal _ valueAnn kindAnn =>
     match kindAnn.val with
@@ -315,7 +325,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | funcName =>
-        return mkStmtExprMd (.StaticCall funcName args)
+        -- Internal call to a non-pure function: thread `self` and `msg_sender`
+        if ctx.nonPureFunctions.contains funcName then
+          let selfArg := mkStmtExprMd (.Identifier "self")
+          let senderArg := mkStmtExprMd (.Identifier "msg_sender")
+          return mkStmtExprMd (.StaticCall funcName (selfArg :: senderArg :: args))
+        else
+          return mkStmtExprMd (.StaticCall funcName args)
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val): emit StaticCall "array_push" [base, val]
       if memberAnn.val == "push" then do
@@ -550,6 +566,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let mut inputs : List Parameter := []
     let mut preconditions : List StmtExprMd := []
 
+    -- Add implicit self parameter for non-pure functions with contract state
+    let hasState := !ctx.stateVarNames.isEmpty
+    if !isPure && hasState && !isConstructor then
+      inputs := inputs ++ [{ name := "self",
+                              type := mkHighTypeMd (.UserDefined ⟨ctx.contractName, none⟩) }]
+
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
@@ -685,14 +707,28 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           pure ()
       | _ => pure ()
 
-    -- Pass 2: translate functions with struct field info available
+    -- Pass 2: collect non-pure function names for internal call resolution
+    let stateVarNames := fields.map (·.name.text)
+    let mut nonPureFunctions : List String := []
+    for member in nodesSeq.val do
+      match member with
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn _ _ _ _ =>
+        let fnIsPure := fnMutAnn.val == "pure"
+        let fnIsConstructor := fnKindAnn.val == "constructor"
+        if !fnIsPure && !fnIsConstructor then
+          nonPureFunctions := nonPureFunctions ++ [fnNameAnn.val]
+      | _ => pure ()
+
+    -- Pass 3: translate functions with struct field info and state context available
     -- TODO: structFieldMap is local to each ContractDefinition. If a future
     -- Solidity version or import mechanism allows cross-contract struct
     -- references within the same file, this lookup will need to be lifted
     -- to the SourceUnit level.
     let fnCtx := { ctx with structFields := structFieldMap,
                             contractName := nameAnn.val,
-                            contractFields := fields }
+                            contractFields := fields,
+                            stateVarNames := stateVarNames,
+                            nonPureFunctions := nonPureFunctions }
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ _ _ _ _ _ _ _ => do
