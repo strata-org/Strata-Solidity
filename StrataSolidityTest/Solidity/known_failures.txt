@@ -1,7 +1,12 @@
 # Known test failures (XFAIL registry).
 # One test base name per line. Lines starting with # are comments.
 
-# Tests using _strata_* specification functions (depends on tasks 062/063)
+# Tests using _strata_* specification functions (depends on tasks 062/063).
+# NOTE: The expected output files for these tests are ASPIRATIONAL — they
+# describe the intended future behavior once 062/063 land, not the current
+# output. If actual output differs when those tasks complete (e.g., different
+# VC naming), the mismatch will only surface when removing the xfail entry.
+# Review each expected file carefully before removing from this list.
 test_ballot
 test_safe_withdraw
 test_erc20_spec

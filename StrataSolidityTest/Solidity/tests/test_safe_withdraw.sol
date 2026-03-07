@@ -2,7 +2,8 @@
 pragma solidity ^0.8.0;
 
 /// @title SafeWithdraw — specification-based verification.
-/// Uses _strata_post postconditions instead of inline assert().
+/// Uses _strata_post postconditions for most functions; transferTo retains
+/// inline assert() to test mixed specification styles.
 contract SafeWithdraw {
 
     // Strata specification stubs
