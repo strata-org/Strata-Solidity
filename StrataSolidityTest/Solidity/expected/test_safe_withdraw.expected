@@ -1,7 +1,7 @@
 
 ==== Verification Results ====
-deposit_ensures_0: ✅ pass
-withdraw_ensures_0: ✅ pass
-transferFrom_ensures_0: ✅ pass
-assert(1604): ✅ pass (at line 41, col 8)
-assert(1645): ✅ pass (at line 42, col 8)
+deposit_ensures: ✅ pass
+withdraw_ensures: ✅ pass
+transferFrom_ensures: ✅ pass
+assert(1671): ✅ pass (at line 42, col 8)
+assert(1712): ✅ pass (at line 43, col 8)
