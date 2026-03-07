@@ -90,7 +90,11 @@ structure TransCtx where
   nonPureFunctions : List String := []
   /-- Names of in-scope local variables and function parameters.
       Checked before `stateVarNames` so that locals/params shadow state variables. -/
+  -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   localNames : List String := []
+  -- TODO: Add a debug/trace flag that prints the generated Laurel IR for each function.
+  -- This would help catch issues like uninitialized storage refs, missing $heap threading,
+  -- and Block wrapper problems during development.
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -199,6 +203,58 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
       | _ => none
     | _ => none
   | _ => none
+
+/-- Collect index expressions from array IndexAccess nodes in a Solidity AST node.
+    Returns index nodes whose base is a known array state variable or memory array parameter.
+    Only collects simple index expressions (identifiers, literals, binary ops on those)
+    to avoid duplicating side-effectful expressions like function calls.
+    Used to emit `assert(idx >= 0)` as preceding statements (not expression wrappers). -/
+partial def collectArrayIndexNodes (ctx : TransCtx) (n : Solidity.node SourceRange)
+    : List (Solidity.node SourceRange) :=
+  match n with
+  | .IndexAccess _ baseNode indexOpt =>
+    let baseIsArray := match baseNode with
+      | .Identifier _ nameAnn =>
+        ctx.arrayStateVars.contains nameAnn.val || ctx.memoryArrayParams.contains nameAnn.val
+      | _ => false
+    let idxIsSafe := match indexOpt with
+      | .some_node _ (.Identifier _ _) => true
+      | .some_node _ (.Literal _ _ _) => true
+      | .some_node _ (.BinaryOperation _ _ _ _) => true
+      | _ => false
+    let fromIdx := match indexOpt with
+      | .some_node _ idx =>
+        if baseIsArray && idxIsSafe then [idx]
+        else collectArrayIndexNodes ctx idx
+      | .missing_node _ => []
+    collectArrayIndexNodes ctx baseNode ++ fromIdx
+  | .BinaryOperation _ l r _ => collectArrayIndexNodes ctx l ++ collectArrayIndexNodes ctx r
+  | .UnaryOperation _ operand _ _ => collectArrayIndexNodes ctx operand
+  | .FunctionCall _ fnExpr argsSeq _ _ =>
+    collectArrayIndexNodes ctx fnExpr ++
+    ((argsSeq.val.toList.map (collectArrayIndexNodes ctx)).flatten)
+  | .MemberAccess _ base _ => collectArrayIndexNodes ctx base
+  | .Assignment _ lhs rhs _ => collectArrayIndexNodes ctx lhs ++ collectArrayIndexNodes ctx rhs
+  | _ => []
+
+/-- Collect array index check nodes from a statement's immediate expressions.
+    Does NOT recurse into compound statements (for, while, if bodies) since
+    assertions must be emitted in the correct scope. -/
+partial def collectArrayIndexNodesStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
+    : List (Solidity.node SourceRange) :=
+  match n with
+  | .ExpressionStatement _ expr => collectArrayIndexNodes ctx expr
+  | .VariableDeclarationStatement _ _ initOpt =>
+    match initOpt with
+    | .some_node _ initNode => collectArrayIndexNodes ctx initNode
+    | .missing_node _ => []
+  | .Return _ exprOpt =>
+    match exprOpt with
+    | .some_node _ expr => collectArrayIndexNodes ctx expr
+    | .missing_node _ => []
+  -- Do not recurse into compound statements; their bodies are handled
+  -- by translateBlockStmts/translateStmt recursively.
+  | _ => []
 
 /-- Collect a chain of IndexAccess nodes from an LHS expression.
     Returns `(rootNode, [idx1, idx2, ...])` where rootNode is the innermost
@@ -379,7 +435,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | funcName =>
         -- Internal call to a non-pure function: thread `self`, `msg_sender`,
-        -- and mapping/array state variables
+        -- and mapping/array state variables.
+        -- Positional argument contract (must match callee signature in translateFunction):
+        --   [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args...]
+        -- where user_args are received into `name_param` formals on the callee side.
         if ctx.nonPureFunctions.contains funcName then
           let mut implicitArgs : List StmtExprMd := []
           -- Thread self only if there are non-mapping state vars
@@ -473,6 +532,15 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
+      -- TODO: Restore array index non-negativity check (assert idx >= 0).
+      -- Previously wrapped in a Block expression which caused downstream
+      -- FieldSelect resolution failures. The correct fix is to emit the
+      -- assert as a preceding statement in translateBlockStmts, but this
+      -- requires careful handling of: (1) side-effectful index expressions
+      -- (function calls), (2) loop contexts where the index variable may
+      -- not yet be constrained, and (3) storage-ref fields that are
+      -- unconstrained due to heap parameterization (see Bug #2).
+      -- See collectArrayIndexNodes/collectArrayIndexNodesStmt helpers.
       return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
@@ -531,6 +599,14 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
       --   LocalVariable "sender__weight" TInt (select(voters, msg_sender)#weight)
       --   LocalVariable "sender__voted" TBool (select(voters, msg_sender)#voted)
+      --
+      -- LIMITATION: The FieldSelect initialization (e.g., select(voters, msg_sender)#weight)
+      -- is transformed by HeapParameterization into readField($heap, ..., Field), which
+      -- returns an unconstrained value unless the field was previously written via
+      -- updateField. This means reads of storage-reference fields may be weaker than
+      -- the intended "initialized from the mapping entry" semantics.
+      -- TODO: Either (a) emit explicit assume statements to constrain the field values,
+      -- or (b) bypass heap parameterization for these FieldSelect nodes.
       --
       -- Writes to alias fields (e.g., `sender.voted = true`) modify the local
       -- variables. A write-back pass at the end of the enclosing block would be
@@ -669,7 +745,10 @@ end
 
 /-! ## Function Translation -/
 
-/-- Translate a Solidity FunctionDefinition to a Laurel Procedure. -/
+/-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
+    Positional argument contract for non-pure functions (must match call site in translateExpr):
+      [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args_as_name_param...]
+    where `self` is present only if there are non-mapping state variables. -/
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
@@ -791,11 +870,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       ctx.mappingStateVars
     else []
     -- Array length output names are also in scope
-    let arrayLengthOutputNames := if !isPure && !isView && !isConstructor then
-      ctx.arrayStateVars.map (· ++ "_length")
-    else if isView then
-      ctx.arrayStateVars.map (· ++ "_length")
-    else if isConstructor then
+    let arrayLengthOutputNames := if !isPure then
       ctx.arrayStateVars.map (· ++ "_length")
     else []
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
