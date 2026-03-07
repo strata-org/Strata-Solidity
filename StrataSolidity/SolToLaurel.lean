@@ -94,7 +94,8 @@ structure SolType where
 deriving Inhabited
 
 /-- Translate a Solidity type name string to Laurel HighType.
-    Phase 1: uint256/int256 → TInt, bool → TBool, address → TInt, bytes32 → TInt. -/
+    Phase 1: bool → TBool; address, uint*, bytes* → TInt (unsigned);
+    int*, and all other types → TInt (default). -/
 def translateTypeName (name : String) : SolType :=
   if name == "bool" then { highType := mkHighTypeMd .TBool, solName := name }
   else if name == "address" then { highType := mkHighTypeMd .TInt, solName := name }
@@ -124,6 +125,10 @@ def SolType.isUint (st : SolType) : Bool :=
 /-- Is this a Solidity address type? -/
 def SolType.isAddress (st : SolType) : Bool :=
   st.solName == "address"
+
+/-- Is this a Solidity bytes type (bytes1–bytes32)? -/
+def SolType.isBytes (st : SolType) : Bool :=
+  st.solName.startsWith "bytes"
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
@@ -300,11 +305,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .MemberAccess _ exprNode memberAnn => do
     -- msg.sender → Identifier "msg_sender" (implicit parameter)
+    -- msg.X for X ≠ sender → unsupported
     match exprNode with
     | .Identifier _ baseNameAnn =>
-      if baseNameAnn.val == "msg" && memberAnn.val == "sender" then
-        return mkStmtExprMd (.Identifier "msg_sender")
-      else pure ()
+      if baseNameAnn.val == "msg" then
+        if memberAnn.val == "sender" then
+          return mkStmtExprMd (.Identifier "msg_sender")
+        else
+          throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender is supported)")
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
     -- TODO: `.length` intercept is not type-aware. This incorrectly rewrites
@@ -445,7 +453,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
   match fn with
   | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt => do
     let isConstructor := kindAnn.val == "constructor"
-    let funcName := if isConstructor then s!"{ctx.contractName}_constructor"
+    let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else nameAnn.val
     let isPure := mutAnn.val == "pure"
 
@@ -467,8 +475,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             | .some_type_name _ tn => translateTypeNode tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
           inputs := inputs ++ [{ name := pName.val, type := solTy.highType }]
-          -- Add non-negative precondition for uint and address types
-          if solTy.isUint || solTy.isAddress then
+          -- Add non-negative precondition for uint, address, and bytes types
+          if solTy.isUint || solTy.isAddress || solTy.isBytes then
             preconditions := preconditions ++ [mkNonNegPrecond pName.val]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")

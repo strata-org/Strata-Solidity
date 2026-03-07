@@ -1,7 +1,7 @@
 # Known test failures (XFAIL registry).
 # One test base name per line. Lines starting with # are comments.
 
-# Uses Phase 2+ features (mappings, arrays, constructors, storage)
+# Uses Phase 2+ features (mappings, arrays, storage)
 test_ballot
 
 # Mapping state variables need heap parameterization (Phase 2)
