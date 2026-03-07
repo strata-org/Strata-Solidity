@@ -297,13 +297,6 @@ def isCallTo (name : String) (n : Solidity.node SourceRange) : Bool :=
   | .FunctionCall _ (.Identifier _ nameAnn) _ _ _ => nameAnn.val == name
   | _ => false
 
-/-- Check if a Solidity AST node is a call to a _strata_* specification function. -/
-def isStrataSpecCall (n : Solidity.node SourceRange) : Bool :=
-  match n with
-  | .FunctionCall _ (.Identifier _ nameAnn) _ _ _ =>
-    nameAnn.val.startsWith "_strata_"
-  | _ => false
-
 /-- Check if a Solidity AST node is a _strata_loop_invariant call. -/
 def isLoopInvariantCall (n : Solidity.node SourceRange) : Bool :=
   isCallTo "_strata_loop_invariant" n
@@ -521,16 +514,27 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "_strata_pre" =>
         -- Precondition: intercepted by translateFunction, not emitted as a statement.
         -- Return a marker that translateFunction will recognize and extract.
+        -- TODO: If this call is not at the function body's top level (e.g., inside
+        -- an if-branch), partitionSpecStmts won't extract it and it silently degrades
+        -- to an Assume. Consider emitting a diagnostic when _strata_pre/_strata_post
+        -- calls survive past partitionSpecStmts extraction.
         match args with
         | [cond] => return mkStmtExprMd (.Assume cond)  -- placeholder; extracted by translateFunction
         | _ => throw (.typeError "_strata_pre() expects exactly one argument")
       | "_strata_post" =>
         -- Postcondition: intercepted by translateFunction, not emitted as a statement.
+        -- (Same caveat as _strata_pre: misplaced calls silently degrade to Assert.)
         match args with
         | [cond] => return mkStmtExprMd (.Assert cond)  -- placeholder; extracted by translateFunction
         | _ => throw (.typeError "_strata_post() expects exactly one argument")
       | "_strata_old" | "_strata_old_uint" | "_strata_old_int" | "_strata_old_bool" =>
-        -- old(expr): wraps expression in Old for pre-state reference in postconditions
+        -- old(expr): wraps expression in Old for pre-state reference in postconditions.
+        -- Validate that the inner argument is a simple Identifier; the Core translator
+        -- only supports old() on bare variable references (see LaurelToCoreTranslator.lean).
+        match argsSeq.val.toList with
+        | [.Identifier _ _] => pure ()
+        | [_] => throw (.unsupported s!"{nameAnn.val}() currently only supports simple variable references")
+        | _ => throw (.typeError s!"{nameAnn.val}() expects exactly one argument")
         match args with
         | [inner] => return mkStmtExprMd (.Old inner)
         | _ => throw (.typeError s!"{nameAnn.val}() expects exactly one argument")
@@ -762,6 +766,23 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let rest' ← translateBlockStmts ctx' rest
       return s :: rest'
 
+/-- Extract _strata_loop_invariant calls from a loop body and translate them.
+    Returns (invariantExprs, translatedBody). -/
+partial def extractAndTranslateLoopInvariants (ctx : TransCtx) (body : Solidity.node SourceRange)
+    : Except TranslationError (List StmtExprMd × StmtExprMd) :=
+  match body with
+  | .Block _ stmtsSeq => do
+    let (invNodes, restStmts) := extractLoopInvariants stmtsSeq.val.toList
+    let invExprs ← invNodes.filterMapM fun n => do
+      match extractCallArg n with
+      | some argNode => some <$> translateExpr ctx argNode
+      | none => pure none
+    let restBody ← translateBlockStmts ctx restStmts
+    pure (invExprs, mkStmtExprMd (.Block restBody none))
+  | _ => do
+    let b ← translateStmt ctx body
+    pure ([], b)
+
 /-- Translate a Solidity DDM node (statement context) to Laurel StmtExpr. -/
 partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
@@ -792,19 +813,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .WhileStatement _ cond body => do
     let condExpr ← translateExpr ctx cond
-    -- Extract _strata_loop_invariant calls from the loop body
-    let (invariants, bodyStmt) ← match body with
-      | .Block _ stmtsSeq => do
-        let (invNodes, restStmts) := extractLoopInvariants stmtsSeq.val.toList
-        let invExprs ← invNodes.filterMapM fun n => do
-          match extractCallArg n with
-          | some argNode => some <$> translateExpr ctx argNode
-          | none => pure none
-        let restBody ← translateBlockStmts ctx restStmts
-        pure (invExprs, mkStmtExprMd (.Block restBody none))
-      | _ => do
-        let b ← translateStmt ctx body
-        pure ([], b)
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
     return mkStmtExprMd (.While condExpr invariants none bodyStmt)
 
   | .ForStatement _ initOpt condOpt loopOpt body => do
@@ -821,18 +830,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .some_node _ condNode => translateExpr ctx condNode
       | .missing_node _ => pure (mkStmtExprMd (.LiteralBool true))
     -- Extract _strata_loop_invariant calls from the loop body
-    let (invariants, bodyStmt) ← match body with
-      | .Block _ stmtsSeq => do
-        let (invNodes, restStmts) := extractLoopInvariants stmtsSeq.val.toList
-        let invExprs ← invNodes.filterMapM fun n => do
-          match extractCallArg n with
-          | some argNode => some <$> translateExpr ctx argNode
-          | none => pure none
-        let restBody ← translateBlockStmts ctx restStmts
-        pure (invExprs, mkStmtExprMd (.Block restBody none))
-      | _ => do
-        let b ← translateStmt ctx body
-        pure ([], b)
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
     -- Loop body + increment
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
@@ -902,6 +900,13 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
     { expr with val := .FieldSelect (rewrite target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
+  | .Forall param body =>
+    -- Don't rewrite the bound variable if it shadows a parameter name
+    let shadowed := paramNames.filter (· != param.name.text)
+    { expr with val := .Forall param (rewriteParamRefs shadowed body) }
+  | .Exists param body =>
+    let shadowed := paramNames.filter (· != param.name.text)
+    { expr with val := .Exists param (rewriteParamRefs shadowed body) }
   | _ => expr
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
@@ -1213,6 +1218,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 3: Extract contract invariants from constructor body
     -- _strata_invariant calls in the constructor are conjoined with every
     -- public function's pre- and postconditions.
+    -- TODO (Bug 3): Invariants are translated using baseFnCtx (constructor context)
+    -- and injected verbatim into every function. If an invariant references state
+    -- variables, the `self` parameter must exist in the target function's scope.
+    -- For pure functions or functions without non-mapping state, `self` may not
+    -- be in scope. Invariant expressions should be re-translated per function
+    -- context or validated against each function's parameter list.
     let sfm := structFieldMap
     let baseFnCtx : TransCtx :=
       { ctx with structFields := sfm
@@ -1250,8 +1261,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- If there are contract invariants, emit a synthetic invariant-check procedure.
-    -- This procedure has no body and just checks the invariant as a postcondition
-    -- on the constructor's outputs.
+    -- NOTE: This procedure is currently a placeholder for future use. Its
+    -- preconditions equal its (Abstract) postconditions, making it trivially
+    -- satisfied. It does not add verification value in its current form.
+    -- TODO: Either give it a body that exercises the invariant (e.g., checks
+    -- that the invariant is self-consistent after constructor execution), or
+    -- remove it once invariant injection into public functions is robust.
     if !contractInvariants.isEmpty then
       let invProcName := s!"{nameAnn.val}_invariant"
       procedures := procedures ++ [{
