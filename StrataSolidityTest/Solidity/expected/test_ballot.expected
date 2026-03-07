@@ -1,4 +1,7 @@
 
 ==== Verification Results ====
+giveRightToVote_ensures_0: ✅ pass
+vote_ensures_0: ✅ pass
+winningProposal_loop_invariant_0: ✅ pass
 (Origin_winningProposal_Requires)requires_0: ✅ pass
 (Origin_winningProposal_Requires)requires_1: ✅ pass

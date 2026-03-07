@@ -1,8 +1,7 @@
 
 ==== Verification Results ====
-assert(664): ✅ pass (at line 16, col 8)
-assert(1023): ✅ pass (at line 24, col 8)
-assert(1091): ✅ pass (at line 25, col 8)
-assert(1448): ✅ pass (at line 33, col 8)
-assert(1847): ✅ pass (at line 42, col 8)
-assert(1918): ✅ pass (at line 43, col 8)
+deposit_ensures_0: ✅ pass
+withdraw_ensures_0: ✅ pass
+transferFrom_ensures_0: ✅ pass
+assert(1604): ✅ pass (at line 41, col 8)
+assert(1645): ✅ pass (at line 42, col 8)

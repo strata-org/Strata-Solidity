@@ -1,0 +1,5 @@
+
+==== Verification Results ====
+wrongPostcondition_ensures_0: ❌ fail
+SpecFailures_invariant_0: ❌ fail
+badLoopInvariant_loop_invariant_0: ❌ fail

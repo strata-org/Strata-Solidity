@@ -1,0 +1,7 @@
+
+==== Verification Results ====
+ERC20Spec_invariant_0: ✅ pass
+mint_ensures_0: ✅ pass
+(Origin_transfer_Requires)transfer_pre_0: ✅ pass
+transfer_ensures_0: ✅ pass
+transfer_ensures_1: ✅ pass

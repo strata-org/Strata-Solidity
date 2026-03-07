@@ -1,0 +1,4 @@
+
+==== Verification Results ====
+sumSteps_ensures_0: ✅ pass
+sumSteps_loop_invariant_0: ✅ pass

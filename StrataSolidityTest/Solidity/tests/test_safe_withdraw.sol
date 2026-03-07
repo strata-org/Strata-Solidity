@@ -1,37 +1,36 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title SafeWithdraw — a minimal withdraw pattern for verification showcase.
-/// Demonstrates that balance bookkeeping preserves key invariants:
-///   - deposits never lose funds
-///   - withdrawals never underflow
-///   - transfers conserve total supply
+/// @title SafeWithdraw — specification-based verification.
+/// Uses _strata_post postconditions instead of inline assert().
 contract SafeWithdraw {
 
+    // Strata specification stubs
+    function _strata_post(bool) internal pure {}
+
     /// Deposit: adds `amount` to a user balance, returns new balance.
-    function deposit(uint256 balance, uint256 amount) public pure returns (uint256) {
+    function deposit(uint256 balance, uint256 amount) public pure returns (uint256 newBalance) {
+        _strata_post(newBalance == balance + amount);
+
         require(balance <= 10000, "balance too large");
         require(amount <= 10000, "amount too large");
-        uint256 newBalance = balance + amount;
-        assert(newBalance >= balance);       // no-loss: balance can only grow
-        return newBalance;
+        newBalance = balance + amount;
     }
 
     /// Withdraw: the classic checks-effects pattern.
-    function withdraw(uint256 balance, uint256 amount) public pure returns (uint256) {
+    function withdraw(uint256 balance, uint256 amount) public pure returns (uint256 newBalance) {
+        _strata_post(newBalance + amount == balance);
+
         require(amount <= balance, "insufficient funds");
-        uint256 newBalance = balance - amount;
-        assert(newBalance <= balance);              // no-underflow
-        assert(newBalance + amount == balance);     // conservation
-        return newBalance;
+        newBalance = balance - amount;
     }
 
     /// Verify transfer conserves total supply (sender side).
-    function transferFrom(uint256 fromBal, uint256 amount) public pure returns (uint256) {
+    function transferFrom(uint256 fromBal, uint256 amount) public pure returns (uint256 newFrom) {
+        _strata_post(newFrom + amount == fromBal);
+
         require(amount <= fromBal, "insufficient funds");
-        uint256 newFrom = fromBal - amount;
-        assert(newFrom + amount == fromBal);  // sender conservation
-        return newFrom;
+        newFrom = fromBal - amount;
     }
 
     /// Verify transfer conserves total supply (receiver side).
@@ -39,8 +38,8 @@ contract SafeWithdraw {
         require(toBal <= 10000, "balance too large");
         require(amount <= 10000, "amount too large");
         uint256 newTo = toBal + amount;
-        assert(newTo == toBal + amount);      // receiver conservation
-        assert(newTo >= toBal);               // no-loss on receive
+        assert(newTo == toBal + amount);
+        assert(newTo >= toBal);
         return newTo;
     }
 }
