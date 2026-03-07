@@ -1,5 +1,2 @@
 # Known test failures (XFAIL registry).
 # One test base name per line. Lines starting with # are comments.
-
-# Complex contracts with mappings/structs need heap parameterization (Phase 2)
-test_ballot

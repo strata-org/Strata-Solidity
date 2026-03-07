@@ -1,36 +1,4 @@
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName chairperson did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName weight did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName chairperson did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voters did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName chairperson did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName proposals did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voted did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName weight did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName weight did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName delegate did not resolve to a field
-PANIC at Strata.Laurel.AstNode.getType Strata.Languages.Laurel.Resolution:*:*: getType called on Strata.Laurel.AstNode.staticProcedure
-PANIC at Strata.Laurel.heapTransformExpr.recurse Strata.Languages.Laurel.HeapParameterization:*:*: heapTransformExpr1
-PANIC at Strata.Laurel.AstNode.getType Strata.Languages.Laurel.Resolution:*:*: getType called on Strata.Laurel.AstNode.staticProcedure
-computeExprType2
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName delegate did not resolve to a field
-PANIC at Strata.Laurel.AstNode.getType Strata.Languages.Laurel.Resolution:*:*: getType called on Strata.Laurel.AstNode.staticProcedure
-PANIC at Strata.Laurel.heapTransformExpr.recurse Strata.Languages.Laurel.HeapParameterization:*:*: heapTransformExpr1
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName voteCount did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName name did not resolve to a field
-block expression not yet implemented (should be lowered in a separate pass)
-block expression not yet implemented (should be lowered in a separate pass)
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#voters
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#voters
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#proposals
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#proposals
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#proposals
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#proposals
-PANIC at Strata.Laurel.translateExpr Strata.Languages.Laurel.LaurelToCoreTranslator:*:*: FieldSelect should have been eliminated by heap parameterization: self#proposals
-Exception: Laurel to Core translation failed: #[calls to procedures are not supported in functions or contracts]
 
-Run strata --help for additional help.
+==== Verification Results ====
+(Origin_winningProposal_Requires)requires_0: ✅ pass
+(Origin_winningProposal_Requires)requires_1: ✅ pass

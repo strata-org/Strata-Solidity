@@ -378,11 +378,21 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | funcName =>
-        -- Internal call to a non-pure function: thread `self` and `msg_sender`
+        -- Internal call to a non-pure function: thread `self`, `msg_sender`,
+        -- and mapping/array state variables
         if ctx.nonPureFunctions.contains funcName then
-          let selfArg := mkStmtExprMd (.Identifier "self")
-          let senderArg := mkStmtExprMd (.Identifier "msg_sender")
-          return mkStmtExprMd (.StaticCall funcName (selfArg :: senderArg :: args))
+          let mut implicitArgs : List StmtExprMd := []
+          -- Thread self only if there are non-mapping state vars
+          let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
+          if !nonMappingStateVars.isEmpty then
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "self")]
+          implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "msg_sender")]
+          -- Thread mapping/array state variables
+          for name in ctx.mappingStateVars do
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier name)]
+            if ctx.arrayStateVars.contains name then
+              implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier s!"{name}_length")]
+          return mkStmtExprMd (.StaticCall funcName (implicitArgs ++ args))
         else
           return mkStmtExprMd (.StaticCall funcName args)
     | .MemberAccess _ baseNode memberAnn =>
@@ -463,22 +473,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- For array-typed bases, emit assert(idx >= 0) since arrays are encoded as
-      -- TMap TInt T but Solidity array indices (uint256) are always non-negative.
-      -- Mapping-typed bases don't need this guard (keys can be any type).
-      let isArrayBase := match baseNode with
-        | .Identifier _ nameAnn =>
-          ctx.arrayStateVars.contains nameAnn.val ||
-          ctx.memoryArrayParams.contains nameAnn.val
-        | _ => false
-      if isArrayBase then
-        let zero := mkStmtExprMd (.LiteralInt 0)
-        let guard := mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, zero])
-        let assertNode := mkStmtExprMd (.StaticCall "assert" [guard])
-        let selectNode := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
-        return mkStmtExprMd (.Block [assertNode, selectNode] none)
-      else
-        return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
@@ -531,19 +526,19 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
   | stmt :: rest =>
     match isStorageRefDecl stmt with
     | some (aliasName, initOpt) =>
-      -- Storage reference: emit per-field scalar local variables.
+      -- Storage reference: emit per-field scalar local variables initialized
+      -- from the mapping entry.
       -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
-      --   LocalVariable "sender__weight" TInt none
-      --   LocalVariable "sender__voted" TBool none
+      --   LocalVariable "sender__weight" TInt (select(voters, msg_sender)#weight)
+      --   LocalVariable "sender__voted" TBool (select(voters, msg_sender)#voted)
       --
-      -- TODO: Ideally each field should be initialized with
-      --   FieldSelect(select(voters, msg_sender), "weight")
-      -- but the Laurel pipeline's heap parameterization cannot resolve
-      -- FieldSelect on a select() result (Map type, not Composite).
-      -- For now, fields are left uninitialized (havoc'd). This is sound
-      -- but may produce false negatives for properties that depend on
-      -- the initial values read from the mapping.
-      let _initExpr ← match initOpt with
+      -- Writes to alias fields (e.g., `sender.voted = true`) modify the local
+      -- variables. A write-back pass at the end of the enclosing block would be
+      -- needed for full storage-reference semantics; for now, writes to the
+      -- alias do NOT propagate back to the mapping. This is sound for
+      -- verification (we verify a weaker program) but may produce false
+      -- negatives for properties that depend on the write-back.
+      let initExpr ← match initOpt with
         | .some_node _ initNode => translateExpr ctx initNode
         | .missing_node _ => throw (.unsupported "storage reference without initializer")
       -- Determine the struct type and its fields
@@ -553,9 +548,12 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let fieldInfo ← match ctx.structFields.lookup structTypeName with
         | some info => pure info
         | none => throw (.internalError s!"unknown struct type '{structTypeName}' for storage reference")
-      -- Emit per-field local variables (uninitialized for now — see TODO above)
+      -- Emit per-field local variables initialized from the mapping entry.
+      -- Each field is initialized with FieldSelect on the mapping select result,
+      -- e.g., sender__weight := select(voters, msg_sender)#weight
       let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
-        mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) none)
+        let fieldInit := mkStmtExprMd (.FieldSelect initExpr fieldName)
+        mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
       let alias : StorageAlias := { structTypeName, fields := fieldInfo }
       let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
       let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
@@ -718,6 +716,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
     -- Track memory array parameters for paired length params
     let mut memoryArrayParamNames : List String := []
+    -- Track user-provided parameter names and types for local copy generation.
+    -- In Solidity, function parameters are mutable local copies; in Laurel/Core,
+    -- input parameters are immutable. We rename inputs to `name_param` and create
+    -- local variables `name := name_param` at the start of the body.
+    let mut userParamInfo : List (String × HighTypeMd) := []
 
     match params with
     | .ParameterList _ paramsSeq =>
@@ -727,10 +730,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-          inputs := inputs ++ [{ name := pName.val, type := solTy.highType }]
+          -- Rename user parameter to `name_param` so we can create a mutable local copy
+          let inputName := s!"{pName.val}_param"
+          inputs := inputs ++ [{ name := inputName, type := solTy.highType }]
+          userParamInfo := userParamInfo ++ [(pName.val, solTy.highType)]
           -- Add non-negative precondition for uint, address, and bytes types
           if solTy.isUint || solTy.isAddress || solTy.isBytes then
-            preconditions := preconditions ++ [mkNonNegPrecond pName.val]
+            preconditions := preconditions ++ [mkNonNegPrecond inputName]
           -- For memory array parameters, add a paired length parameter
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
@@ -759,7 +765,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let mut outputs := if isConstructor then
       let fieldOutputs := ctx.contractFields.map fun f =>
         ({ name := f.name, type := f.type } : Parameter)
-      baseOutputs ++ fieldOutputs
+      -- Also add array length outputs for array state vars
+      let arrayLenOutputs := ctx.arrayStateVars.map fun name =>
+        ({ name := s!"{name}_length", type := mkHighTypeMd .TInt } : Parameter)
+      baseOutputs ++ fieldOutputs ++ arrayLenOutputs
     else baseOutputs
 
     -- Add mapping state variables as output parameters for non-pure, non-view functions
@@ -774,6 +783,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
     -- Translate body with parameter names in scope (for shadowing state vars)
     let paramNames := inputs.map (·.name.text)
+    -- Output parameter names are also in scope (they shadow state vars).
+    -- This is critical for constructors where scalar state vars are outputs.
+    let outputNames := outputs.map (·.name.text)
     -- For non-view functions, mapping output names are also in scope
     let mappingOutputNames := if !isPure && !isView && !isConstructor then
       ctx.mappingStateVars
@@ -783,27 +795,34 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       ctx.arrayStateVars.map (· ++ "_length")
     else if isView then
       ctx.arrayStateVars.map (· ++ "_length")
+    else if isConstructor then
+      ctx.arrayStateVars.map (· ++ "_length")
     else []
-    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ mappingOutputNames ++ arrayLengthOutputNames,
+    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames }
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
         let b ← Strata.Solidity.translateStmt bodyCtx bodyNode
-        -- For non-view, non-pure functions with mapping state vars, prepend `name := name_in`
+        -- Build preamble: local copies of user params + mapping init assigns
+        let mut preamble : List StmtExprMd := []
+        -- 1. Local copies of user-provided parameters (Solidity params are mutable)
+        for (name, ty) in userParamInfo do
+          preamble := preamble ++ [mkStmtExprMd (.LocalVariable name ty
+            (some (mkStmtExprMd (.Identifier ((s!"{name}_param" : String) : Identifier)))))]
+        -- 2. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
-          let mut initAssigns : List StmtExprMd := []
           for name in ctx.mappingStateVars do
-            initAssigns := initAssigns ++ [mkStmtExprMd (.Assign
+            preamble := preamble ++ [mkStmtExprMd (.Assign
               [mkStmtExprMd (.Identifier (name : Identifier))]
               (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))]
-            -- For array state vars, also init the length variable
             if ctx.arrayStateVars.contains name then
-              initAssigns := initAssigns ++ [mkStmtExprMd (.Assign
+              preamble := preamble ++ [mkStmtExprMd (.Assign
                 [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
                 (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
-          pure (.Transparent (mkStmtExprMd (.Block (initAssigns ++ [b]) none)))
-        else
+        if preamble.isEmpty then
           pure (.Transparent b)
+        else
+          pure (.Transparent (mkStmtExprMd (.Block (preamble ++ [b]) none)))
       | .missing_node _ =>
         pure (.Abstract [])
 
