@@ -1,3 +1,9 @@
+# Known limitations:
+# - ERC20Spec_ctor_ensures (❌ fail): Constructor doesn't explicitly initialize
+#   totalSupply. Solidity defaults it to 0, but the translation doesn't model
+#   default initialization, so the invariant totalSupply >= 0 cannot be proved.
+# - mint_ensures_0, mint_ensures_2 (🟡 unknown): SMT solver timeout on
+#   non-linear arithmetic involving mapping updates and totalSupply tracking.
 
 ==== Verification Results ====
 ERC20Spec_ctor_ensures: ❌ fail

@@ -112,13 +112,13 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
         output="error: $output"
     fi
 
-    if ! echo "$output" | diff -q "$expected_file" - > /dev/null 2>&1; then
+    if ! echo "$output" | diff <(grep -v '^#' "$expected_file") - > /dev/null 2>&1; then
         if is_xfail "$base_name"; then
             echo "XFAIL: $base_name"
             xfailed=$((xfailed + 1))
         else
             echo "FAIL:  $base_name"
-            echo "$output" | diff "$expected_file" - || true
+            echo "$output" | diff <(grep -v '^#' "$expected_file") - || true
             failed=$((failed + 1))
         fi
     else

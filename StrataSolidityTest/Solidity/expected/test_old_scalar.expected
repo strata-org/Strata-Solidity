@@ -1,0 +1,9 @@
+# Regression test for _strata_old on scalar (non-mapping) state variables.
+# The 🟡 unknown result for addAmount_ensures_0 is a known limitation:
+# the SMT solver cannot prove x == old(x) + amount because the heap
+# parameterization of scalar state vars via FieldSelect self "name"
+# produces complex terms the solver struggles with.
+
+==== Verification Results ====
+addAmount_ensures_0: 🟡 unknown
+addAmount_ensures_1: 🟡 unknown

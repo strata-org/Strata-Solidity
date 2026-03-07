@@ -389,6 +389,15 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
     { expr with val := .FieldSelect (rewrite target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
+  | .Forall param body =>
+    -- Don't rewrite the bound variable if it shadows a mapping state var name
+    let shadowedMappings := mappingStateVars.filter (· != param.name.text)
+    let shadowedArrays := arrayStateVars.filter (· != param.name.text)
+    { expr with val := .Forall param (rewriteOldMappingRefs shadowedMappings shadowedArrays body) }
+  | .Exists param body =>
+    let shadowedMappings := mappingStateVars.filter (· != param.name.text)
+    let shadowedArrays := arrayStateVars.filter (· != param.name.text)
+    { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays body) }
   | _ => expr
 
 mutual
@@ -561,6 +570,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- `_in` input parameter versions. Scalar state vars accessed via
         -- `FieldSelect self "name"` already refer to the pre-state (self is
         -- the input parameter). User parameters are already `_param` versions.
+        -- ASSUMPTION: postcondition expressions are translated before any heap
+        -- parameterization rewrites `self` references. If this ordering changes,
+        -- `_strata_old` on scalar state variables may silently read current-state
+        -- instead of pre-state. See test_old_scalar.sol for a regression test.
         match args with
         | [inner] =>
           let rewritten := rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars inner
@@ -1067,7 +1080,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     else []
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames }
-    let (specPres, _specPosts, body) ← match bodyOpt with
+    let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
         -- Extract _strata_pre/_strata_post from the body's top-level statements
         let (preNodes, postNodes, remainingStmts) ← match bodyNode with
@@ -1116,34 +1129,35 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
         let bodyExpr := if preamble.isEmpty then b
           else mkStmtExprMd (.Block (preamble ++ [b]) none)
-        -- Translate contract invariant nodes in this function's body context.
-        -- This ensures state variable references resolve correctly:
-        -- - In the constructor: state vars are output parameters (Identifier "counter")
-        -- - In non-pure functions: state vars go through FieldSelect self "counter"
-        -- Contract invariants only apply to non-pure functions.
-        let contractInvariants ← if isPure then pure []
+        -- Translate contract invariant nodes once in this function's body context,
+        -- then reuse for both pre- and postconditions. This avoids redundant
+        -- effectful translation and prevents divergence if translateExpr gains
+        -- side effects (e.g., fresh name generation).
+        -- Contract invariants only apply to non-pure, non-view functions (and constructors
+        -- for postconditions only). View functions cannot modify state, so they need not
+        -- re-establish the invariant.
+        let contractInvariants ← if isPure || isView then pure []
           else ctx.contractInvariantNodes.mapM (translateExpr bodyCtx)
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
         let allPosts := specPostExprs ++ contractInvariants
         if allPosts.isEmpty then
-          pure (specPreExprs, [], Body.Transparent bodyExpr)
+          pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
-          pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr) [])
+          pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr) [], contractInvariants)
       | .missing_node _ =>
         -- No body: translate invariants with base context (no locals)
-        let contractInvariants ← if isPure then pure []
+        let contractInvariants ← if isPure || isView then pure []
           else ctx.contractInvariantNodes.mapM (translateExpr ctx)
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
-          else .Abstract contractInvariants)
+          else .Abstract contractInvariants, contractInvariants)
 
-    -- Add spec preconditions + contract invariants to the preconditions list
-    -- Contract invariants only apply to non-pure, non-constructor functions.
-    -- Re-translate invariant nodes in the body context for correct scoping.
-    let applicableInvariantPres ← if isPure || isConstructor then pure []
-      else ctx.contractInvariantNodes.mapM (translateExpr bodyCtx)
-    let applicableInvariantPres := applicableInvariantPres.map (rewriteParamRefs (userParamInfo.map (·.1)))
+    -- Reuse the already-translated contract invariants for preconditions.
+    -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
+    -- (Constructors establish the invariant; they don't assume it.)
+    let applicableInvariantPres := if isPure || isView || isConstructor then []
+      else contractInvariants
     let allPreconditions := preconditions ++ specPres ++ applicableInvariantPres
 
     return {

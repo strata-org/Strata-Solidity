@@ -1,3 +1,7 @@
+# Known limitation: sumSteps_ensures fails because the loop elimination
+# transform loses the connection i == n at loop exit. The loop invariant
+# sum == i * step holds, but the VCG cannot establish sum == n * step
+# after the loop without knowing i == n at exit.
 
 ==== Verification Results ====
 entry_invariant_0_0: ✅ pass
