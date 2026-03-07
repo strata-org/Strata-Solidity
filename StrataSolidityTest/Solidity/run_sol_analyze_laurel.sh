@@ -89,10 +89,23 @@ for test_file in "$TESTS_DIR"/test_*.sol; do
     fi
 
     # Stage 2: Run full verification pipeline via solAnalyzeLaurel
+    # Post-processing pipeline:
+    #   1. grep -v: remove noisy internal lines (backtraces, lake paths, etc.)
+    #   2. First sed: collapse consecutive blank lines
+    #   3. Second sed: normalize Lean source locations (Module:123:45 → Module:*:*)
+    #      to prevent unrelated Lean edits from breaking snapshots
+    #   4. Third sed: normalize compiler-generated uniqueId values
+    #      (uniqueId := some 42 → uniqueId := some <id>) to prevent
+    #      unrelated pipeline changes from breaking snapshots
+    #   5. awk: strip multi-line AST dumps that follow "getType called on" PANIC
+    #      messages; these are internal debug output, not meaningful test specs
     output=$(cd "$REPO_ROOT" && ./.lake/build/bin/strata solAnalyzeLaurel \
         "$ion_file" 2>&1 \
         | grep -v "getNameFromMd\|^backtrace:\|^\.\./\|^\./.lake/\|^/lib\|addPathCondition.*Label clash" \
-        | sed '/^$/N;/^\n$/d')
+        | sed '/^$/N;/^\n$/d' \
+        | sed -E 's/([A-Za-z_][A-Za-z0-9_.]*):([0-9]+):([0-9]+)/\1:*:*/g' \
+        | sed -E 's/uniqueId := some [0-9]+/uniqueId := some <id>/g' \
+        | awk '/^PANIC.*getType called on/{print; skip=1; next} /^[^ ]/{skip=0} skip{next} {print}')
     run_rc=${PIPESTATUS[0]}
 
     if [ $run_rc -ne 0 ]; then

@@ -1,11 +1,8 @@
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName weight did not resolve to a field
-PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:197:11: resolveQualifiedFieldName weight did not resolve to a field
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName weight did not resolve to a field
+PANIC at Strata.Laurel.resolveQualifiedFieldName Strata.Languages.Laurel.HeapParameterization:*:*: resolveQualifiedFieldName weight did not resolve to a field
+block expression not yet implemented (should be lowered in a separate pass)
 Exception: ❌ Type checking error.
-[$heap := (~updateField
- ($heap : Heap)
- (~select (voters : Composite) (voter : int))
- ~
- (~BoxComposite (w : int)))] No free variables are allowed here!
-Free Variables: [voters]
+Impossible to unify (arrow (Map $__ty75 $__ty76) (arrow $__ty75 $__ty76)) with (arrow int $__ty81).
+First mismatch: (Map $__ty75 $__ty76) with int.
 
 Run strata --help for additional help.
