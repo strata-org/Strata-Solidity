@@ -71,6 +71,10 @@ structure TransCtx where
       Used to translate bare identifiers to `FieldSelect self "name"`. -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   stateVarNames : List String := []
+  /-- Names of mapping-typed state variables. These are passed as explicit
+      parameters rather than going through the heap (Box has no Map variant).
+      Bare identifiers for these produce `Identifier name` (the parameter). -/
+  mappingStateVars : List String := []
   /-- Names of non-pure functions in the enclosing contract.
       Internal calls to these functions need `self` threaded through. -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
@@ -187,6 +191,32 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
     | _ => none
   | _ => none
 
+/-- Collect a chain of IndexAccess nodes from an LHS expression.
+    Returns `(rootNode, [idx1, idx2, ...])` where rootNode is the innermost
+    non-IndexAccess base and the indices are in outermost-to-innermost order.
+    E.g., `m[k1][k2]` → `(m, [k1, k2])`. -/
+def collectIndexChain (n : Solidity.node SourceRange)
+    : Option (Solidity.node SourceRange × List (Solidity.node SourceRange)) :=
+  match n with
+  | .IndexAccess _ baseNode (.some_node _ idx) =>
+    match collectIndexChain baseNode with
+    | some (root, indices) => some (root, indices ++ [idx])
+    | none => some (baseNode, [idx])
+  | _ => none
+
+/-- Build a nested map update expression.
+    For a single index: `update(root, k, val)`
+    For nested indices `[k1, k2]`: `update(root, k1, update(select(root, k1), k2, val))` -/
+def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val : StmtExprMd)
+    : Except TranslationError StmtExprMd := do
+  match indices with
+  | [] => throw (.internalError "buildNestedUpdate: empty index list")
+  | [idx] => return mkStmtExprMd (.StaticCall "update" [rootExpr, idx, val])
+  | idx :: rest =>
+    let inner := mkStmtExprMd (.StaticCall "select" [rootExpr, idx])
+    let innerUpdate ← buildNestedUpdate inner rest val
+    return mkStmtExprMd (.StaticCall "update" [rootExpr, idx, innerUpdate])
+
 mutual
 
 /-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr. -/
@@ -196,6 +226,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .Identifier _ nameAnn =>
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
+      return mkStmtExprMd (.Identifier nameAnn.val)
+    else if ctx.mappingStateVars.contains nameAnn.val then
+      -- Mapping state vars are explicit parameters, not heap fields
       return mkStmtExprMd (.Identifier nameAnn.val)
     else if ctx.stateVarNames.contains nameAnn.val then
       return mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) nameAnn.val)
@@ -388,23 +421,35 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- Guard: assert idx >= 0 to compensate for TMap TInt encoding of arrays
-      -- (Solidity array indices are uint256, but SMT encoding uses TInt keys).
-      let guard := mkStmtExprMd (.Assert
-        (mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, mkStmtExprMd (.LiteralInt 0)])))
-      let sel := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
-      return mkStmtExprMd (.Block [guard, sel] none)
+      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
   | .Assignment _ lhs rhs opAnn => do
-    -- Reject IndexAccess on LHS: map/array writes require heap parameterization
-    match lhs with
-    | .IndexAccess _ _ _ =>
-      throw (.unsupported "map write (requires heap parameterization)")
-    | _ => pure ()
-    let lhsExpr ← translateExpr ctx lhs
     let rhsExpr ← translateExpr ctx rhs
+    -- Handle IndexAccess on LHS: map/array writes via select/update
+    match collectIndexChain lhs with
+    | some (rootNode, indices) => do
+      let rootExpr ← translateExpr ctx rootNode
+      let idxExprs ← indices.mapM (translateExpr ctx)
+      -- Build the read expression: select(select(root, k1), k2) ...
+      let readExpr := idxExprs.foldl (fun acc idx =>
+        mkStmtExprMd (.StaticCall "select" [acc, idx])) rootExpr
+      -- Compute the value to store
+      let rhs' ← match opAnn.val with
+        | "=" => pure rhsExpr
+        | "+=" => pure (mkStmtExprMd (.PrimitiveOp .Add [readExpr, rhsExpr]))
+        | "-=" => pure (mkStmtExprMd (.PrimitiveOp .Sub [readExpr, rhsExpr]))
+        | "*=" => pure (mkStmtExprMd (.PrimitiveOp .Mul [readExpr, rhsExpr]))
+        | "/=" => pure (mkStmtExprMd (.PrimitiveOp .Div [readExpr, rhsExpr]))
+        | "%=" => pure (mkStmtExprMd (.PrimitiveOp .Mod [readExpr, rhsExpr]))
+        | o => throw (.unsupported s!"Assignment operator: {o}")
+      -- Build nested update: for m[k1][k2] = v, produce
+      --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
+      let updateExpr ← buildNestedUpdate rootExpr idxExprs rhs'
+      return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+    | none =>
+    let lhsExpr ← translateExpr ctx lhs
     let rhs' ← match opAnn.val with
       | "=" => pure rhsExpr
       | "+=" => pure (mkStmtExprMd (.PrimitiveOp .Add [lhsExpr, rhsExpr]))
@@ -578,14 +623,17 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else nameAnn.val
     let isPure := mutAnn.val == "pure"
+    let isView := mutAnn.val == "view"
 
     -- Translate parameters, tracking Solidity types for bounds
     let mut inputs : List Parameter := []
     let mut preconditions : List StmtExprMd := []
 
     -- Add implicit self parameter for non-pure functions with contract state
-    let hasState := !ctx.stateVarNames.isEmpty
-    if !isPure && hasState && !isConstructor then
+    -- Only add self for non-mapping state vars (mapping vars are separate params)
+    let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
+    let hasNonMappingState := !nonMappingStateVars.isEmpty
+    if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
                               type := mkHighTypeMd (.UserDefined ⟨ctx.contractName, none⟩) }]
 
@@ -593,6 +641,17 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
+
+    -- Add mapping state variables as explicit input parameters
+    -- For view functions: use field name directly (read-only, no output).
+    -- For non-view: use `name_in` for inputs; body assigns `name := name_in`.
+    if !isPure && !isConstructor then
+      for field in ctx.contractFields do
+        if ctx.mappingStateVars.contains field.name.text then
+          if isView then
+            inputs := inputs ++ [{ name := field.name, type := field.type }]
+          else
+            inputs := inputs ++ [{ name := s!"{field.name.text}_in", type := field.type }]
 
     match params with
     | .ParameterList _ paramsSeq =>
@@ -624,19 +683,36 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | _ => throw (.internalError "Expected ParameterList for return parameters")
 
     -- For constructors, add contract state fields as implicit output parameters
-    let outputs := if isConstructor then
+    let mut outputs := if isConstructor then
       let fieldOutputs := ctx.contractFields.map fun f =>
         ({ name := f.name, type := f.type } : Parameter)
       baseOutputs ++ fieldOutputs
     else baseOutputs
 
+    -- Add mapping state variables as output parameters for non-pure, non-view functions
+    if !isPure && !isView && !isConstructor then
+      for field in ctx.contractFields do
+        if ctx.mappingStateVars.contains field.name.text then
+          outputs := outputs ++ [{ name := field.name, type := field.type }]
+
     -- Translate body with parameter names in scope (for shadowing state vars)
     let paramNames := inputs.map (·.name.text)
-    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames }
+    -- For non-view functions, mapping output names are also in scope
+    let mappingOutputNames := if !isPure && !isView && !isConstructor then
+      ctx.mappingStateVars
+    else []
+    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ mappingOutputNames }
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
         let b ← Strata.Solidity.translateStmt bodyCtx bodyNode
-        pure (.Transparent b)
+        -- For non-view functions with mapping state vars, prepend `name := name_in`
+        if !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
+          let initAssigns := ctx.mappingStateVars.map fun (name : String) =>
+            mkStmtExprMd (.Assign [mkStmtExprMd (.Identifier (name : Identifier))]
+              (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))
+          pure (.Transparent (mkStmtExprMd (.Block (initAssigns ++ [b]) none)))
+        else
+          pure (.Transparent b)
       | .missing_node _ =>
         pure (.Abstract [])
 
@@ -729,6 +805,11 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 2: collect non-pure function names for internal call resolution
     -- Only include public/internal functions; external functions cannot be called internally.
     let stateVarNames := fields.map (·.name.text)
+    -- Identify mapping-typed state variables (these bypass the heap)
+    let mappingStateVars := fields.filterMap fun f =>
+      match f.type.val with
+      | .TMap _ _ => some f.name.text
+      | _ => none
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
@@ -749,6 +830,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                             contractName := nameAnn.val,
                             contractFields := fields,
                             stateVarNames := stateVarNames,
+                            mappingStateVars := mappingStateVars,
                             nonPureFunctions := nonPureFunctions }
     for member in nodesSeq.val do
       match member with
@@ -757,13 +839,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         procedures := procedures ++ [proc]
       | _ => pure ()
 
-    -- Emit a CompositeType for the contract only when it has state-variable fields.
-    -- Contracts with no fields produce no CompositeType to avoid IR noise.
-    if !fields.isEmpty then
+    -- Emit a CompositeType for the contract only when it has non-mapping state-variable fields.
+    -- Mapping fields are passed as explicit parameters, not stored on the heap.
+    let nonMappingFields := fields.filter fun f => !mappingStateVars.contains f.name.text
+    if !nonMappingFields.isEmpty then
       let contractType : TypeDefinition := .Composite {
         name := nameAnn.val
         extending := []
-        fields := fields
+        fields := nonMappingFields
         instanceProcedures := []
       }
       types := types ++ [contractType]
