@@ -3,8 +3,3 @@
 
 # Complex contracts with mappings/structs need heap parameterization (Phase 2)
 test_ballot
-
-# Array operations need Core pipeline support (Phase 4)
-test_array_basic
-test_array_struct
-test_array_length

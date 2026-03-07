@@ -75,8 +75,15 @@ structure TransCtx where
   stateVarNames : List String := []
   /-- Names of mapping-typed state variables. These are passed as explicit
       parameters rather than going through the heap (Box has no Map variant).
-      Bare identifiers for these produce `Identifier name` (the parameter). -/
+      Bare identifiers for these produce `Identifier name` (the parameter).
+      NOTE: Array state vars are also included here (they use TMap TInt T). -/
   mappingStateVars : List String := []
+  /-- Names of array-typed state variables (subset of mappingStateVars).
+      These get an additional `name_length` parameter for tracking length. -/
+  arrayStateVars : List String := []
+  /-- Names of memory array parameters in the current function.
+      These get a paired `name_length` parameter for `.length` access. -/
+  memoryArrayParams : List String := []
   /-- Names of non-pure functions in the enclosing contract.
       Internal calls to these functions need `self` threaded through. -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
@@ -379,14 +386,38 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         else
           return mkStmtExprMd (.StaticCall funcName args)
     | .MemberAccess _ baseNode memberAnn =>
-      -- Handle array.push(val): emit StaticCall "array_push" [base, val]
+      -- Handle array.push(val) on array state variables
       if memberAnn.val == "push" then do
-        let base ← translateExpr ctx baseNode
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        match args with
-        | [val] => return mkStmtExprMd (.StaticCall "array_push" [base, val])
-        | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
-        | _ => throw (.typeError "push() expects at most one argument")
+        -- Check if base is an array state variable
+        let arrayName := match baseNode with
+          | .Identifier _ nameAnn =>
+            if ctx.arrayStateVars.contains nameAnn.val &&
+               !ctx.localNames.contains nameAnn.val then some nameAnn.val
+            else none
+          | _ => none
+        match arrayName with
+        | some name =>
+          -- Desugar: arr.push(v) → { arr := update(arr, arr_length, v); arr_length := arr_length + 1 }
+          match args with
+          | [val] =>
+            let arrId := mkStmtExprMd (.Identifier name)
+            let lenId := mkStmtExprMd (.Identifier s!"{name}_length")
+            let store := mkStmtExprMd (.Assign [arrId]
+              (mkStmtExprMd (.StaticCall "update" [arrId, lenId, val])))
+            let one := mkStmtExprMd (.LiteralInt 1)
+            let incr := mkStmtExprMd (.Assign [lenId]
+              (mkStmtExprMd (.PrimitiveOp .Add [lenId, one])))
+            return mkStmtExprMd (.Block [store, incr] none)
+          | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
+          | _ => throw (.typeError "push() expects at most one argument")
+        | none =>
+          -- Fallback: generic push (not on a known array state var)
+          let base ← translateExpr ctx baseNode
+          match args with
+          | [val] => return mkStmtExprMd (.StaticCall "array_push" [base, val])
+          | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
+          | _ => throw (.typeError "push() expects at most one argument")
       else do
         -- General method call: obj.method(args) → StaticCall "method" (obj :: args)
         let base ← translateExpr ctx baseNode
@@ -415,6 +446,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       match ctx.storageAliases.lookup baseNameAnn.val with
       | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
       | none => pure ()
+      -- Array .length on state vars or memory array params → Identifier "name_length"
+      if memberAnn.val == "length" then
+        let name := baseNameAnn.val
+        if ctx.arrayStateVars.contains name ||
+           ctx.memoryArrayParams.contains name then
+          return mkStmtExprMd (.Identifier s!"{name}_length")
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
     if memberAnn.val == "length" then
@@ -654,7 +691,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
 
-    -- Add mapping state variables as explicit input parameters
+    -- Add mapping/array state variables as explicit input parameters
     -- For view functions: use field name directly (read-only, no output).
     -- For non-view: use `name_in` for inputs; body assigns `name := name_in`.
     if !isPure && !isConstructor then
@@ -664,12 +701,21 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             inputs := inputs ++ [{ name := field.name, type := field.type }]
           else
             inputs := inputs ++ [{ name := s!"{field.name.text}_in", type := field.type }]
+          -- For array state vars, also add a length parameter
+          if ctx.arrayStateVars.contains field.name.text then
+            let lenName := if isView then s!"{field.name.text}_length"
+                           else s!"{field.name.text}_length_in"
+            inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
+            preconditions := preconditions ++ [mkNonNegPrecond lenName]
+
+    -- Track memory array parameters for paired length params
+    let mut memoryArrayParamNames : List String := []
 
     match params with
     | .ParameterList _ paramsSeq =>
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ _ =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -677,6 +723,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           -- Add non-negative precondition for uint, address, and bytes types
           if solTy.isUint || solTy.isAddress || solTy.isBytes then
             preconditions := preconditions ++ [mkNonNegPrecond pName.val]
+          -- For memory array parameters, add a paired length parameter
+          if solTy.solName == "array" &&
+             (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
+            let lenName := s!"{pName.val}_length"
+            inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
+            preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            memoryArrayParamNames := memoryArrayParamNames ++ [pName.val]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
 
@@ -706,6 +759,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       for field in ctx.contractFields do
         if ctx.mappingStateVars.contains field.name.text then
           outputs := outputs ++ [{ name := field.name, type := field.type }]
+          -- For array state vars, also add a length output
+          if ctx.arrayStateVars.contains field.name.text then
+            outputs := outputs ++ [{ name := s!"{field.name.text}_length",
+                                     type := mkHighTypeMd .TInt }]
 
     -- Translate body with parameter names in scope (for shadowing state vars)
     let paramNames := inputs.map (·.name.text)
@@ -713,15 +770,29 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let mappingOutputNames := if !isPure && !isView && !isConstructor then
       ctx.mappingStateVars
     else []
-    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ mappingOutputNames }
+    -- Array length output names are also in scope
+    let arrayLengthOutputNames := if !isPure && !isView && !isConstructor then
+      ctx.arrayStateVars.map (· ++ "_length")
+    else if isView then
+      ctx.arrayStateVars.map (· ++ "_length")
+    else []
+    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ mappingOutputNames ++ arrayLengthOutputNames,
+                              memoryArrayParams := memoryArrayParamNames }
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
         let b ← Strata.Solidity.translateStmt bodyCtx bodyNode
         -- For non-view, non-pure functions with mapping state vars, prepend `name := name_in`
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
-          let initAssigns := ctx.mappingStateVars.map fun (name : String) =>
-            mkStmtExprMd (.Assign [mkStmtExprMd (.Identifier (name : Identifier))]
-              (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))
+          let mut initAssigns : List StmtExprMd := []
+          for name in ctx.mappingStateVars do
+            initAssigns := initAssigns ++ [mkStmtExprMd (.Assign
+              [mkStmtExprMd (.Identifier (name : Identifier))]
+              (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))]
+            -- For array state vars, also init the length variable
+            if ctx.arrayStateVars.contains name then
+              initAssigns := initAssigns ++ [mkStmtExprMd (.Assign
+                [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
+                (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
           pure (.Transparent (mkStmtExprMd (.Block (initAssigns ++ [b]) none)))
         else
           pure (.Transparent b)
@@ -822,6 +893,19 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       match f.type.val with
       | .TMap _ _ => some f.name.text
       | _ => none
+    -- Identify array-typed state variables (subset of mappingStateVars).
+    -- We re-scan the DDM nodes to distinguish ArrayTypeName from MappingType,
+    -- since both translate to TMap in HighType.
+    let mut arrayStateVars : List String := []
+    for member in nodesSeq.val do
+      match member with
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ =>
+        if stateVarAnn.val == "true" then
+          match typeNameOpt with
+          | .some_type_name _ (.ArrayTypeName _ _) =>
+            arrayStateVars := arrayStateVars ++ [nameAnn.val]
+          | _ => pure ()
+      | _ => pure ()
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
@@ -843,6 +927,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                             contractFields := fields,
                             stateVarNames := stateVarNames,
                             mappingStateVars := mappingStateVars,
+                            arrayStateVars := arrayStateVars,
                             nonPureFunctions := nonPureFunctions }
     for member in nodesSeq.val do
       match member with
