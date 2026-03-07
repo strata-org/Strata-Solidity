@@ -392,8 +392,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- Check if base is an array state variable
         let arrayName := match baseNode with
           | .Identifier _ nameAnn =>
-            if ctx.arrayStateVars.contains nameAnn.val &&
-               !ctx.localNames.contains nameAnn.val then some nameAnn.val
+            if ctx.arrayStateVars.contains nameAnn.val then some nameAnn.val
             else none
           | _ => none
         match arrayName with
@@ -464,13 +463,22 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- NOTE: No default-zero semantics for uninitialized mapping entries yet.
       -- For array-typed bases, emit assert(idx >= 0) since arrays are encoded as
       -- TMap TInt T but Solidity array indices (uint256) are always non-negative.
       -- Mapping-typed bases don't need this guard (keys can be any type).
-      -- TODO: Restore array index non-negativity guard when array support is active.
-      --       Requires checking base expression's type to distinguish arrays from mappings.
-      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      let isArrayBase := match baseNode with
+        | .Identifier _ nameAnn =>
+          ctx.arrayStateVars.contains nameAnn.val ||
+          ctx.memoryArrayParams.contains nameAnn.val
+        | _ => false
+      if isArrayBase then
+        let zero := mkStmtExprMd (.LiteralInt 0)
+        let guard := mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, zero])
+        let assertNode := mkStmtExprMd (.StaticCall "assert" [guard])
+        let selectNode := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+        return mkStmtExprMd (.Block [assertNode, selectNode] none)
+      else
+        return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
