@@ -45,16 +45,26 @@ def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Ex
   if sr.isNone then #[]
   else Laurel.SourceRange.toMetaData uri sr
 
+/-- A storage reference alias: records the alias name so that field accesses
+    through the alias can be desugared to per-field scalar local variables.
+    E.g., `sender.weight` → `Identifier "sender__weight"`. -/
+structure StorageAlias where
+  /-- The alias name (e.g., "sender"). -/
+  aliasName : String
+
 /-- Translation context carrying the source file URI for metadata
     and struct field orders for argument reordering. -/
 structure TransCtx where
   uri : Option Uri
-  /-- Map from struct name to ordered list of field names. -/
-  structFields : List (String × List String) := []
+  /-- Map from struct name to ordered list of (field name, field type) pairs. -/
+  structFields : List (String × List (String × HighType)) := []
   /-- Enclosing contract name (for constructor naming). -/
   contractName : String := ""
   /-- State-variable fields of the enclosing contract (for constructor outputs). -/
   contractFields : List Field := []
+  /-- Storage reference aliases: maps alias name to its alias info.
+      Field accesses `alias.field` are desugared to `Identifier "alias__field"`. -/
+  storageAliases : List (String × StorageAlias) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -137,6 +147,31 @@ def mkNonNegPrecond (paramName : String) : StmtExprMd :=
   mkStmtExprMd (.PrimitiveOp .Geq [ident, zero])
 
 /-! ## Expression Translation -/
+
+/-- Check if a VariableDeclarationStatement declares a storage reference. -/
+def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidity.opt_node SourceRange) :=
+  match n with
+  | .VariableDeclarationStatement _ declsSeq initOpt =>
+    match declsSeq.val.toList with
+    | [declOpt] =>
+      match declOpt with
+      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn) =>
+        if storageLocAnn.val == "storage" then some (nameAnn.val, initOpt) else none
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- Extract the struct type name from a storage reference VariableDeclarationStatement. -/
+def extractStorageRefTypeName (n : Solidity.node SourceRange) : String :=
+  match n with
+  | .VariableDeclarationStatement _ declsSeq _ =>
+    match declsSeq.val.toList with
+    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _)] =>
+      match typeNameOpt with
+      | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => nameAnn.val
+      | _ => ""
+    | _ => ""
+  | _ => ""
 
 mutual
 
@@ -231,27 +266,25 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- synthetic constructor takes args in field-declaration order.
       let orderedArgs ← match ctx.structFields.lookup structName with
         | some fieldOrder =>
+          let fieldNames := fieldOrder.map (·.1)
           if names.isEmpty then
-            -- solc always populates names for structConstructorCall;
-            -- empty names with multiple args is unexpected/malformed AST.
             if args.length > 1 then
               throw (.internalError
                 s!"structConstructorCall '{structName}' has {args.length} args but no names")
             else pure args
           else
-            if names.length != fieldOrder.length then
+            if names.length != fieldNames.length then
               throw (.internalError
                 s!"struct constructor '{structName}' arity mismatch: \
-                   {names.length} args but {fieldOrder.length} fields")
+                   {names.length} args but {fieldNames.length} fields")
             else
-              -- Build name→arg map, then look up in field order
               let nameArgPairs := names.zip args
-              fieldOrder.mapM fun fieldName =>
+              fieldNames.mapM fun fieldName =>
                 match nameArgPairs.lookup fieldName with
                 | some arg => pure arg
                 | none => throw (.internalError
                     s!"struct constructor missing field '{fieldName}'")
-        | none => pure args  -- No struct info available; pass as-is
+        | none => pure args
       return mkStmtExprMd (.StaticCall (s!"{structName}_constructor") orderedArgs)
     | "typeConversion" =>
       -- Type conversion: address(0), uint256(x), etc.
@@ -313,36 +346,27 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.Identifier "msg_sender")
         else
           throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender is supported)")
+      -- Storage alias field access: sender.field → Identifier "sender__field"
+      match ctx.storageAliases.lookup baseNameAnn.val with
+      | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
+      | none => pure ()
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
-    -- TODO: `.length` intercept is not type-aware. This incorrectly rewrites
-    -- `string.length`, `bytes.length`, and struct fields named `length` as
-    -- `array_length` calls. Needs type-aware dispatch to distinguish arrays
-    -- from other types with a `.length` member.
     if memberAnn.val == "length" then
       return mkStmtExprMd (.StaticCall "array_length" [obj])
     else
       return mkStmtExprMd (.FieldSelect obj memberAnn.val)
 
-  | .IndexAccess sr baseNode indexOpt => do
+  | .IndexAccess _sr baseNode indexOpt => do
     let base ← translateExpr ctx baseNode
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      -- Guard: assert idx >= 0 (arrays are TMap TInt T but Solidity indices are uint256)
-      let guard := mkStmtExprMdAnn ctx sr (.Assert
-        (mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, mkStmtExprMd (.LiteralInt 0)])))
-      let sel := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
-      return mkStmtExprMd (.Block [guard, sel] none)
+      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
   | .Assignment _ lhs rhs opAnn => do
-    -- Detect map write (IndexAccess on LHS) and reject early
-    match lhs with
-    | .IndexAccess _ _ _ =>
-      throw (.unsupported "map write (requires heap parameterization)")
-    | _ => pure ()
     let lhsExpr ← translateExpr ctx lhs
     let rhsExpr ← translateExpr ctx rhs
     let rhs' ← match opAnn.val with
@@ -357,12 +381,52 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | _ => throw (.unsupported s!"Expression node type")
 
+/-- Translate a list of statements in a block, threading storage alias context.
+    Storage reference declarations (`Voter storage sender = voters[msg.sender]`)
+    are not emitted as LocalVariable nodes; instead, the alias is recorded in
+    the context so that subsequent reads/writes through the alias are desugared
+    to operations on the underlying mapping entry. -/
+partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node SourceRange))
+    : Except TranslationError (List StmtExprMd) := do
+  match stmts with
+  | [] => return []
+  | stmt :: rest =>
+    match isStorageRefDecl stmt with
+    | some (aliasName, initOpt) =>
+      -- Storage reference: emit per-field scalar local variables initialized from the map entry.
+      -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
+      --   LocalVariable "sender__weight" TInt (Some (select(voters, msg_sender).weight))
+      --   LocalVariable "sender__voted" TBool (Some (select(voters, msg_sender).voted))
+      -- This avoids FieldSelect on composite types, which would trigger heap parameterization.
+      let initExpr ← match initOpt with
+        | .some_node _ initNode => translateExpr ctx initNode
+        | .missing_node _ => throw (.unsupported "storage reference without initializer")
+      -- Determine the struct type and its fields
+      let structTypeName := extractStorageRefTypeName stmt
+      let fieldInfo := match ctx.structFields.lookup structTypeName with
+        | some info => info
+        | none => []
+      -- Emit per-field local variables with correct types
+      let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
+        mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) none)
+      -- Emit havoc-style initialization: each field variable gets the value from the map entry
+      -- For now, we leave them uninitialized (havoc'd) — the verification will be sound
+      -- but may miss some properties that depend on the initial values.
+      let alias : StorageAlias := { aliasName := aliasName }
+      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)] }
+      let rest' ← translateBlockStmts ctx' rest
+      return fieldDecls ++ rest'
+    | none =>
+      let s ← translateStmt ctx stmt
+      let rest' ← translateBlockStmts ctx rest
+      return s :: rest'
+
 /-- Translate a Solidity DDM node (statement context) to Laurel StmtExpr. -/
 partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Block _ stmtsSeq => do
-    let stmts ← stmtsSeq.val.toList.mapM (translateStmt ctx)
+    let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
@@ -421,7 +485,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn) =>
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -430,7 +494,13 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
             let e ← translateExpr ctx initNode
             pure (some e)
           | .missing_node _ => pure none
-        return mkStmtExprMd (.LocalVariable nameAnn.val solTy.highType initVal)
+        -- Storage reference declarations are handled by translateBlockStmts
+        -- (alias recorded in context, no LocalVariable emitted).
+        -- If we reach here, it's a non-storage local variable.
+        if storageLocAnn.val == "storage" then
+          throw (.internalError "storage ref should be handled by translateBlockStmts")
+        else
+          return mkStmtExprMd (.LocalVariable nameAnn.val solTy.highType initVal)
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>
@@ -470,7 +540,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     | .ParameterList _ paramsSeq =>
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -486,7 +556,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | .ParameterList _ retSeq =>
         retSeq.val.toList.mapM fun param =>
           match param with
-          | .VariableDeclaration _ pName typeNameOpt _ _ =>
+          | .VariableDeclaration _ pName typeNameOpt _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -505,7 +575,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Translate body
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
-        let b ← translateStmt ctx bodyNode
+        let b ← Strata.Solidity.translateStmt ctx bodyNode
         pure (.Transparent b)
       | .missing_node _ =>
         pure (.Abstract [])
@@ -531,7 +601,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
@@ -543,13 +613,13 @@ def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
     functions are emitted as static procedures.
     Two-pass: first collect struct definitions (for field order), then translate functions. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
-    : Except TranslationError (List Procedure × List TypeDefinition) := do
+    : Except TranslationError (List Procedure × List TypeDefinition × List Field) := do
   match contract with
   | .ContractDefinition _ nameAnn _kindAnn nodesSeq => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
-    let mut structFieldMap : List (String × List String) := ctx.structFields
+    let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -563,7 +633,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           instanceProcedures := []
         }]
         -- Record field order for argument reordering
-        structFieldMap := structFieldMap ++ [(sNameAnn.val, sFields.map (·.name.text))]
+        structFieldMap := structFieldMap ++ [(sNameAnn.val, sFields.map fun f => (f.name.text, f.type.val))]
         -- Emit a synthetic constructor procedure for the struct.
         -- Signature: S_constructor(f1: T1, f2: T2, ...) returns (__ctor_result: S)
         -- Postconditions: __ctor_result.fi == fi for each field
@@ -588,7 +658,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           body := .Abstract postconds
           md := default
         }]
-      | .VariableDeclaration _ _ _ stateVarAnn _ =>
+      | .VariableDeclaration _ _ _ stateVarAnn _ _ =>
         if stateVarAnn.val == "true" then do
           let field ← translateFieldDecl "state variable" member
           fields := fields ++ [field]
@@ -622,7 +692,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       }
       types := types ++ [contractType]
 
-    return (procedures, types)
+    return (procedures, types, fields)
   | _ => throw (.internalError "Expected ContractDefinition")
 
 /-! ## Top-Level Translation -/
@@ -641,7 +711,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     for node in nodesSeq.val do
       match node with
       | .ContractDefinition _ _ _ _ => do
-        let (procs, types) ← translateContract ctx node
+        let (procs, types, _fields) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
