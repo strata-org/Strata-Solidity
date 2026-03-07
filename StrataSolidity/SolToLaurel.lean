@@ -45,12 +45,14 @@ def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Ex
   if sr.isNone then #[]
   else Laurel.SourceRange.toMetaData uri sr
 
-/-- A storage reference alias: records the alias name so that field accesses
-    through the alias can be desugared to per-field scalar local variables.
-    E.g., `sender.weight` → `Identifier "sender__weight"`. -/
+/-- A storage reference alias: records the struct type and field info so that
+    field accesses through the alias can be desugared to per-field scalar
+    local variables. E.g., `sender.weight` → `Identifier "sender__weight"`. -/
 structure StorageAlias where
-  /-- The alias name (e.g., "sender"). -/
-  aliasName : String
+  /-- The struct type name (e.g., "Voter"). -/
+  structTypeName : String
+  /-- Ordered list of (field name, field type) pairs. -/
+  fields : List (String × HighType)
 
 /-- Translation context carrying the source file URI for metadata
     and struct field orders for argument reordering. -/
@@ -161,17 +163,18 @@ def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidit
     | _ => none
   | _ => none
 
-/-- Extract the struct type name from a storage reference VariableDeclarationStatement. -/
-def extractStorageRefTypeName (n : Solidity.node SourceRange) : String :=
+/-- Extract the struct type name from a storage reference VariableDeclarationStatement.
+    Returns `none` if the type is not a UserDefinedTypeName. -/
+def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
   match n with
   | .VariableDeclarationStatement _ declsSeq _ =>
     match declsSeq.val.toList with
     | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _)] =>
       match typeNameOpt with
-      | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => nameAnn.val
-      | _ => ""
-    | _ => ""
-  | _ => ""
+      | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => some nameAnn.val
+      | _ => none
+    | _ => none
+  | _ => none
 
 mutual
 
@@ -362,11 +365,21 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
-      return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      -- Guard: assert idx >= 0 to compensate for TMap TInt encoding of arrays
+      -- (Solidity array indices are uint256, but SMT encoding uses TInt keys).
+      let guard := mkStmtExprMd (.Assert
+        (mkStmtExprMd (.PrimitiveOp .Geq [idxExpr, mkStmtExprMd (.LiteralInt 0)])))
+      let sel := mkStmtExprMd (.StaticCall "select" [base, idxExpr])
+      return mkStmtExprMd (.Block [guard, sel] none)
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
 
   | .Assignment _ lhs rhs opAnn => do
+    -- Reject IndexAccess on LHS: map/array writes require heap parameterization
+    match lhs with
+    | .IndexAccess _ _ _ =>
+      throw (.unsupported "map write (requires heap parameterization)")
+    | _ => pure ()
     let lhsExpr ← translateExpr ctx lhs
     let rhsExpr ← translateExpr ctx rhs
     let rhs' ← match opAnn.val with
@@ -393,26 +406,32 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
   | stmt :: rest =>
     match isStorageRefDecl stmt with
     | some (aliasName, initOpt) =>
-      -- Storage reference: emit per-field scalar local variables initialized from the map entry.
+      -- Storage reference: emit per-field scalar local variables.
       -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
-      --   LocalVariable "sender__weight" TInt (Some (select(voters, msg_sender).weight))
-      --   LocalVariable "sender__voted" TBool (Some (select(voters, msg_sender).voted))
-      -- This avoids FieldSelect on composite types, which would trigger heap parameterization.
-      let initExpr ← match initOpt with
+      --   LocalVariable "sender__weight" TInt none
+      --   LocalVariable "sender__voted" TBool none
+      --
+      -- TODO: Ideally each field should be initialized with
+      --   FieldSelect(select(voters, msg_sender), "weight")
+      -- but the Laurel pipeline's heap parameterization cannot resolve
+      -- FieldSelect on a select() result (Map type, not Composite).
+      -- For now, fields are left uninitialized (havoc'd). This is sound
+      -- but may produce false negatives for properties that depend on
+      -- the initial values read from the mapping.
+      let _initExpr ← match initOpt with
         | .some_node _ initNode => translateExpr ctx initNode
         | .missing_node _ => throw (.unsupported "storage reference without initializer")
       -- Determine the struct type and its fields
-      let structTypeName := extractStorageRefTypeName stmt
-      let fieldInfo := match ctx.structFields.lookup structTypeName with
-        | some info => info
-        | none => []
-      -- Emit per-field local variables with correct types
+      let structTypeName ← match extractStorageRefTypeName stmt with
+        | some name => pure name
+        | none => throw (.typeError "storage reference must have a user-defined struct type")
+      let fieldInfo ← match ctx.structFields.lookup structTypeName with
+        | some info => pure info
+        | none => throw (.internalError s!"unknown struct type '{structTypeName}' for storage reference")
+      -- Emit per-field local variables (uninitialized for now — see TODO above)
       let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
         mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) none)
-      -- Emit havoc-style initialization: each field variable gets the value from the map entry
-      -- For now, we leave them uninitialized (havoc'd) — the verification will be sound
-      -- but may miss some properties that depend on the initial values.
-      let alias : StorageAlias := { aliasName := aliasName }
+      let alias : StorageAlias := { structTypeName, fields := fieldInfo }
       let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)] }
       let rest' ← translateBlockStmts ctx' rest
       return fieldDecls ++ rest'
@@ -613,7 +632,7 @@ def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
     functions are emitted as static procedures.
     Two-pass: first collect struct definitions (for field order), then translate functions. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
-    : Except TranslationError (List Procedure × List TypeDefinition × List Field) := do
+    : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
   | .ContractDefinition _ nameAnn _kindAnn nodesSeq => do
     let mut procedures : List Procedure := []
@@ -692,7 +711,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       }
       types := types ++ [contractType]
 
-    return (procedures, types, fields)
+    return (procedures, types)
   | _ => throw (.internalError "Expected ContractDefinition")
 
 /-! ## Top-Level Translation -/
@@ -711,7 +730,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     for node in nodesSeq.val do
       match node with
       | .ContractDefinition _ _ _ _ => do
-        let (procs, types, _fields) ← translateContract ctx node
+        let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
