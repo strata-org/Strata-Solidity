@@ -68,7 +68,9 @@ structure TransCtx where
       Field accesses `alias.field` are desugared to `Identifier "alias__field"`. -/
   storageAliases : List (String × StorageAlias) := []
   /-- Names of state variables in the enclosing contract.
-      Used to translate bare identifiers to `FieldSelect self "name"`. -/
+      Used to translate bare identifiers to `FieldSelect self "name"`.
+      Exception: mapping state vars in this list are intercepted earlier
+      and translated to bare `Identifier` (they are explicit parameters). -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   stateVarNames : List String := []
   /-- Names of mapping-typed state variables. These are passed as explicit
@@ -194,14 +196,18 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
 /-- Collect a chain of IndexAccess nodes from an LHS expression.
     Returns `(rootNode, [idx1, idx2, ...])` where rootNode is the innermost
     non-IndexAccess base and the indices are in outermost-to-innermost order.
-    E.g., `m[k1][k2]` → `(m, [k1, k2])`. -/
+    E.g., `m[k1][k2]` → `(m, [k1, k2])`.
+    Returns `none` for non-IndexAccess nodes. -/
 def collectIndexChain (n : Solidity.node SourceRange)
     : Option (Solidity.node SourceRange × List (Solidity.node SourceRange)) :=
   match n with
   | .IndexAccess _ baseNode (.some_node _ idx) =>
-    match collectIndexChain baseNode with
-    | some (root, indices) => some (root, indices ++ [idx])
-    | none => some (baseNode, [idx])
+    let rec go (n : Solidity.node SourceRange) (acc : List (Solidity.node SourceRange))
+        : Solidity.node SourceRange × List (Solidity.node SourceRange) :=
+      match n with
+      | .IndexAccess _ baseNode (.some_node _ idx) => go baseNode (idx :: acc)
+      | root => (root, acc)
+    some (go baseNode (idx :: []))
   | _ => none
 
 /-- Build a nested map update expression.
@@ -421,6 +427,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     match indexOpt with
     | .some_node _ idx => do
       let idxExpr ← translateExpr ctx idx
+      -- NOTE: No default-zero semantics for uninitialized mapping entries yet.
+      -- For array-typed bases, emit assert(idx >= 0) since arrays are encoded as
+      -- TMap TInt T but Solidity array indices (uint256) are always non-negative.
+      -- Mapping-typed bases don't need this guard (keys can be any type).
+      -- TODO: Restore array index non-negativity guard when array support is active.
+      --       Requires checking base expression's type to distinguish arrays from mappings.
       return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
@@ -705,8 +717,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
         let b ← Strata.Solidity.translateStmt bodyCtx bodyNode
-        -- For non-view functions with mapping state vars, prepend `name := name_in`
-        if !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
+        -- For non-view, non-pure functions with mapping state vars, prepend `name := name_in`
+        if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           let initAssigns := ctx.mappingStateVars.map fun (name : String) =>
             mkStmtExprMd (.Assign [mkStmtExprMd (.Identifier (name : Identifier))]
               (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))
