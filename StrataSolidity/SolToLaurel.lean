@@ -69,10 +69,15 @@ structure TransCtx where
   storageAliases : List (String × StorageAlias) := []
   /-- Names of state variables in the enclosing contract.
       Used to translate bare identifiers to `FieldSelect self "name"`. -/
+  -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   stateVarNames : List String := []
   /-- Names of non-pure functions in the enclosing contract.
       Internal calls to these functions need `self` threaded through. -/
+  -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   nonPureFunctions : List String := []
+  /-- Names of in-scope local variables and function parameters.
+      Checked before `stateVarNames` so that locals/params shadow state variables. -/
+  localNames : List String := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -189,8 +194,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>
-    -- If this identifier is a state variable, translate to FieldSelect on self
-    if ctx.stateVarNames.contains nameAnn.val then
+    -- Local variables and parameters shadow state variables
+    if ctx.localNames.contains nameAnn.val then
+      return mkStmtExprMd (.Identifier nameAnn.val)
+    else if ctx.stateVarNames.contains nameAnn.val then
       return mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) nameAnn.val)
     else
       return mkStmtExprMd (.Identifier nameAnn.val)
@@ -448,12 +455,22 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
         mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) none)
       let alias : StorageAlias := { structTypeName, fields := fieldInfo }
-      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)] }
+      let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
+      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
+                             localNames := ctx.localNames ++ fieldLocalNames }
       let rest' ← translateBlockStmts ctx' rest
       return fieldDecls ++ rest'
     | none =>
-      let s ← translateStmt ctx stmt
-      let rest' ← translateBlockStmts ctx rest
+      -- Track local variable declarations for shadowing
+      let ctx' := match stmt with
+        | .VariableDeclarationStatement _ declsSeq _ =>
+          match declsSeq.val.toList with
+          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _)] =>
+            { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+          | _ => ctx
+        | _ => ctx
+      let s ← translateStmt ctx' stmt
+      let rest' ← translateBlockStmts ctx' rest
       return s :: rest'
 
 /-- Translate a Solidity DDM node (statement context) to Laurel StmtExpr. -/
@@ -613,10 +630,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       baseOutputs ++ fieldOutputs
     else baseOutputs
 
-    -- Translate body
+    -- Translate body with parameter names in scope (for shadowing state vars)
+    let paramNames := inputs.map (·.name.text)
+    let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames }
     let body ← match bodyOpt with
       | .some_node _ bodyNode => do
-        let b ← Strata.Solidity.translateStmt ctx bodyNode
+        let b ← Strata.Solidity.translateStmt bodyCtx bodyNode
         pure (.Transparent b)
       | .missing_node _ =>
         pure (.Abstract [])
@@ -708,14 +727,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- Pass 2: collect non-pure function names for internal call resolution
+    -- Only include public/internal functions; external functions cannot be called internally.
     let stateVarNames := fields.map (·.name.text)
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn _ _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
-        if !fnIsPure && !fnIsConstructor then
+        let fnIsExternal := fnVisAnn.val == "external"
+        if !fnIsPure && !fnIsConstructor && !fnIsExternal then
           nonPureFunctions := nonPureFunctions ++ [fnNameAnn.val]
       | _ => pure ()
 
