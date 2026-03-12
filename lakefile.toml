@@ -1,0 +1,19 @@
+name = "StrataSolidity"
+version = "0.1.0"
+defaultTargets = ["StrataSolidity", "strataSolidity"]
+testDriver = "StrataSolidityTest"
+
+[[require]]
+name = "Strata"
+path = "../Strata"
+
+[[lean_lib]]
+name = "StrataSolidity"
+
+[[lean_exe]]
+name = "strataSolidity"
+root = "StrataSolidityMain"
+
+[[lean_lib]]
+name = "StrataSolidityTest"
+globs = ["StrataSolidityTest.+"]

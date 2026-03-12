@@ -1,0 +1,4 @@
+# Brazil no-op build config — Lake handles the actual build.
+# This file exists so that Brazil recognizes the package.
+1.0 ;
+build-system = no-op ;

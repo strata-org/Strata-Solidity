@@ -4,34 +4,9 @@
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
 
--- This module serves as the root of the `Strata` library.
--- In each category, imports are sorted by alphabetical order.
+-- Solidity front-end: DDM dialect, Ion reader, and AST → Laurel translation.
 
-/- DDM -/
-import Strata.DDM.Integration.Lean
-import Strata.DDM.Ion
-
-/- Dialect Library -/
-import Strata.DL.SMT.SMT
-import Strata.DL.Lambda.Lambda
-import Strata.DL.Imperative.Imperative
-
-/- Utilities -/
-import Strata.Util.Sarif
-
-/- Strata Languages -/
-import Strata.Languages.Core.FactoryWF
-import Strata.Languages.Core.StatementSemantics
-import Strata.Languages.Core.SarifOutput
-import Strata.Languages.Laurel.LaurelToCoreTranslator
-import Strata.Languages.Solidity.Solidity
-
-/- Code Transforms -/
-import Strata.Transform.CallElimCorrect
-import Strata.Transform.DetToNondetCorrect
-
-/- Backends -/
-import Strata.Backends.CBMC.CProver
-
-/- Simple API -/
-import Strata.SimpleAPI
+import StrataSolidity.SolidityDialect
+import StrataSolidity.ReadSolidity
+import StrataSolidity.SolToLaurel
+import StrataSolidity.Solidity
