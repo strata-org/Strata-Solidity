@@ -412,6 +412,23 @@ private def isDigitStr (s : String) : Bool :=
   !s.isEmpty && s.toList.all Char.isDigit
 
 /-- Map a Solidity type name string to a Laurel HighType (for quantifier bindings). -/
+/-- Compute the integer value of `type(T).min` or `type(T).max` for elementary integer types.
+    Returns `none` for unrecognized type names. -/
+private def typeMinMax (typeName : String) (member : String) : Option Int :=
+  let parseBits (prefix : String) (default : Nat) : Option Nat :=
+    let suffix := typeName.drop prefix.length
+    if suffix.isEmpty then some default
+    else suffix.toNat?
+  if typeName.startsWith "uint" then do
+    let bits ← parseBits "uint" 256
+    if member == "min" then some 0
+    else some (2 ^ bits - 1)  -- max
+  else if typeName.startsWith "int" then do
+    let bits ← parseBits "int" 256
+    if member == "min" then some (-(2 ^ (bits - 1)))
+    else some (2 ^ (bits - 1) - 1)  -- max
+  else none
+
 private def solTypeNameToHighType (name : String) : HighType :=
   if name == "bool" then .TBool
   else if name == "address" then .TInt
@@ -831,6 +848,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
           | _ => throw (.typeError "push() expects at most one argument")
       else do
+        -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
+        match baseNode with
+        | .Identifier _ baseNameAnn =>
+          if baseNameAnn.val == "abi" then do
+            let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+            return mkStmtExprMd (.StaticCall s!"abi_{memberAnn.val}" args)
+        | _ => pure ()
         -- General method call: obj.method(args) → StaticCall "method" (obj :: args)
         let base ← translateExpr ctx baseNode
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
@@ -856,6 +880,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.Identifier "msg_value")
         else
           throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender and msg.value are supported)")
+      else if baseNameAnn.val == "block" then
+        -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
+        return mkStmtExprMd (.Identifier s!"block_{memberAnn.val}")
+      else if baseNameAnn.val == "tx" then
+        -- tx.origin → fresh unconstrained TInt
+        return mkStmtExprMd (.Identifier s!"tx_{memberAnn.val}")
+      else pure ()
       -- Enum member access: Status.Active → integer literal for position
       match ctx.enumDefs.lookup baseNameAnn.val with
       | some members =>
@@ -873,6 +904,18 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         if ctx.arrayStateVars.contains name ||
            ctx.memoryArrayParams.contains name then
           return mkStmtExprMd (.Identifier s!"{name}_length")
+    | .FunctionCall _ (.Identifier _ typeIdAnn) argsSeq _ _ =>
+      -- type(T).min / type(T).max → integer literal constant
+      if typeIdAnn.val == "type" then
+        match argsSeq.val.toList with
+        | [.ElementaryTypeNameExpression _ typeNameAnn] =>
+          if memberAnn.val == "min" || memberAnn.val == "max" then
+            match typeMinMax typeNameAnn.val memberAnn.val with
+            | some v => return mkStmtExprMd (.LiteralInt v)
+            | none => throw (.unsupported s!"type({typeNameAnn.val}).{memberAnn.val}")
+          else pure ()
+        | _ => pure ()
+      else pure ()
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
     if memberAnn.val == "length" then
@@ -928,6 +971,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | "*=" => pure (mkStmtExprMd (.PrimitiveOp .Mul [readExpr, rhsExpr]))
         | "/=" => pure (mkStmtExprMd (.PrimitiveOp .Div [readExpr, rhsExpr]))
         | "%=" => pure (mkStmtExprMd (.PrimitiveOp .Mod [readExpr, rhsExpr]))
+        | "&=" => pure (mkStmtExprMd (.StaticCall "bit_and" [readExpr, rhsExpr]))
+        | "|=" => pure (mkStmtExprMd (.StaticCall "bit_or" [readExpr, rhsExpr]))
+        | "^=" => pure (mkStmtExprMd (.StaticCall "bit_xor" [readExpr, rhsExpr]))
+        | "<<=" => pure (mkStmtExprMd (.StaticCall "bit_shl" [readExpr, rhsExpr]))
+        | ">>=" => pure (mkStmtExprMd (.StaticCall "bit_shr" [readExpr, rhsExpr]))
         | o => throw (.unsupported s!"Assignment operator: {o}")
       -- Build nested update: for m[k1][k2] = v, produce
       --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
@@ -942,6 +990,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "*=" => pure (mkStmtExprMd (.PrimitiveOp .Mul [lhsExpr, rhsExpr]))
       | "/=" => pure (mkStmtExprMd (.PrimitiveOp .Div [lhsExpr, rhsExpr]))
       | "%=" => pure (mkStmtExprMd (.PrimitiveOp .Mod [lhsExpr, rhsExpr]))
+      | "&=" => pure (mkStmtExprMd (.StaticCall "bit_and" [lhsExpr, rhsExpr]))
+      | "|=" => pure (mkStmtExprMd (.StaticCall "bit_or" [lhsExpr, rhsExpr]))
+      | "^=" => pure (mkStmtExprMd (.StaticCall "bit_xor" [lhsExpr, rhsExpr]))
+      | "<<=" => pure (mkStmtExprMd (.StaticCall "bit_shl" [lhsExpr, rhsExpr]))
+      | ">>=" => pure (mkStmtExprMd (.StaticCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
     return mkStmtExprMd (.Assign [lhsExpr] rhs')
 
