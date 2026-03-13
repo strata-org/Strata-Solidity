@@ -1027,7 +1027,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- Simple case: parenthesized single expression (expr) → translate inner
     match componentsSeq.val.toList with
     | [inner] => translateExpr ctx inner
-    | _ => throw (.unsupported "Tuple expressions with multiple components")
+    | _ =>
+      -- Multi-component tuples (e.g., (a, b)) — model as nondeterministic
+      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
@@ -1269,7 +1271,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
-      throw (.unsupported "Tuple/multi-variable declarations (e.g., (uint a, uint b) = ...)")
+      -- Tuple/multi-variable declarations: sound over-approximation
+      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 

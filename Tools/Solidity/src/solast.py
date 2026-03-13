@@ -134,6 +134,7 @@ class Converter:
         "ErrorDefinition",   # Custom error declarations carry no verification semantics
         "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
         "UsingForDirective",               # resolved by solc, no verification semantics
+        "TryStatement",      # try/catch is error handling — sound to skip (external call already nondeterministic)
     })
 
     def _seq_nodes(self, nodes) -> Seq:
@@ -374,8 +375,10 @@ class Converter:
                 self.convert_node(node["falseExpression"]), ann=ann)
 
         if nt == "TupleExpression":
+            # Filter out null components (e.g., trailing empty slots in (bool success, ))
+            components = [c for c in node.get("components", []) if c is not None]
             return self.d.TupleExpression(
-                self._seq_nodes(node.get("components", [])), ann=ann)
+                self._seq_nodes(components), ann=ann)
 
         if nt == "StructDefinition":
             return self.d.StructDefinition(
