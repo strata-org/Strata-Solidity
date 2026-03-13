@@ -148,6 +148,18 @@ class Converter:
             return Seq(())
         return Seq(tuple(StrLit(s) for s in strings))
 
+    @staticmethod
+    def _doc_text(node: dict) -> str:
+        """Extract NatSpec documentation text from a node, handling both old (string) and new (object) formats."""
+        doc = node.get("documentation")
+        if doc is None:
+            return ""
+        if isinstance(doc, str):
+            return doc
+        if isinstance(doc, dict):
+            return doc.get("text", "")
+        return ""
+
     def convert_type_name(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
         ann = self._source_range(node)
@@ -196,7 +208,8 @@ class Converter:
             return self.d.ContractDefinition(
                 self._str(node.get("name")),
                 self._str(node.get("contractKind", "contract")),
-                self._seq_nodes(node.get("nodes")), ann=ann)
+                self._seq_nodes(node.get("nodes")),
+                self._str(self._doc_text(node)), ann=ann)
 
         if nt == "FunctionDefinition":
             return self.d.FunctionDefinition(
@@ -206,7 +219,8 @@ class Converter:
                 self._str(node.get("visibility", "")),
                 self.convert_node(node["parameters"]),
                 self.convert_node(node["returnParameters"]),
-                self._opt_node(node.get("body")), ann=ann)
+                self._opt_node(node.get("body")),
+                self._str(self._doc_text(node)), ann=ann)
 
         if nt == "ParameterList":
             return self.d.ParameterList(

@@ -52,6 +52,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("name", Init.Str()),
         ArgDecl("contractKind", Init.Str()),
         ArgDecl("nodes", Init.Seq(Sol.node())),
+        ArgDecl("documentation", Init.Str()),
         Sol.node())
 
     # -- Functions --
@@ -63,6 +64,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("parameters", Sol.node()),
         ArgDecl("returnParameters", Sol.node()),
         ArgDecl("body", Sol.opt_node()),
+        ArgDecl("documentation", Init.Str()),
         Sol.node())
 
     Sol.add_op("ParameterList",
