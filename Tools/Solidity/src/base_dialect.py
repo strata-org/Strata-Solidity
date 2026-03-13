@@ -53,6 +53,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("contractKind", Init.Str()),
         ArgDecl("nodes", Init.Seq(Sol.node())),
         ArgDecl("documentation", Init.Str()),
+        ArgDecl("baseContracts", Init.Seq(Init.Str())),
         Sol.node())
 
     # -- Modifiers --

@@ -212,11 +212,16 @@ class Converter:
                 self._seq_strings(node.get("literals")), ann=ann)
 
         if nt == "ContractDefinition":
+            base_names = [
+                bc.get("baseName", {}).get("name", "")
+                for bc in node.get("baseContracts", [])
+            ]
             return self.d.ContractDefinition(
                 self._str(node.get("name")),
                 self._str(node.get("contractKind", "contract")),
                 self._seq_nodes(node.get("nodes")),
-                self._str(self._doc_text(node)), ann=ann)
+                self._str(self._doc_text(node)),
+                self._seq_strings(base_names), ann=ann)
 
         if nt == "ModifierDefinition":
             return self.d.ModifierDefinition(
