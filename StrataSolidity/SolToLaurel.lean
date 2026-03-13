@@ -21,6 +21,8 @@ into the Laurel intermediate representation.
 ## Scope
 - Pure/view functions with value types (uint256, int256, bool, address)
 - `require(cond)` → assume, `assert(cond)` → assert
+- Custom errors: `error E(...)` declarations skipped; `revert E(...)` → assume(false);
+  `require(cond, E(...))` → assume(cond)
 - if/else, while, for loops, return, variable declarations, assignments
 - Arithmetic and comparison operators
 - Contracts as CompositeType with state-variable fields + static procedures
@@ -104,6 +106,9 @@ structure TransCtx where
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
+  /-- Modifier definitions: maps modifier name to list of require-condition
+      StmtExprMd extracted from the modifier body (pre-`_;` requires only). -/
+  modifierDefs : List (String × List StmtExprMd) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -150,18 +155,23 @@ def translateTypeName (name : String) : SolType :=
   else if name == "address" then { highType := mkHighTypeMd .TInt, solName := name }
   else { highType := mkHighTypeMd .TInt, solName := name }
 
-/-- Translate a DDM type_name node to SolType. -/
-def translateTypeNode (tn : Solidity.type_name SourceRange) : SolType :=
+/-- Translate a DDM type_name node to SolType.
+    Requires TransCtx to resolve enum types to TInt. -/
+def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : SolType :=
   match tn with
   | .ElementaryTypeName _ nameAnn => translateTypeName nameAnn.val
   | .UserDefinedTypeName _ nameAnn =>
-    { highType := mkHighTypeMd (.UserDefined ⟨nameAnn.val, none⟩), solName := nameAnn.val }
+    -- Enum types are modeled as TInt (uint8 in Solidity)
+    if ctx.enumDefs.any (·.1 == nameAnn.val) then
+      { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
+    else
+      { highType := mkHighTypeMd (.UserDefined ⟨nameAnn.val, none⟩), solName := nameAnn.val }
   | .MappingType _ keyTn valTn =>
-    let k := (translateTypeNode keyTn).highType
-    let v := (translateTypeNode valTn).highType
+    let k := (translateTypeNode ctx keyTn).highType
+    let v := (translateTypeNode ctx valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
   | .ArrayTypeName _ baseTn =>
-    let elem := (translateTypeNode baseTn).highType
+    let elem := (translateTypeNode ctx baseTn).highType
     -- NOTE: Design doc specifies `TMap Nat T` but Laurel's HighType has no TNat variant,
     -- so we use TInt as the key type. This means array indices can be negative in the SMT
     -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
@@ -743,7 +753,8 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
       match nameAnn.val with
       | "require" =>
-        -- require(cond) or require(cond, msg) → assume(cond)
+        -- require(cond), require(cond, msg), or require(cond, CustomError(args)) → assume(cond)
+        -- Custom error arguments are runtime diagnostics only; ignored for verification.
         -- No source metadata: assume nodes don't generate VCs
         match args with
         | cond :: _ => return mkStmtExprMd (.Assume cond)
@@ -1062,7 +1073,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       match declOpt with
       | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn) =>
         let solTy := match typeNameOpt with
-          | .some_type_name _ tn => translateTypeNode tn
+          | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
         let initVal ← match initOpt with
           | .some_node _ initNode => do
@@ -1085,8 +1096,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
-  -- Expression nodes that appear as statements (e.g., function calls, postfix ops)
-  | _ => translateExpr ctx n
+  -- Expression nodes that appear as statements (e.g., function calls, postfix ops).
+  -- Unrecognized statement nodes (e.g., RevertStatement for custom errors) are
+  -- treated as unconditional aborts: assume(false). This is sound because revert
+  -- is an unconditional abort — no subsequent code is reachable.
+  | _ =>
+    match translateExpr ctx n with
+    | .ok e => return e
+    | .error _ => return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
 
 end
 
@@ -1128,7 +1145,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn => do
+  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else nameAnn.val
@@ -1363,15 +1380,29 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 /-- Translate a VariableDeclaration to a Laurel Field.
     Shared helper for struct members and state variables.
     Reads the `constant` annotation to set `isMutable` correctly. -/
-def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
+def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
   | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ =>
     let solTy ← match typeNameOpt with
-      | .some_type_name _ tn => pure (translateTypeNode tn)
+      | .some_type_name _ tn => pure (translateTypeNode ctx tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
     return { name := nameAnn.val, isMutable := constAnn.val != "true", type := solTy.highType }
   | _ => throw (.internalError s!"Expected VariableDeclaration for {errCtx}")
+
+/-- Extract require conditions from a modifier body's pre-`_;` statements.
+    Walks the Block statements until a PlaceholderStatement (serialized as
+    a Literal "_") is found, collecting FunctionCall nodes named "require". -/
+private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
+    : List (Solidity.node SourceRange) :=
+  stmts.foldl (init := []) fun acc stmt =>
+    match stmt with
+    -- Stop at placeholder `_;` (serialized as ExpressionStatement(Literal("_","string")))
+    | .ExpressionStatement _ (.Literal _ valAnn _) =>
+      if valAnn.val == "_" then acc else acc
+    | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) _ _ _) =>
+      if nameAnn.val == "require" then acc ++ [stmt] else acc
+    | _ => acc
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
@@ -1390,7 +1421,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     for member in nodesSeq.val do
       match member with
       | .StructDefinition _ sNameAnn membersSeq => do
-        let sFields ← membersSeq.val.toList.mapM (translateFieldDecl "struct member")
+        let sFields ← membersSeq.val.toList.mapM (translateFieldDecl ctx "struct member")
         types := types ++ [.Composite {
           name := sNameAnn.val
           extending := []
@@ -1425,7 +1456,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         }]
       | .VariableDeclaration _ _ _ stateVarAnn _ _ =>
         if stateVarAnn.val == "true" then do
-          let field ← translateFieldDecl "state variable" member
+          let field ← translateFieldDecl ctx "state variable" member
           fields := fields ++ [field]
         else
           pure ()
@@ -1455,7 +1486,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
         let fnIsExternal := fnVisAnn.val == "external"
@@ -1485,7 +1516,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ => do
+      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ _ => do
           let proc ← translateFunction fnCtx member
           procedures := procedures ++ [proc]
       | _ => pure ()
