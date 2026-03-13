@@ -1421,23 +1421,17 @@ def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.nod
     a Literal "_") is found, collecting the first argument of require() calls. -/
 private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
     : List (Solidity.node SourceRange) :=
-  let rec go (remaining : List (Solidity.node SourceRange)) (acc : List (Solidity.node SourceRange))
-      : List (Solidity.node SourceRange) :=
-    match remaining with
-    | [] => acc
-    | stmt :: rest =>
-      match stmt with
-      -- Stop at placeholder `_;` (serialized as ExpressionStatement(Literal("_","string")))
-      | .ExpressionStatement _ (.Literal _ valAnn _) =>
-        if valAnn.val == "_" then acc else go rest acc
-      | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) argsSeq _ _) =>
-        if nameAnn.val == "require" then
-          match argsSeq.val.toList with
-          | cond :: _ => go rest (acc ++ [cond])
-          | [] => go rest acc
-        else go rest acc
-      | _ => go rest acc
-  go stmts []
+  -- Take statements before the placeholder `_;`
+  let preStmts := stmts.takeWhile fun stmt =>
+    match stmt with
+    | .ExpressionStatement _ (.Literal _ valAnn _) => valAnn.val != "_"
+    | _ => true
+  -- Extract require condition arguments
+  preStmts.filterMap fun stmt =>
+    match stmt with
+    | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) argsSeq _ _) =>
+      if nameAnn.val == "require" then argsSeq.val.toList.head? else none
+    | _ => none
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
