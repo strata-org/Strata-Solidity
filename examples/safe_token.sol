@@ -1,28 +1,37 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title SafeToken — Correctly specified token that should pass all checks
-/// @custom:strata invariant totalSupply >= 0
+/// @title SafeToken
+/// @notice Correctly specified token — should PASS all verification checks.
+/// @custom:strata invariant totalSupply <= type(uint256).max
 contract SafeToken {
     mapping(address => uint256) public balances;
     uint256 public totalSupply;
+    address public owner;
 
-    /// @custom:strata requires amount <= 10000
+    constructor() {
+        owner = msg.sender;
+    }
+
+    /// @custom:strata requires amount > 0 && amount <= 1e24
     /// @custom:strata ensures totalSupply == old(totalSupply) + amount
-    /// @custom:strata modifies totalSupply, balances
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
+    /// @custom:strata modifies totalSupply, balances[to]
     function mint(address to, uint256 amount) external {
-        require(amount <= 10000, "amount too large");
+        require(msg.sender == owner, "Not owner");
+        require(amount > 0 && amount <= 1e24, "Bad amount");
+        require(totalSupply + amount >= totalSupply, "Overflow");
         totalSupply += amount;
         balances[to] += amount;
     }
 
-    /// @custom:strata requires balances[msg.sender] >= amount
-    /// @custom:strata ensures totalSupply == old(totalSupply) - amount
+    /// @custom:strata requires amount <= balances[msg.sender]
     /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
-    /// @custom:strata modifies totalSupply, balances
-    function burn(uint256 amount) external {
-        require(balances[msg.sender] >= amount, "insufficient balance");
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
+    /// @custom:strata modifies balances[msg.sender], balances[to]
+    function transfer(address to, uint256 amount) external {
+        require(amount <= balances[msg.sender], "Insufficient");
         balances[msg.sender] -= amount;
-        totalSupply -= amount;
+        balances[to] += amount;
     }
 }
