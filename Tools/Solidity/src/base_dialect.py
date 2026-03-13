@@ -55,6 +55,18 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("documentation", Init.Str()),
         Sol.node())
 
+    # -- Modifiers --
+    Sol.add_op("ModifierDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("parameters", Sol.node()),
+        ArgDecl("body", Sol.opt_node()),
+        Sol.node())
+
+    Sol.add_op("ModifierInvocation",
+        ArgDecl("modifierName", Init.Str()),
+        ArgDecl("arguments", Init.Seq(Sol.node())),
+        Sol.node())
+
     # -- Functions --
     Sol.add_op("FunctionDefinition",
         ArgDecl("name", Init.Str()),
@@ -65,6 +77,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("returnParameters", Sol.node()),
         ArgDecl("body", Sol.opt_node()),
         ArgDecl("documentation", Init.Str()),
+        ArgDecl("modifiers", Init.Seq(Sol.node())),
         Sol.node())
 
     Sol.add_op("ParameterList",
@@ -164,6 +177,17 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("indexExpression", Sol.opt_node()),
         Sol.node())
 
+    # -- Ternary / tuple expressions --
+    Sol.add_op("Conditional",
+        ArgDecl("condition", Sol.node()),
+        ArgDecl("trueExpression", Sol.node()),
+        ArgDecl("falseExpression", Sol.node()),
+        Sol.node())
+
+    Sol.add_op("TupleExpression",
+        ArgDecl("components", Init.Seq(Sol.node())),
+        Sol.node())
+
     # -- Type conversion expressions --
     Sol.add_op("ElementaryTypeNameExpression",
         ArgDecl("typeName", Init.Str()),
@@ -173,6 +197,16 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("StructDefinition",
         ArgDecl("name", Init.Str()),
         ArgDecl("members", Init.Seq(Sol.node())),
+        Sol.node())
+
+    # -- Enums --
+    Sol.add_op("EnumDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("members", Init.Seq(Sol.node())),
+        Sol.node())
+
+    Sol.add_op("EnumValue",
+        ArgDecl("name", Init.Str()),
         Sol.node())
 
     # -- Type names --

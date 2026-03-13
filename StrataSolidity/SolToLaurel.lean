@@ -98,6 +98,9 @@ structure TransCtx where
   /-- Loop invariant expressions parsed from NatSpec `@custom:strata loop-invariant`.
       Applied to loops encountered during function body translation. -/
   loopInvariantExprs : List StmtExprMd := []
+  /-- Enum definitions: maps enum name to ordered list of member names.
+      Used to resolve `EnumName.Member` to integer literals. -/
+  enumDefs : List (String × List String) := []
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
@@ -862,6 +865,18 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       return mkStmtExprMd (.StaticCall "select" [base, idxExpr])
     | .missing_node _ =>
       throw (.unsupported "IndexAccess without index")
+
+  | .Conditional _ cond trueExpr falseExpr => do
+    let c ← translateExpr ctx cond
+    let t ← translateExpr ctx trueExpr
+    let f ← translateExpr ctx falseExpr
+    return mkStmtExprMd (.IfThenElse c t (some f))
+
+  | .TupleExpression _ componentsSeq => do
+    -- Simple case: parenthesized single expression (expr) → translate inner
+    match componentsSeq.val.toList with
+    | [inner] => translateExpr ctx inner
+    | _ => throw (.unsupported "Tuple expressions with multiple components")
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs

@@ -211,7 +211,27 @@ class Converter:
                 self._seq_nodes(node.get("nodes")),
                 self._str(self._doc_text(node)), ann=ann)
 
+        if nt == "ModifierDefinition":
+            return self.d.ModifierDefinition(
+                self._str(node.get("name", "")),
+                self.convert_node(node["parameters"]),
+                self._opt_node(node.get("body")), ann=ann)
+
+        if nt == "ModifierInvocation":
+            mod_name_node = node.get("modifierName", {})
+            mod_name = mod_name_node.get("name", "") if isinstance(mod_name_node, dict) else str(mod_name_node)
+            return self.d.ModifierInvocation(
+                self._str(mod_name),
+                self._seq_nodes(node.get("arguments")), ann=ann)
+
+        if nt == "PlaceholderStatement":
+            # The `_;` in modifier bodies — skip it (handled structurally)
+            return self.d.ExpressionStatement(
+                self.d.Literal(self._str("_"), self._str("string"), ann=ann), ann=ann)
+
         if nt == "FunctionDefinition":
+            modifiers = node.get("modifiers", [])
+            mod_nodes = Seq(tuple(self.convert_node(m) for m in modifiers))
             return self.d.FunctionDefinition(
                 self._str(node.get("name", "")),
                 self._str(node.get("kind", "function")),
@@ -220,7 +240,8 @@ class Converter:
                 self.convert_node(node["parameters"]),
                 self.convert_node(node["returnParameters"]),
                 self._opt_node(node.get("body")),
-                self._str(self._doc_text(node)), ann=ann)
+                self._str(self._doc_text(node)),
+                mod_nodes, ann=ann)
 
         if nt == "ParameterList":
             return self.d.ParameterList(
@@ -325,10 +346,29 @@ class Converter:
             return self.d.ElementaryTypeNameExpression(
                 self._str(type_name), ann=ann)
 
+        if nt == "Conditional":
+            return self.d.Conditional(
+                self.convert_node(node["condition"]),
+                self.convert_node(node["trueExpression"]),
+                self.convert_node(node["falseExpression"]), ann=ann)
+
+        if nt == "TupleExpression":
+            return self.d.TupleExpression(
+                self._seq_nodes(node.get("components", [])), ann=ann)
+
         if nt == "StructDefinition":
             return self.d.StructDefinition(
                 self._str(node.get("name")),
                 self._seq_nodes(node.get("members", [])), ann=ann)
+
+        if nt == "EnumDefinition":
+            return self.d.EnumDefinition(
+                self._str(node.get("name")),
+                self._seq_nodes(node.get("members", [])), ann=ann)
+
+        if nt == "EnumValue":
+            return self.d.EnumValue(
+                self._str(node.get("name")), ann=ann)
 
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.
