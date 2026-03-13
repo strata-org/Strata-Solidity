@@ -132,6 +132,8 @@ class Converter:
         "EventDefinition",   # Events carry no verification semantics
         "EmitStatement",     # emit is a no-op for verification
         "ErrorDefinition",   # Custom error declarations carry no verification semantics
+        "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
+        "UsingForDirective",               # resolved by solc, no verification semantics
     })
 
     def _seq_nodes(self, nodes) -> Seq:
