@@ -99,6 +99,9 @@ structure TransCtx where
       Stored as raw DDM nodes and re-translated per function context so that
       state variable references resolve correctly in each function. -/
   contractInvariantNodes : List (Solidity.node SourceRange) := []
+  /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
+      These are pre-parsed StmtExprMd and don't need re-translation per function. -/
+  contractInvariantNatspec : List StmtExprMd := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -328,6 +331,215 @@ def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
         some (.loopInvariant ((rest.drop "loop-invariant ".length).trim))
       else none
     else none
+
+/-! ## Spec Expression Parser
+
+Recursive descent parser for `@custom:strata` annotation expressions.
+Supports: identifiers, integer literals, `true`/`false`, `old(expr)`,
+`msg.sender`, `msg.value`, member access (`x.y`), index access (`x[y]`),
+binary operators (`==`, `!=`, `>=`, `<=`, `>`, `<`, `+`, `-`, `*`),
+boolean operators (`&&`, `||`), and parentheses.
+-/
+
+namespace SpecParser
+
+/-- Tokenize a spec expression string into a list of tokens. -/
+private def tokenize (s : String) : List String :=
+  let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=
+    if fuel == 0 then (if cur.isEmpty then acc else acc ++ [cur]).reverse
+    else if i >= s.length then (if cur.isEmpty then acc else acc ++ [cur])
+    else
+      let c := s.get ⟨i⟩
+      if c == ' ' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) acc' "" (fuel - 1)
+      else if c == '(' || c == ')' || c == '[' || c == ']' || c == ',' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
+      else if c == '=' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["=="]) "" (fuel - 1)
+      else if c == '!' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["!="]) "" (fuel - 1)
+      else if c == '>' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ [">="]) "" (fuel - 1)
+      else if c == '<' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["<="]) "" (fuel - 1)
+      else if c == '&' && i + 1 < s.length && s.get ⟨i+1⟩ == '&' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["&&"]) "" (fuel - 1)
+      else if c == '|' && i + 1 < s.length && s.get ⟨i+1⟩ == '|' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["||"]) "" (fuel - 1)
+      else if c == '>' || c == '<' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
+      else if c == '+' || c == '-' || c == '*' || c == '.' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
+      else
+        go (i + 1) acc (cur.push c) (fuel - 1)
+  go 0 [] "" (s.length * 4 + 10)
+
+private def isDigitStr (s : String) : Bool :=
+  !s.isEmpty && s.toList.all Char.isDigit
+
+/-- Parse a spec expression string into a Laurel StmtExprMd.
+    Returns the parsed expression and remaining tokens. -/
+private partial def parseExpr (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+  parseOr tokens
+
+where
+  parseOr (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parseAnd tokens
+    match rest with
+    | "||" :: rest' =>
+      let (rhs, rest'') ← parseOr rest'
+      return (mkStmtExprMd (.PrimitiveOp .Or [lhs, rhs]), rest'')
+    | _ => return (lhs, rest)
+
+  parseAnd (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parseComparison tokens
+    match rest with
+    | "&&" :: rest' =>
+      let (rhs, rest'') ← parseAnd rest'
+      return (mkStmtExprMd (.PrimitiveOp .And [lhs, rhs]), rest'')
+    | _ => return (lhs, rest)
+
+  parseComparison (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parseAddSub tokens
+    match rest with
+    | "==" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs]), rest'')
+    | "!=" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Neq [lhs, rhs]), rest'')
+    | ">=" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Geq [lhs, rhs]), rest'')
+    | "<=" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Leq [lhs, rhs]), rest'')
+    | ">" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Gt [lhs, rhs]), rest'')
+    | "<" :: rest' =>
+      let (rhs, rest'') ← parseAddSub rest'
+      return (mkStmtExprMd (.PrimitiveOp .Lt [lhs, rhs]), rest'')
+    | _ => return (lhs, rest)
+
+  parseAddSub (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parseMul tokens
+    parseAddSubTail lhs rest
+
+  parseAddSubTail (lhs : StmtExprMd) (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    match tokens with
+    | "+" :: rest =>
+      let (rhs, rest') ← parseMul rest
+      parseAddSubTail (mkStmtExprMd (.PrimitiveOp .Add [lhs, rhs])) rest'
+    | "-" :: rest =>
+      let (rhs, rest') ← parseMul rest
+      parseAddSubTail (mkStmtExprMd (.PrimitiveOp .Sub [lhs, rhs])) rest'
+    | _ => return (lhs, tokens)
+
+  parseMul (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parsePostfix tokens
+    parseMulTail lhs rest
+
+  parseMulTail (lhs : StmtExprMd) (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    match tokens with
+    | "*" :: rest =>
+      let (rhs, rest') ← parsePostfix rest
+      parseMulTail (mkStmtExprMd (.PrimitiveOp .Mul [lhs, rhs])) rest'
+    | _ => return (lhs, tokens)
+
+  parsePostfix (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (base, rest) ← parseAtom tokens
+    parsePostfixTail base rest
+
+  parsePostfixTail (base : StmtExprMd) (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    match tokens with
+    | "[" :: rest =>
+      let (idx, rest') ← parseExpr rest
+      match rest' with
+      | "]" :: rest'' =>
+        let sel := mkStmtExprMd (.StaticCall "select" [base, idx])
+        parsePostfixTail sel rest''
+      | _ => throw (.typeError "Expected ']' in index access")
+    | "." :: member :: rest =>
+      if member == "length" then
+        -- x.length → Identifier "x_length" (for arrays)
+        match base.val with
+        | .Identifier name => parsePostfixTail (mkStmtExprMd (.Identifier s!"{name}_length")) rest
+        | _ => throw (.typeError "length access on non-identifier")
+      else
+        parsePostfixTail (mkStmtExprMd (.FieldSelect base ⟨member, none⟩)) rest
+    | _ => return (base, tokens)
+
+  parseAtom (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    match tokens with
+    | [] => throw (.typeError "Unexpected end of spec expression")
+    | "(" :: rest =>
+      let (inner, rest') ← parseExpr rest
+      match rest' with
+      | ")" :: rest'' => return (inner, rest'')
+      | _ => throw (.typeError "Expected ')' in spec expression")
+    | "true" :: rest => return (mkStmtExprMd (.LiteralBool true), rest)
+    | "false" :: rest => return (mkStmtExprMd (.LiteralBool false), rest)
+    | "old" :: "(" :: rest =>
+      let (inner, rest') ← parseExpr rest
+      match rest' with
+      | ")" :: rest'' =>
+        -- Mark old() expressions with a StaticCall "__old" so they can be
+        -- identified and rewritten by rewriteOldMappingRefs later.
+        return (mkStmtExprMd (.StaticCall "__old" [inner]), rest'')
+      | _ => throw (.typeError "Expected ')' after old(")
+    | "msg" :: "." :: "sender" :: rest =>
+      return (mkStmtExprMd (.Identifier "msg_sender"), rest)
+    | "msg" :: "." :: "value" :: rest =>
+      return (mkStmtExprMd (.Identifier "msg_value"), rest)
+    | tok :: rest =>
+      if isDigitStr tok then
+        match tok.toNat? with
+        | some n => return (mkStmtExprMd (.LiteralInt n), rest)
+        | none => throw (.typeError s!"Invalid integer literal: {tok}")
+      else
+        return (mkStmtExprMd (.Identifier tok), rest)
+
+end SpecParser
+
+/-- Parse a spec expression string into a Laurel StmtExprMd. -/
+def parseSpecExpr (s : String) : Except TranslationError StmtExprMd := do
+  let tokens := SpecParser.tokenize s
+  let (expr, rest) ← SpecParser.parseExpr tokens
+  if !rest.isEmpty then
+    throw (.typeError s!"Unexpected tokens after spec expression: {rest}")
+  return expr
+
+/-- Process `__old` markers in a parsed spec expression.
+    Replaces `StaticCall "__old" [inner]` by applying `rewriteOldMappingRefs`
+    to the inner expression (rewrites mapping state vars to `_in` versions). -/
+partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars : List String)
+    (expr : StmtExprMd) : StmtExprMd :=
+  let go := processOldMarkers mappingStateVars arrayStateVars
+  match expr.val with
+  | .StaticCall "__old" args =>
+    match args with
+    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars (go inner)
+    | _ => expr
+  | .PrimitiveOp op args =>
+    { expr with val := .PrimitiveOp op (args.map go) }
+  | .StaticCall callee args =>
+    { expr with val := .StaticCall callee (args.map go) }
+  | .FieldSelect target fieldName =>
+    { expr with val := .FieldSelect (go target) fieldName }
+  | .IfThenElse cond thenBr elseBr =>
+    { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
+  | _ => expr
 
 /-- Check if a Solidity AST node is a call to a named function. -/
 def isCallTo (name : String) (n : Solidity.node SourceRange) : Bool :=
@@ -1129,15 +1341,38 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                               memoryArrayParams := memoryArrayParamNames }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
-        -- Extract _strata_pre/_strata_post from the body's top-level statements
-        let (preNodes, postNodes, remainingStmts) ← match bodyNode with
+        -- Parse @custom:strata annotations from NatSpec documentation
+        let annotations := parseStrataAnnotations docAnn.val
+        let natspecPres := annotations.filterMap fun
+          | .requires e => some e | _ => none
+        let natspecPosts := annotations.filterMap fun
+          | .ensures e => some e | _ => none
+
+        -- Also extract _strata_pre/_strata_post from body for backward compatibility
+        let (legacyPreNodes, legacyPostNodes, remainingStmts) ← match bodyNode with
           | .Block _ stmtsSeq => pure (partitionSpecStmts stmtsSeq.val.toList)
           | _ => pure ([], [], [bodyNode])
-        -- Translate extracted precondition expressions
-        let specPreExprs ← preNodes.filterMapM fun n => do
+
+        -- Parse NatSpec spec expressions
+        let natspecPreExprs ← natspecPres.mapM parseSpecExpr
+        let natspecPostExprs ← natspecPosts.mapM fun s => do
+          let expr ← parseSpecExpr s
+          pure (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars expr)
+
+        -- Translate legacy _strata_* spec expressions (backward compat)
+        let legacyPreExprs ← legacyPreNodes.filterMapM fun n => do
           match extractCallArg n with
           | some argNode => some <$> translateExpr bodyCtx argNode
           | none => pure none
+        let legacyPostExprs ← legacyPostNodes.filterMapM fun n => do
+          match extractCallArg n with
+          | some argNode => some <$> translateExpr bodyCtx argNode
+          | none => pure none
+
+        -- Combine NatSpec + legacy specs
+        let specPreExprs := natspecPreExprs ++ legacyPreExprs
+        let specPostExprs := natspecPostExprs ++ legacyPostExprs
+
         -- Rewrite precondition expressions: user parameter names → _param names
         -- and mapping state var names → _in names (preconditions reference pre-state)
         let userParamNames := userParamInfo.map (·.1)
@@ -1145,15 +1380,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specPreExprs := if !isPure && !isView && !isConstructor then
           specPreExprs.map (rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars)
         else specPreExprs
-        -- Translate extracted postcondition expressions
-        let specPostExprs ← postNodes.filterMapM fun n => do
-          match extractCallArg n with
-          | some argNode => some <$> translateExpr bodyCtx argNode
-          | none => pure none
         -- Rewrite postcondition expressions: user parameter names → _param names
-        -- Postconditions reference the original (immutable) input values, which
-        -- are named `name_param` in the Core procedure signature.
-        let userParamNames := userParamInfo.map (·.1)
         let specPostExprs := specPostExprs.map (rewriteParamRefs userParamNames)
         -- Translate remaining body statements using translateBlockStmts
         let bodyStmts ← translateBlockStmts bodyCtx remainingStmts
@@ -1197,6 +1424,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- re-establish the invariant.
         let contractInvariants ← if isPure || isView then pure []
           else ctx.contractInvariantNodes.mapM (translateExpr bodyCtx)
+        -- Add NatSpec invariants
+        let contractInvariants := contractInvariants ++ (if isPure || isView then [] else ctx.contractInvariantNatspec)
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
@@ -1209,6 +1438,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- No body: translate invariants with base context (no locals)
         let contractInvariants ← if isPure || isView then pure []
           else ctx.contractInvariantNodes.mapM (translateExpr ctx)
+        let contractInvariants := contractInvariants ++ (if isPure || isView then [] else ctx.contractInvariantNatspec)
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract contractInvariants, contractInvariants)
 
@@ -1354,6 +1584,11 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions }
     let mut contractInvariantNodes : List (Solidity.node SourceRange) := []
+    -- Parse @custom:strata invariant from contract NatSpec
+    let contractAnnotations := parseStrataAnnotations contractDocAnn.val
+    let natspecInvariantStrs := contractAnnotations.filterMap fun
+      | .invariant e => some e | _ => none
+    let natspecInvariantExprs ← natspecInvariantStrs.mapM parseSpecExpr
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ _ kindAnn _ _ _ _ bodyOpt _ =>
@@ -1367,7 +1602,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
-    let fnCtx := { baseFnCtx with contractInvariantNodes := contractInvariantNodes }
+    let fnCtx := { baseFnCtx with contractInvariantNodes := contractInvariantNodes,
+                                   contractInvariantNatspec := natspecInvariantExprs }
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ => do
