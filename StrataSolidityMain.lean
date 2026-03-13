@@ -74,10 +74,11 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
     s := s ++ s!"{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
   return s
 
-/-- Main entry point: `strataSolidity <file> [--verbose]` -/
+/-- Main entry point: `strataSolidity <file> [--verbose] [--sarif]` -/
 def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose"
-  let files := args.filter (· != "--verbose")
+  let sarifMode := args.contains "--sarif"
+  let files := args.filter (· != "--verbose" && · != "--sarif")
   match files with
   | [filePath] =>
     let cmds ← readSolidityStrata' filePath
@@ -122,9 +123,12 @@ def main (args : List String) : IO Unit := do
                   solver := "z3" }))
 
         -- Print results with source locations
-        IO.println "\n==== Verification Results ===="
-        let s := formatVcResultsWithLocation vcResults solSourceOpt
-        IO.println s
+        if sarifMode then
+          IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt)
+        else
+          IO.println "\n==== Verification Results ===="
+          let s := formatVcResultsWithLocation vcResults solSourceOpt
+          IO.println s
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.solidity.st.ion> [--verbose]"
+    IO.eprintln "Usage: strataSolidity <file.solidity.st.ion> [--verbose] [--sarif]"
     IO.Process.exit 1
