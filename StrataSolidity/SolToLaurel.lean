@@ -115,6 +115,9 @@ structure TransCtx where
       DDM nodes extracted from the modifier body (pre-`_;` only).
       Translated in each function's context for correct state var resolution. -/
   modifierDefs : List (String × List (Solidity.node SourceRange)) := []
+  /-- Constant state variable definitions: maps constant name to its
+      compile-time value expression for constant folding. -/
+  constantDefs : List (String × StmtExprMd) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -218,7 +221,7 @@ def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidit
     match declsSeq.val.toList with
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn _) =>
         if storageLocAnn.val == "storage" then some (nameAnn.val, initOpt) else none
       | _ => none
     | _ => none
@@ -230,7 +233,7 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
   match n with
   | .VariableDeclarationStatement _ declsSeq _ =>
     match declsSeq.val.toList with
-    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _)] =>
+    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _)] =>
       match typeNameOpt with
       | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => some nameAnn.val
       | _ => none
@@ -648,6 +651,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
       return mkStmtExprMd (.Identifier nameAnn.val)
+    else if let some valExpr := ctx.constantDefs.lookup nameAnn.val then
+      -- Constant state variable: substitute compile-time value
+      return valExpr
     else if ctx.mappingStateVars.contains nameAnn.val then
       -- Mapping state vars are explicit parameters, not heap fields
       return mkStmtExprMd (.Identifier nameAnn.val)
@@ -1103,7 +1109,7 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _)] =>
+          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _)] =>
             { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
           | _ => ctx
         | _ => ctx
@@ -1212,7 +1218,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn _) =>
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1343,7 +1349,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     | .ParameterList _ paramsSeq =>
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1369,7 +1375,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | .ParameterList _ retSeq =>
         retSeq.val.toList.mapM fun param =>
           match param with
-          | .VariableDeclaration _ pName typeNameOpt _ _ _ =>
+          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1563,7 +1569,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode ctx tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
@@ -1600,6 +1606,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
+    let mut constantDefs : List (String × StmtExprMd) := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -1638,10 +1645,18 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           body := .Abstract postconds
           md := default
         }]
-      | .VariableDeclaration _ _ _ stateVarAnn _ _ =>
+      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt =>
         if stateVarAnn.val == "true" then do
-          let field ← translateFieldDecl { ctx with enumDefs } "state variable" member
-          fields := fields ++ [field]
+          if constAnn.val == "true" then
+            -- Constant state variable: record name→value for constant folding
+            match valueOpt with
+            | .some_node _ valNode =>
+              let valExpr ← translateExpr { ctx with enumDefs } valNode
+              constantDefs := constantDefs ++ [(nameAnn.val, valExpr)]
+            | _ => pure ()  -- constant without value (shouldn't happen)
+          else
+            let field ← translateFieldDecl { ctx with enumDefs } "state variable" member
+            fields := fields ++ [field]
         else
           pure ()
       | .EnumDefinition _ eNameAnn eMembersSeq =>
@@ -1677,7 +1692,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut arrayStateVars : List String := []
     for member in nodesSeq.val do
       match member with
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
           | .some_type_name _ (.ArrayTypeName _ _) =>
@@ -1705,7 +1720,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions
-                 enumDefs := enumDefs }
+                 enumDefs := enumDefs
+                 constantDefs := constantDefs }
     -- Parse @custom:strata invariant from contract NatSpec
     let contractAnnotations := parseStrataAnnotations contractDocAnn.val
     let natspecInvariantStrs := contractAnnotations.filterMap fun

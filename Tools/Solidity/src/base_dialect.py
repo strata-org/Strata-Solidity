@@ -90,6 +90,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("stateVariable", Init.Str()),
         ArgDecl("constant", Init.Str()),
         ArgDecl("storageLocation", Init.Str()),
+        ArgDecl("value", Sol.opt_node()),
         Sol.node())
 
     # -- Statements --
