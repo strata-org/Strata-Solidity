@@ -9,9 +9,28 @@ import Strata.Languages.Core.Verifier
 import Strata.DL.Imperative.MetaData
 
 open Lean (Json toJson)
-open Core (VCResult Outcome)
+open Core (VCResult Outcome LExprModel)
 
 namespace StrataSolidity.Sarif
+
+/-- Strip internal suffixes from variable names for readability. -/
+def cleanVarName (name : String) : String :=
+  let s := name
+  let s := if s.startsWith "self." then s.drop 5 else s
+  let s := if s.endsWith "_param" then s.dropRight 6 else s
+  let s := if s.endsWith "_local" then s.dropRight 6 else s
+  let s := if s.endsWith "_ret" then s.dropRight 4 else s
+  s
+
+/-- Format counterexample model entries for SARIF message text. -/
+private def formatCounterexample (cex : LExprModel) : String :=
+  if cex.isEmpty then ""
+  else
+    let entries := cex.map fun (id, e) =>
+      let name := cleanVarName (toString id)
+      let val := toString (Core.formatExprs [e])
+      s!"  {name} = {val}"
+    "\nCounterexample:\n" ++ "\n".intercalate entries
 
 private def resultLevel (o : Outcome) : String :=
   match o with
@@ -19,17 +38,20 @@ private def resultLevel (o : Outcome) : String :=
   | .pass => "none"
   | .unknown => "warning"
 
-private def resultMessage (label : String) (o : Outcome) : String :=
+private def resultMessage (label : String) (o : Outcome) (cex : LExprModel) : String :=
+  let base := match o with
+    | .pass => s!"{label}: pass"
+    | .fail => s!"{label}: fail"
+    | .unknown => s!"{label}: unknown"
+    | .implementationError e => s!"{label}: implementation error: {e}"
   match o with
-  | .pass => s!"{label}: pass"
-  | .fail => s!"{label}: fail"
-  | .unknown => s!"{label}: unknown"
-  | .implementationError e => s!"{label}: implementation error: {e}"
+  | .fail => base ++ formatCounterexample cex
+  | _ => base
 
 private def vcResultToJson (vcr : VCResult) (sourceOpt : Option (String × String)) : Json :=
   let label := vcr.obligation.label
   let level := resultLevel vcr.result
-  let msg := resultMessage label vcr.result
+  let msg := resultMessage label vcr.result vcr.lexprModel
   let base := #[
     ("ruleId", Json.str label),
     ("level", Json.str level),
