@@ -127,7 +127,11 @@ class Converter:
 
     # Node types that carry no verification semantics and should be
     # silently dropped from sequences (e.g. NatSpec documentation).
-    _SKIP_NODE_TYPES = frozenset({"StructuredDocumentation"})
+    _SKIP_NODE_TYPES = frozenset({
+        "StructuredDocumentation",
+        "EventDefinition",   # Events carry no verification semantics
+        "EmitStatement",     # emit is a no-op for verification
+    })
 
     def _seq_nodes(self, nodes) -> Seq:
         if nodes is None:
