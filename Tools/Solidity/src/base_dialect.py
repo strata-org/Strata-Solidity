@@ -82,6 +82,10 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("statements", Init.Seq(Sol.node())),
         Sol.node())
 
+    Sol.add_op("UncheckedBlock",
+        ArgDecl("statements", Init.Seq(Sol.node())),
+        Sol.node())
+
     Sol.add_op("ExpressionStatement",
         ArgDecl("expression", Sol.node()),
         Sol.node())

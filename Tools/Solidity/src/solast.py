@@ -224,6 +224,10 @@ class Converter:
             return self.d.Block(
                 self._seq_nodes(node.get("statements", [])), ann=ann)
 
+        if nt == "UncheckedBlock":
+            return self.d.UncheckedBlock(
+                self._seq_nodes(node.get("statements", [])), ann=ann)
+
         if nt == "ExpressionStatement":
             return self.d.ExpressionStatement(
                 self.convert_node(node["expression"]), ann=ann)

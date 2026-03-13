@@ -1,3 +1,0 @@
-error: Exception: Solidity to Laurel translation failed: Unsupported: msg.value (only msg.sender is supported)
-
-Run strata --help for additional help.

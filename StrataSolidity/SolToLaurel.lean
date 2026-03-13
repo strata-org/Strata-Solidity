@@ -174,6 +174,14 @@ def SolType.isAddress (st : SolType) : Bool :=
 def SolType.isBytes (st : SolType) : Bool :=
   st.solName.startsWith "bytes"
 
+/-- Generate the Solidity default (zero) value for a given HighType.
+    Scalars get 0 or false; mappings get `const(defaultVal(valueType))`. -/
+partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
+  match ty.val with
+  | .TBool => mkStmtExprMd (.LiteralBool false)
+  | .TMap _ v => mkStmtExprMd (.StaticCall "const" [defaultValueForType v])
+  | _ => mkStmtExprMd (.LiteralInt 0)
+
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
   let ident := mkStmtExprMd (.Identifier paramName)
@@ -666,8 +674,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       if baseNameAnn.val == "msg" then
         if memberAnn.val == "sender" then
           return mkStmtExprMd (.Identifier "msg_sender")
+        else if memberAnn.val == "value" then
+          return mkStmtExprMd (.Identifier "msg_value")
         else
-          throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender is supported)")
+          throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender and msg.value are supported)")
       -- Storage alias field access: sender.field → Identifier "sender__field"
       match ctx.storageAliases.lookup baseNameAnn.val with
       | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
@@ -832,6 +842,12 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
+  -- Phase 1: treat unchecked blocks as regular blocks.
+  -- TODO: suppress overflow checks for arithmetic inside unchecked blocks.
+  | .UncheckedBlock _ stmtsSeq => do
+    let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
+    return mkStmtExprMd (.Block stmts none)
+
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return _ exprOpt =>
@@ -980,6 +996,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
+      inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
+      preconditions := preconditions ++ [mkNonNegPrecond "msg_value"]
 
     -- Add mapping/array state variables as explicit input parameters
     -- For view functions: use field name directly (read-only, no output).
@@ -1117,7 +1135,19 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         for (name, ty) in userParamInfo do
           preamble := preamble ++ [mkStmtExprMd (.LocalVariable name ty
             (some (mkStmtExprMd (.Identifier ((s!"{name}_param" : String) : Identifier)))))]
-        -- 2. Mapping state var init assigns (name := name_in)
+        -- 2. Constructor default storage initialization (Solidity zero-inits all state)
+        if isConstructor then
+          for field in ctx.contractFields do
+            let defaultVal := defaultValueForType field.type
+            preamble := preamble ++ [mkStmtExprMd (.Assign
+              [mkStmtExprMd (.Identifier (field.name.text : Identifier))]
+              defaultVal)]
+            -- For array state vars, also initialize length to 0
+            if ctx.arrayStateVars.contains field.name.text then
+              preamble := preamble ++ [mkStmtExprMd (.Assign
+                [mkStmtExprMd (.Identifier ((s!"{field.name.text}_length" : String) : Identifier))]
+                (mkStmtExprMd (.LiteralInt 0)))]
+        -- 3. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           for name in ctx.mappingStateVars do
             preamble := preamble ++ [mkStmtExprMd (.Assign

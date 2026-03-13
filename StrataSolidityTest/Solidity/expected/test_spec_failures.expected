@@ -1,6 +1,6 @@
 
 ==== Verification Results ====
-SpecFailures_ctor_ensures: ❌ fail
+SpecFailures_ctor_ensures: ✅ pass
 wrongPostcondition_ensures: ❌ fail
 breakInvariant_ensures_0: 🟡 unknown
 breakInvariant_ensures_1: 🟡 unknown

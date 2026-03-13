@@ -1,0 +1,4 @@
+# NOTE: Regenerate this file by running the test pipeline and capturing output.
+# The assert node IDs are assigned by solc and cannot be predicted without running it.
+
+==== Verification Results ====
