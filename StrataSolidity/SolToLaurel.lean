@@ -105,6 +105,12 @@ structure TransCtx where
   /-- Loop invariant expressions parsed from NatSpec `@custom:strata loop-invariant`.
       Applied to loops encountered during function body translation. -/
   loopInvariantExprs : List StmtExprMd := []
+  /-- Whether we are currently inside an `unchecked { }` block.
+      Solidity unchecked blocks disable overflow/underflow checks for arithmetic.
+      Currently arithmetic maps directly to PrimitiveOp.Add/Sub/Mul with no overflow
+      checks, so this flag is a no-op. When overflow checks are added (Phase 3
+      bitvector work), this flag should suppress them. -/
+  isInsideUnchecked : Bool := false
   /-- Enum definitions: maps enum name to ordered list of member names.
       Used to resolve `EnumName.Member` to integer literals. -/
   enumDefs : List (String × List String) := []
@@ -801,7 +807,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       match nameAnn.val with
       | "require" =>
         -- require(cond), require(cond, msg), or require(cond, CustomError(args)) → assume(cond)
-        -- Custom error arguments are runtime diagnostics only; ignored for verification.
+        -- The `cond :: _` pattern handles all arities (1, 2, 3+): extra arguments
+        -- (string messages, custom error constructors) are runtime diagnostics only
+        -- and are ignored for verification purposes.
         -- No source metadata: assume nodes don't generate VCs
         match args with
         | cond :: _ => return mkStmtExprMd (.Assume cond)
@@ -911,8 +919,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.Identifier "msg_sender")
         else if memberAnn.val == "value" then
           return mkStmtExprMd (.Identifier "msg_value")
+        else if memberAnn.val == "data" then
+          -- msg.data → nondeterministic value (opaque calldata bytes)
+          return mkStmtExprMd (.Identifier "msg_data")
+        else if memberAnn.val == "sig" then
+          -- msg.sig → nondeterministic value (first 4 bytes of calldata)
+          return mkStmtExprMd (.Identifier "msg_sig")
         else
-          throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender and msg.value are supported)")
+          throw (.unsupported s!"msg.{memberAnn.val}")
       else if baseNameAnn.val == "block" then
         -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
         return mkStmtExprMd (.Identifier s!"block_{memberAnn.val}")
@@ -1132,10 +1146,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
-  -- Phase 1: treat unchecked blocks as regular blocks.
-  -- TODO: suppress overflow checks for arithmetic inside unchecked blocks.
+  -- Unchecked blocks: in Solidity, `unchecked { }` disables overflow/underflow
+  -- revert checks for arithmetic. Currently our arithmetic (PrimitiveOp.Add/Sub/Mul)
+  -- maps to unbounded integer operations with no overflow checks, so the semantic
+  -- difference is a no-op. When bounded arithmetic / overflow checks are added,
+  -- the `isInsideUnchecked` flag should be checked to skip them.
   | .UncheckedBlock _ stmtsSeq => do
-    let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
+    let uncheckedCtx := { ctx with isInsideUnchecked := true }
+    let stmts ← translateBlockStmts uncheckedCtx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
   | .ExpressionStatement _ (.Literal _ valAnn kindAnn) =>
