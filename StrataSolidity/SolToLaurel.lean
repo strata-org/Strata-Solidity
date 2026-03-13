@@ -862,6 +862,18 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           | [val] => return mkStmtExprMd (.StaticCall "array_push" [base, val])
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
           | _ => throw (.typeError "push() expects at most one argument")
+      else if memberAnn.val == "transfer" then do
+        -- payable(addr).transfer(amount) → no-op for verification
+        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return mkStmtExprMd .Hole
+      else if memberAnn.val == "send" then do
+        -- payable(addr).send(amount) → nondeterministic bool
+        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return mkStmtExprMd (.Identifier "send_result")
+      else if memberAnn.val == "call" then do
+        -- addr.call{value: ...}("") → nondeterministic bool (modeled as Hole)
+        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return mkStmtExprMd .Hole
       else do
         -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
         match baseNode with
@@ -930,6 +942,23 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
             | none => throw (.unsupported s!"type({typeNameAnn.val}).{memberAnn.val}")
           else pure ()
         | _ => pure ()
+      else pure ()
+    | .FunctionCall _ (.ElementaryTypeNameExpression _ typeNameAnn) argsSeq _ _ =>
+      -- address(x).balance → StaticCall "address_balance" [x]
+      -- address(this).balance → Identifier "this_balance"
+      if typeNameAnn.val == "address" || typeNameAnn.val == "address payable" then
+        if memberAnn.val == "balance" then
+          match argsSeq.val.toList with
+          | [.Identifier _ argAnn] =>
+            if argAnn.val == "this" then
+              return mkStmtExprMd (.Identifier "this_balance")
+            else do
+              let addrExpr ← translateExpr ctx (.Identifier default argAnn)
+              return mkStmtExprMd (.StaticCall "address_balance" [addrExpr])
+          | [arg] => do
+            let addrExpr ← translateExpr ctx arg
+            return mkStmtExprMd (.StaticCall "address_balance" [addrExpr])
+          | _ => pure ()
       else pure ()
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
@@ -1103,6 +1132,29 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts ctx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
+  | .ExpressionStatement _ (.Literal _ valAnn kindAnn) =>
+    -- Detect __assembly__ marker from InlineAssembly: havoc all state variables
+    if valAnn.val == "__assembly__" && kindAnn.val == "string" then
+      let mut havocs : List StmtExprMd := []
+      -- Havoc scalar state vars via self field assigns to Hole
+      for name in ctx.stateVarNames do
+        if !ctx.mappingStateVars.contains name then
+          havocs := havocs ++ [mkStmtExprMd (.Assign
+            [mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)]
+            (mkStmtExprMd .Hole))]
+      -- Havoc mapping/array state vars to fresh nondeterministic values
+      for name in ctx.mappingStateVars do
+        havocs := havocs ++ [mkStmtExprMd (.Assign
+          [mkStmtExprMd (.Identifier (name : Identifier))]
+          (mkStmtExprMd .Hole))]
+        if ctx.arrayStateVars.contains name then
+          havocs := havocs ++ [mkStmtExprMd (.Assign
+            [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
+            (mkStmtExprMd .Hole))]
+      return mkStmtExprMd (.Block havocs none)
+    else
+      translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn))
+
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return _ exprOpt =>
@@ -1237,6 +1289,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
   | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
+                    else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
+                    else if kindAnn.val == "fallback" then s!"{ctx.contractName}_fallback"
                     else nameAnn.val
     let isPure := mutAnn.val == "pure"
     let isView := mutAnn.val == "view"

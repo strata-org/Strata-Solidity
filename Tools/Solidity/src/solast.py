@@ -131,6 +131,7 @@ class Converter:
         "StructuredDocumentation",
         "EventDefinition",   # Events carry no verification semantics
         "EmitStatement",     # emit is a no-op for verification
+        "ErrorDefinition",   # Custom error declarations carry no verification semantics
     })
 
     def _seq_nodes(self, nodes) -> Seq:
@@ -373,6 +374,11 @@ class Converter:
         if nt == "EnumValue":
             return self.d.EnumValue(
                 self._str(node.get("name")), ann=ann)
+
+        if nt == "InlineAssembly":
+            # Emit a marker so the Lean translator can havoc all state variables.
+            return self.d.ExpressionStatement(
+                self.d.Literal(self._str("__assembly__"), self._str("string"), ann=ann), ann=ann)
 
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.
