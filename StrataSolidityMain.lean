@@ -11,7 +11,8 @@ import Strata.Languages.Core.Verifier
 import Strata.Languages.Core.Options
 import Strata.DL.Imperative.MetaData
 
-open Core (VerifyOptions VerboseMode)
+open Core (VerifyOptions VerboseMode VCResult Outcome LExprModel)
+open Lean (Json toJson)
 
 private def exitFailure {α} (message : String) : IO α := do
   IO.eprintln s!"Exception: {message}"
@@ -43,42 +44,113 @@ private def tryReadSoliditySource (ionPath : String) : IO (Option (String × Str
     catch _ =>
       return none
 
-/-- Format verification results with source locations. -/
-private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
-    (sourceOpt : Option (String × String)) : String := Id.run do
-  let mut s := ""
-  for vcResult in vcResults do
-    let (locationPrefix, locationSuffix) :=
-      match Imperative.getFileRange vcResult.obligation.metadata with
-      | some fr =>
-        if fr.range.isNone then ("", "")
-        else
-          match sourceOpt with
-          | some (srcPath, srcText) =>
-            match fr.file with
-            | .file path =>
-              if path == srcPath then
-                let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
-                match vcResult.result with
-                | .fail => (s!"Assertion failed at line {pos.line}, col {pos.column}: ", "")
-                | _ => ("", s!" (at line {pos.line}, col {pos.column})")
-              else
-                match vcResult.result with
-                | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-                | _ => ("", s!" (at byte {fr.range.start})")
-          | none =>
-            match vcResult.result with
-            | .fail => (s!"Assertion failed at byte {fr.range.start}: ", "")
-            | _ => ("", s!" (at byte {fr.range.start})")
-      | none => ("", "")
-    s := s ++ s!"{locationPrefix}{vcResult.obligation.label}: {Std.format vcResult.result}{locationSuffix}\n"
-  return s
+/-- Resolve source position for a VCResult. Returns (line, col) or none. -/
+private def resolvePosition (vcr : VCResult) (sourceOpt : Option (String × String))
+    : Option (Nat × Nat) :=
+  match Imperative.getFileRange vcr.obligation.metadata with
+  | some fr =>
+    if fr.range.isNone then none
+    else match sourceOpt with
+      | some (srcPath, srcText) =>
+        match fr.file with
+        | .file path =>
+          if path == srcPath then
+            let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
+            some (pos.line, pos.column)
+          else none
+      | none => none
+  | none => none
 
-/-- Main entry point: `strataSolidity <file> [--verbose] [--sarif]` -/
+/-- Format counterexample for plain-text output. -/
+private def formatPlainCounterexample (cex : LExprModel) : String :=
+  if cex.isEmpty then ""
+  else
+    let entries := cex.map fun (id, e) =>
+      let name := StrataSolidity.Sarif.cleanVarName (toString id)
+      let val := toString (Core.formatExprs [e])
+      s!"        {name} = {val}"
+    "\n" ++ "\n".intercalate entries
+
+/-- Classify a VCResult into 0=fail, 1=unknown, 2=pass. -/
+private def statusOrder (o : Outcome) : Nat :=
+  match o with
+  | .fail | .implementationError _ => 0
+  | .unknown => 1
+  | .pass => 2
+
+private def statusEmoji (o : Outcome) : String :=
+  match o with
+  | .fail | .implementationError _ => "❌"
+  | .unknown => "❓"
+  | .pass => "✅"
+
+private def statusLabel (o : Outcome) : String :=
+  match o with
+  | .fail => "fail"
+  | .implementationError _ => "implementation_error"
+  | .unknown => "unknown"
+  | .pass => "pass"
+
+/-- Format verification results grouped by status with summary. -/
+private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
+    (sourceOpt : Option (String × String)) : String × Bool := Id.run do
+  let mut nPass := 0
+  let mut nFail := 0
+  let mut nUnknown := 0
+  for vcr in vcResults do
+    match vcr.result with
+    | .pass => nPass := nPass + 1
+    | .fail | .implementationError _ => nFail := nFail + 1
+    | .unknown => nUnknown := nUnknown + 1
+  let sorted := vcResults.toList.toArray |>.qsort
+    (fun a b => statusOrder a.result < statusOrder b.result)
+  let mut s := ""
+  let mut curSection := 3  -- sentinel
+  for vcr in sorted do
+    let sec := statusOrder vcr.result
+    if sec != curSection then
+      curSection := sec
+      let (emoji, header, count) := match vcr.result with
+        | .fail | .implementationError _ => ("❌", "Failures", nFail)
+        | .unknown => ("❓", "Unknown", nUnknown)
+        | .pass => ("✅", "Passed", nPass)
+      if !s.isEmpty then s := s ++ "\n"
+      s := s ++ s!"{emoji} {header} ({count}):\n"
+    let locStr := match resolvePosition vcr sourceOpt with
+      | some (line, col) => s!" at line {line}, col {col}"
+      | none => ""
+    s := s ++ s!"  {vcr.obligation.label}{locStr}\n"
+    -- Counterexample for failures
+    match vcr.result with
+    | .fail | .implementationError _ =>
+      let cex := formatPlainCounterexample vcr.lexprModel
+      if !cex.isEmpty then s := s ++ cex ++ "\n"
+    | _ => pure ()
+  s := s ++ s!"\n{nPass} passed, {nFail} failed, {nUnknown} unknown out of {vcResults.size} total"
+  (s, nFail > 0)
+
+/-- Produce flat JSON array of results for scripting. -/
+private def formatJsonResults (vcResults : Array Core.VCResult)
+    (sourceOpt : Option (String × String)) : String :=
+  let arr := vcResults.map fun vcr =>
+    let mut fields : Array (String × Json) := #[
+      ("name", Json.str vcr.obligation.label),
+      ("status", Json.str (statusLabel vcr.result))
+    ]
+    match resolvePosition vcr sourceOpt with
+    | some (line, col) =>
+      fields := fields.push ("line", toJson line) |>.push ("col", toJson col)
+    | none => pure ()
+    Json.mkObj fields.toList
+  (Json.arr arr).pretty
+
+/-- Main entry point: `strataSolidity <file> [--verbose] [--sarif] [--json]` -/
 def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose"
   let sarifMode := args.contains "--sarif"
-  let files := args.filter (· != "--verbose" && · != "--sarif")
+  let jsonMode := args.contains "--json"
+  let flags := ["--verbose", "--sarif", "--json"]
+  let files := args.filter (fun a => !flags.contains a)
   match files with
   | [filePath] =>
     let cmds ← readSolidityStrata' filePath
@@ -122,13 +194,16 @@ def main (args : List String) : IO Unit := do
                   verbose := .quiet,
                   solver := "z3" }))
 
-        -- Print results with source locations
+        -- Print results
         if sarifMode then
           IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt)
+        else if jsonMode then
+          IO.println (formatJsonResults vcResults solSourceOpt)
         else
           IO.println "\n==== Verification Results ===="
-          let s := formatVcResultsWithLocation vcResults solSourceOpt
+          let (s, hasFailures) := formatVcResultsWithLocation vcResults solSourceOpt
           IO.println s
+          if hasFailures then IO.Process.exit 1
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.solidity.st.ion> [--verbose] [--sarif]"
+    IO.eprintln "Usage: strataSolidity <file.solidity.st.ion> [--verbose] [--sarif] [--json]"
     IO.Process.exit 1
