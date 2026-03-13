@@ -794,6 +794,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (.StaticCall nameAnn.val args)
+      | "gasleft" =>
+        -- gasleft() → fresh unconstrained TInt
+        return mkStmtExprMd (.Identifier "gasleft")
       | funcName =>
         -- Internal call to a non-pure function: thread `self`, `msg_sender`,
         -- and mapping/array state variables.
