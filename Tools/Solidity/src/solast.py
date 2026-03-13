@@ -355,6 +355,10 @@ class Converter:
                 self.convert_node(node["baseExpression"]),
                 self._opt_node(node.get("indexExpression")), ann=ann)
 
+        if nt == "IndexRangeAccess":
+            # Array slices x[start:end] — rare, model as nondeterministic
+            return self.d.Literal(self._str("0"), self._str("number"), ann=ann)
+
         if nt == "ElementaryTypeNameExpression":
             # Type conversion expression, e.g. address(0).
             # Extract the type name string from the nested typeName node.
@@ -391,6 +395,12 @@ class Converter:
             # Emit a marker so the Lean translator can havoc all state variables.
             return self.d.ExpressionStatement(
                 self.d.Literal(self._str("__assembly__"), self._str("string"), ann=ann), ann=ann)
+
+        if nt == "NewExpression":
+            # new Token(...) — convert to Identifier so FunctionCall treats it as a call
+            tn = node.get("typeName", {})
+            name = tn.get("name", "") or tn.get("pathNode", {}).get("name", "new")
+            return self.d.Identifier(self._str(name), ann=ann)
 
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.

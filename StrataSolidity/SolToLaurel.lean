@@ -823,6 +823,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "gasleft" =>
         -- gasleft() → fresh unconstrained TInt
         return mkStmtExprMd (.Identifier "gasleft")
+      | "selfdestruct" =>
+        -- selfdestruct(addr) → deprecated, model as no-op
+        return mkStmtExprMd .Hole
       | funcName =>
         -- Internal call to a non-pure function: thread `self`, `msg_sender`,
         -- and mapping/array state variables.
@@ -884,8 +887,9 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- payable(addr).send(amount) → nondeterministic bool
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
         return mkStmtExprMd (.Identifier "send_result")
-      else if memberAnn.val == "call" then do
-        -- addr.call{value: ...}("") → nondeterministic bool (modeled as Hole)
+      else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
+              || memberAnn.val == "staticcall" then do
+        -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
         return mkStmtExprMd .Hole
       else do
@@ -979,11 +983,19 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
             let addrExpr ← translateExpr ctx arg
             return mkStmtExprMd (.StaticCall "address_balance" [addrExpr])
           | _ => pure ()
+        else if memberAnn.val == "code" || memberAnn.val == "codehash" then
+          match argsSeq.val.toList with
+          | [arg] => do
+            let addrExpr ← translateExpr ctx arg
+            return mkStmtExprMd (.StaticCall s!"address_{memberAnn.val}" [addrExpr])
+          | _ => pure ()
       else pure ()
     | _ => pure ()
     let obj ← translateExpr ctx exprNode
     if memberAnn.val == "length" then
       return mkStmtExprMd (.StaticCall "array_length" [obj])
+    else if memberAnn.val == "code" || memberAnn.val == "codehash" then
+      return mkStmtExprMd (.StaticCall s!"address_{memberAnn.val}" [obj])
     else
       return mkStmtExprMd (.FieldSelect obj memberAnn.val)
 
