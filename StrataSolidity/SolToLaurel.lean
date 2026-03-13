@@ -1356,8 +1356,32 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let contractInvariants := if isPure || isView then [] else ctx.contractInvariantNatspec
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
+        -- Generate frame conditions from @custom:strata modifies
+        let natspecModifies := annotations.filterMap fun
+          | .modifies vars => some vars | _ => none
+        let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
+          else
+            -- Parse comma-separated variable names from modifies annotation
+            let modifiedVars := natspecModifies.bind fun s =>
+              (s.splitOn ",").map String.trim
+            -- For each state variable NOT in modifies list, add var == old(var)
+            let framePosts := ctx.stateVarNames.filterMap fun name =>
+              if modifiedVars.contains name then none
+              else if ctx.mappingStateVars.contains name then
+                -- Mapping: name == name_in (pre-state)
+                some (mkStmtExprMd (.PrimitiveOp .Eq [
+                  mkStmtExprMd (.Identifier name),
+                  mkStmtExprMd (.Identifier s!"{name}_in")]))
+              else
+                -- Scalar: self.name == old(self.name) — via FieldSelect
+                some (mkStmtExprMd (.PrimitiveOp .Eq [
+                  mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "result_self"))
+                    ⟨name, none⟩),
+                  mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self"))
+                    ⟨name, none⟩)]))
+            framePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
-        let allPosts := specPostExprs ++ contractInvariants
+        let allPosts := specPostExprs ++ frameConditions ++ contractInvariants
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
