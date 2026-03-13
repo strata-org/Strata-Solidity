@@ -668,6 +668,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | ">=" => .ok Operation.Geq
       | "&&" => .ok Operation.And
       | "||" => .ok Operation.Or
+      | "&" => return mkStmtExprMd (.StaticCall "bit_and" [l, r])
+      | "|" => return mkStmtExprMd (.StaticCall "bit_or" [l, r])
+      | "^" => return mkStmtExprMd (.StaticCall "bit_xor" [l, r])
+      | "<<" => return mkStmtExprMd (.StaticCall "bit_shl" [l, r])
+      | ">>" => return mkStmtExprMd (.StaticCall "bit_shr" [l, r])
       | o => throw (.unsupported s!"Binary operator: {o}")
     return mkStmtExprMd (.PrimitiveOp op [l, r])
 
@@ -677,6 +682,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       match opAnn.val with
       | "!" => return mkStmtExprMd (.PrimitiveOp .Not [subExpr])
       | "-" => return mkStmtExprMd (.PrimitiveOp .Neg [subExpr])
+      | "~" => return mkStmtExprMd (.StaticCall "bit_not" [subExpr])
       | "++" =>
         -- Prefix ++i: desugar to i = i + 1
         let one := mkStmtExprMd (.LiteralInt 1)
@@ -769,6 +775,8 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         match args with
         | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
+      | "keccak256" | "sha256" =>
+        return mkStmtExprMd (.StaticCall nameAnn.val args)
       | funcName =>
         -- Internal call to a non-pure function: thread `self`, `msg_sender`,
         -- and mapping/array state variables.
