@@ -300,6 +300,35 @@ def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val :
 
 /-! ## Specification Extraction Helpers -/
 
+/-- A parsed `@custom:strata` annotation. -/
+inductive StrataAnnotation where
+  | requires (expr : String)
+  | ensures (expr : String)
+  | invariant (expr : String)
+  | modifies (vars : String)
+  | loopInvariant (expr : String)
+
+/-- Parse `@custom:strata` annotations from a NatSpec documentation string.
+    Each line matching `@custom:strata <keyword> <expr>` produces an annotation. -/
+def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
+  let lines := doc.splitOn "\n" |>.map String.trim
+  lines.filterMap fun line =>
+    let prefix := "@custom:strata "
+    if line.startsWith prefix then
+      let rest := (line.drop prefix.length).trim
+      if rest.startsWith "requires " then
+        some (.requires ((rest.drop "requires ".length).trim))
+      else if rest.startsWith "ensures " then
+        some (.ensures ((rest.drop "ensures ".length).trim))
+      else if rest.startsWith "invariant " then
+        some (.invariant ((rest.drop "invariant ".length).trim))
+      else if rest.startsWith "modifies " then
+        some (.modifies ((rest.drop "modifies ".length).trim))
+      else if rest.startsWith "loop-invariant " then
+        some (.loopInvariant ((rest.drop "loop-invariant ".length).trim))
+      else none
+    else none
+
 /-- Check if a Solidity AST node is a call to a named function. -/
 def isCallTo (name : String) (n : Solidity.node SourceRange) : Bool :=
   match n with
@@ -973,7 +1002,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt => do
+  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else nameAnn.val
@@ -1225,7 +1254,7 @@ def translateFieldDecl (errCtx : String) (member : Solidity.node SourceRange)
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq => do
+  | .ContractDefinition _ nameAnn _kindAnn nodesSeq contractDocAnn => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
@@ -1300,7 +1329,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
         let fnIsExternal := fnVisAnn.val == "external"
@@ -1327,7 +1356,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut contractInvariantNodes : List (Solidity.node SourceRange) := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _ kindAnn _ _ _ _ bodyOpt =>
+      | .FunctionDefinition _ _ kindAnn _ _ _ _ bodyOpt _ =>
         if kindAnn.val == "constructor" then
           match bodyOpt with
           | .some_node _ (.Block _ stmtsSeq) =>
@@ -1341,7 +1370,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let fnCtx := { baseFnCtx with contractInvariantNodes := contractInvariantNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ => do
+      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ => do
         -- Skip _strata_* stub functions (only needed for solc compilation)
         if fnNameAnn.val.startsWith "_strata_" then pure ()
         else do
@@ -1382,7 +1411,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
 
     for node in nodesSeq.val do
       match node with
-      | .ContractDefinition _ _ _ _ => do
+      | .ContractDefinition _ _ _ _ _ => do
         let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
