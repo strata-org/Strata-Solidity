@@ -373,6 +373,12 @@ private def tokenize (s : String) : List String :=
       else if c == '|' && i + 1 < s.length && s.get ⟨i+1⟩ == '|' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 2) (acc' ++ ["||"]) "" (fuel - 1)
+      else if c == ':' && i + 1 < s.length && s.get ⟨i+1⟩ == ':' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 2) (acc' ++ ["::"]) "" (fuel - 1)
+      else if c == ':' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) (acc' ++ [":"]) "" (fuel - 1)
       else if c == '>' || c == '<' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
@@ -385,6 +391,12 @@ private def tokenize (s : String) : List String :=
 
 private def isDigitStr (s : String) : Bool :=
   !s.isEmpty && s.toList.all Char.isDigit
+
+/-- Map a Solidity type name string to a Laurel HighType (for quantifier bindings). -/
+private def solTypeNameToHighType (name : String) : HighType :=
+  if name == "bool" then .TBool
+  else if name == "address" then .TInt
+  else .TInt  -- uint256, int256, etc. all map to TInt
 
 /-- Parse a spec expression string into a Laurel StmtExprMd.
     Returns the parsed expression and remaining tokens. -/
@@ -501,6 +513,16 @@ where
       return (mkStmtExprMd (.Identifier "msg_sender"), rest)
     | "msg" :: "." :: "value" :: rest =>
       return (mkStmtExprMd (.Identifier "msg_value"), rest)
+    | "forall" :: varName :: ":" :: typeName :: "::" :: rest =>
+      let ty := solTypeNameToHighType typeName
+      let param : Parameter := { name := varName, type := mkHighTypeMd ty }
+      let (body, rest') ← parseExpr rest
+      return (mkStmtExprMd (.Forall param body), rest')
+    | "exists" :: varName :: ":" :: typeName :: "::" :: rest =>
+      let ty := solTypeNameToHighType typeName
+      let param : Parameter := { name := varName, type := mkHighTypeMd ty }
+      let (body, rest') ← parseExpr rest
+      return (mkStmtExprMd (.Exists param body), rest')
     | tok :: rest =>
       if isDigitStr tok then
         match tok.toNat? with
@@ -538,6 +560,10 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
     { expr with val := .FieldSelect (go target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
+  | .Forall param body =>
+    { expr with val := .Forall param (go body) }
+  | .Exists param body =>
+    { expr with val := .Exists param (go body) }
   | _ => expr
 
 /-- Rewrite mapping state variable references in an old() expression to their
