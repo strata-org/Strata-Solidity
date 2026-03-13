@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 /// @title Loop invariant with while-loop.
-/// Tests that _strata_loop_invariant works with while loops.
+/// Tests that @custom:strata loop-invariant works with while loops.
 contract LoopInvariantWhile {
 
     /// Multiply by repeated addition. Invariant: result == i * b.

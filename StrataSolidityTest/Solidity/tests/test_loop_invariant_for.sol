@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 /// @title Loop invariant with for-loop.
-/// Tests that _strata_loop_invariant works with for loops.
+/// Tests that @custom:strata loop-invariant works with for loops.
 contract LoopInvariantFor {
 
     /// Count up to n. Invariant: result == i at each iteration.

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 /// @title old() on mapping state variables.
-/// Tests that _strata_old correctly references pre-state mapping values.
+/// Tests that old() correctly references pre-state mapping values.
 contract OldMapping {
 
     mapping(address => uint256) public balances;

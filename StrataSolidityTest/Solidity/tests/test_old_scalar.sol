@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 /// @title old() on scalar (non-mapping) state variables.
-/// Regression test: _strata_old on scalar state vars accessed via
+/// Regression test: old() on scalar state vars accessed via
 /// FieldSelect self "name" must reference pre-state, not current-state.
 contract OldScalar {
 

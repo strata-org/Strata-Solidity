@@ -22,7 +22,7 @@ contract SpecFailures {
     }
 
     /// Violates the contract invariant counter <= 100.
-    /// Note: no explicit _strata_post here — the _strata_invariant declared in the
+    /// Note: no explicit @custom:strata ensures here — the @custom:strata invariant declared in the
     /// constructor is automatically conjoined as a postcondition to every public/external
     /// function. This is the only test that exercises implicit invariant checking.
     function breakInvariant() external {

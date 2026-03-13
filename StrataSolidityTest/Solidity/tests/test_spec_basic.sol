@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title Basic specification tests for _strata_pre, _strata_post.
+/// @title Basic specification tests for @custom:strata requires/ensures.
 /// Pure functions only — no state variables or heap parameterization.
 contract SpecBasic {
 
