@@ -694,6 +694,18 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     return mkStmtExprMd (.PrimitiveOp op [l, r])
 
   | .UnaryOperation _ sub opAnn prefixAnn => do
+    -- Handle delete before translating sub, since mapping delete needs raw AST
+    if opAnn.val == "delete" then
+      let zero := mkStmtExprMd (.LiteralInt 0)
+      match collectIndexChain sub with
+      | some (rootNode, indices) => do
+        let rootExpr ← translateExpr ctx rootNode
+        let idxExprs ← indices.mapM (translateExpr ctx)
+        let updateExpr ← buildNestedUpdate rootExpr idxExprs zero
+        return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+      | none =>
+        let subExpr ← translateExpr ctx sub
+        return mkStmtExprMd (.Assign [subExpr] zero)
     let subExpr ← translateExpr ctx sub
     if prefixAnn.val == "true" then
       match opAnn.val with
