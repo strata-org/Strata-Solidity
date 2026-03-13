@@ -5,11 +5,8 @@ pragma solidity ^0.8.0;
 /// The callee requires x > 0, but the caller passes 0.
 contract SpecPreFail {
 
-    // Strata specification stubs
-    function _strata_pre(bool) internal pure {}
-
+    /// @custom:strata requires x > 0
     function needsPositive(uint256 x) public pure returns (uint256 result) {
-        _strata_pre(x > 0);
         result = x - 1;
     }
 

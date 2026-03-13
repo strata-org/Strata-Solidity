@@ -5,23 +5,19 @@ pragma solidity ^0.8.0;
 /// Pure functions only — no state variables or heap parameterization.
 contract SpecBasic {
 
-    // Strata specification stubs
-    function _strata_pre(bool) internal pure {}
-    function _strata_post(bool) internal pure {}
-
     /// Precondition: a and b must be small enough to avoid overflow.
     /// Postcondition: result equals a + b.
+    /// @custom:strata requires a <= 10000
+    /// @custom:strata requires b <= 10000
+    /// @custom:strata ensures result == a + b
     function add(uint256 a, uint256 b) public pure returns (uint256 result) {
-        _strata_pre(a <= 10000);
-        _strata_pre(b <= 10000);
-        _strata_post(result == a + b);
 
         result = a + b;
     }
 
     /// Postcondition: result is always >= a.
+    /// @custom:strata ensures result >= a
     function maxVal(uint256 a, uint256 b) public pure returns (uint256 result) {
-        _strata_post(result >= a);
 
         if (a >= b) {
             result = a;
