@@ -41,6 +41,11 @@ open Laurel
 
 def defaultMetadata : Imperative.MetaData Core.Expression := #[]
 
+/-- Find the index of the first element satisfying a predicate. -/
+private def List.findIndex? (p : α → Bool) : List α → Option Nat
+  | [] => none
+  | x :: xs => if p x then some 0 else (List.findIndex? p xs).map (· + 1)
+
 /-- Convert a SourceRange and file URI to Laurel metadata with file range info.
     Reuses the existing `SourceRange.toMetaData` from the Laurel grammar translator. -/
 def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Expression :=
@@ -106,9 +111,10 @@ structure TransCtx where
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
-  /-- Modifier definitions: maps modifier name to list of require-condition
-      StmtExprMd extracted from the modifier body (pre-`_;` requires only). -/
-  modifierDefs : List (String × List StmtExprMd) := []
+  /-- Modifier definitions: maps modifier name to list of raw require statement
+      DDM nodes extracted from the modifier body (pre-`_;` only).
+      Translated in each function's context for correct state var resolution. -/
+  modifierDefs : List (String × List (Solidity.node SourceRange)) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, md := defaultMetadata }
@@ -842,6 +848,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.Identifier "msg_value")
         else
           throw (.unsupported s!"msg.{memberAnn.val} (only msg.sender and msg.value are supported)")
+      -- Enum member access: Status.Active → integer literal for position
+      match ctx.enumDefs.lookup baseNameAnn.val with
+      | some members =>
+        match List.findIndex? (· == memberAnn.val) members with
+        | some i => return mkStmtExprMd (.LiteralInt i)
+        | none => throw (.typeError s!"Unknown enum member '{memberAnn.val}' in '{baseNameAnn.val}'")
+      | none => pure ()
       -- Storage alias field access: sender.field → Identifier "sender__field"
       match ctx.storageAliases.lookup baseNameAnn.val with
       | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
@@ -1202,7 +1215,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         match param with
         | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn =>
           let solTy := match typeNameOpt with
-            | .some_type_name _ tn => translateTypeNode tn
+            | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
           -- Rename user parameter to `name_param` so we can create a mutable local copy
           let inputName := s!"{pName.val}_param"
@@ -1228,7 +1241,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           match param with
           | .VariableDeclaration _ pName typeNameOpt _ _ _ =>
             let solTy := match typeNameOpt with
-              | .some_type_name _ tn => translateTypeNode tn
+              | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
             let outName := if pName.val.isEmpty then "result" else pName.val
             pure ({ name := outName, type := solTy.highType } : Parameter)
@@ -1360,7 +1373,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- (Constructors establish the invariant; they don't assume it.)
     let applicableInvariantPres := if isPure || isView || isConstructor then []
       else contractInvariants
-    let allPreconditions := preconditions ++ specPres ++ applicableInvariantPres
+    -- Collect modifier preconditions: for each applied modifier, translate its
+    -- pre-_ require statement nodes in this function's context and add as assumes.
+    let mut modifierPres : List StmtExprMd := []
+    for modNode in modifiersSeq.val do
+      match modNode with
+      | .ModifierInvocation _ modNameAnn _ =>
+        match ctx.modifierDefs.lookup modNameAnn.val with
+        | some reqNodes =>
+          for reqNode in reqNodes do
+            let e ← translateExpr bodyCtx reqNode
+            modifierPres := modifierPres ++ [e]
+        | none => pure ()
+      | _ => pure ()
+    let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres
 
     return {
       name := funcName
@@ -1390,19 +1416,28 @@ def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.nod
     return { name := nameAnn.val, isMutable := constAnn.val != "true", type := solTy.highType }
   | _ => throw (.internalError s!"Expected VariableDeclaration for {errCtx}")
 
-/-- Extract require conditions from a modifier body's pre-`_;` statements.
+/-- Extract require condition expressions from a modifier body's pre-`_;` statements.
     Walks the Block statements until a PlaceholderStatement (serialized as
-    a Literal "_") is found, collecting FunctionCall nodes named "require". -/
+    a Literal "_") is found, collecting the first argument of require() calls. -/
 private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
     : List (Solidity.node SourceRange) :=
-  stmts.foldl (init := []) fun acc stmt =>
-    match stmt with
-    -- Stop at placeholder `_;` (serialized as ExpressionStatement(Literal("_","string")))
-    | .ExpressionStatement _ (.Literal _ valAnn _) =>
-      if valAnn.val == "_" then acc else acc
-    | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) _ _ _) =>
-      if nameAnn.val == "require" then acc ++ [stmt] else acc
-    | _ => acc
+  let rec go (remaining : List (Solidity.node SourceRange)) (acc : List (Solidity.node SourceRange))
+      : List (Solidity.node SourceRange) :=
+    match remaining with
+    | [] => acc
+    | stmt :: rest =>
+      match stmt with
+      -- Stop at placeholder `_;` (serialized as ExpressionStatement(Literal("_","string")))
+      | .ExpressionStatement _ (.Literal _ valAnn _) =>
+        if valAnn.val == "_" then acc else go rest acc
+      | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) argsSeq _ _) =>
+        if nameAnn.val == "require" then
+          match argsSeq.val.toList with
+          | cond :: _ => go rest (acc ++ [cond])
+          | [] => go rest acc
+        else go rest acc
+      | _ => go rest acc
+  go stmts []
 
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
@@ -1416,12 +1451,13 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
+    let mut enumDefs : List (String × List String) := ctx.enumDefs
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
       match member with
       | .StructDefinition _ sNameAnn membersSeq => do
-        let sFields ← membersSeq.val.toList.mapM (translateFieldDecl ctx "struct member")
+        let sFields ← membersSeq.val.toList.mapM (translateFieldDecl { ctx with enumDefs } "struct member")
         types := types ++ [.Composite {
           name := sNameAnn.val
           extending := []
@@ -1456,10 +1492,27 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         }]
       | .VariableDeclaration _ _ _ stateVarAnn _ _ =>
         if stateVarAnn.val == "true" then do
-          let field ← translateFieldDecl ctx "state variable" member
+          let field ← translateFieldDecl { ctx with enumDefs } "state variable" member
           fields := fields ++ [field]
         else
           pure ()
+      | .EnumDefinition _ eNameAnn eMembersSeq =>
+        let memberNames := eMembersSeq.val.toList.filterMap fun
+          | .EnumValue _ nameAnn => some nameAnn.val
+          | _ => none
+        enumDefs := enumDefs ++ [(eNameAnn.val, memberNames)]
+      | _ => pure ()
+
+    -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
+    let mut modifierRequireNodes : List (String × List (Solidity.node SourceRange)) := []
+    for member in nodesSeq.val do
+      match member with
+      | .ModifierDefinition _ modNameAnn _ bodyOpt =>
+        let reqStmts := match bodyOpt with
+          | .some_node _ (.Block _ stmtsSeq) =>
+            extractModifierRequires stmtsSeq.val.toList
+          | _ => []
+        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, reqStmts)]
       | _ => pure ()
 
     -- Pass 2: collect non-pure function names for internal call resolution
@@ -1503,7 +1556,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  stateVarNames := stateVarNames
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
-                 nonPureFunctions := nonPureFunctions }
+                 nonPureFunctions := nonPureFunctions
+                 enumDefs := enumDefs }
     -- Parse @custom:strata invariant from contract NatSpec
     let contractAnnotations := parseStrataAnnotations contractDocAnn.val
     let natspecInvariantStrs := contractAnnotations.filterMap fun
@@ -1513,7 +1567,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
-    let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs }
+    let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs,
+                                   modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ _ => do
