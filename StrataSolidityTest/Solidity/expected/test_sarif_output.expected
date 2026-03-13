@@ -1,0 +1,5 @@
+# Placeholder — used for SARIF JSON structure validation.
+
+==== Verification Results ====
+good_ensures: ✅ pass
+bad_ensures: ❌ fail
