@@ -8,8 +8,8 @@ import Strata.Languages.Laurel.Laurel
 import Strata.Languages.Laurel.LaurelToCoreTranslator
 import Strata.Languages.Laurel.Grammar.ConcreteToAbstractTreeTranslator
 import Strata.Languages.Core.Verifier
-import Strata.Languages.Solidity.SolidityDialect
-import Strata.Languages.Solidity.ReadSolidity
+import StrataSolidity.SolidityDialect
+import StrataSolidity.ReadSolidity
 import Strata.DL.Imperative.MetaData
 
 /-!
@@ -343,19 +343,19 @@ inductive StrataAnnotation where
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
   let lines := doc.splitOn "\n" |>.map String.trim
   lines.filterMap fun line =>
-    let prefix := "@custom:strata "
-    if line.startsWith prefix then
-      let rest := (line.drop prefix.length).trim
+    let tag := "@custom:strata "
+    if line.startsWith tag then
+      let rest := (line.drop tag.length).toString.trim
       if rest.startsWith "requires " then
-        some (.requires ((rest.drop "requires ".length).trim))
+        some (.requires ((rest.drop "requires ".length).toString.trim))
       else if rest.startsWith "ensures " then
-        some (.ensures ((rest.drop "ensures ".length).trim))
+        some (.ensures ((rest.drop "ensures ".length).toString.trim))
       else if rest.startsWith "invariant " then
-        some (.invariant ((rest.drop "invariant ".length).trim))
+        some (.invariant ((rest.drop "invariant ".length).toString.trim))
       else if rest.startsWith "modifies " then
-        some (.modifies ((rest.drop "modifies ".length).trim))
+        some (.modifies ((rest.drop "modifies ".length).toString.trim))
       else if rest.startsWith "loop-invariant " then
-        some (.loopInvariant ((rest.drop "loop-invariant ".length).trim))
+        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trim))
       else none
     else none
 
@@ -421,11 +421,15 @@ private def isDigitStr (s : String) : Bool :=
   !s.isEmpty && s.toList.all Char.isDigit
 
 /-- Map a Solidity type name string to a Laurel HighType (for quantifier bindings). -/
-/-- Compute the integer value of `type(T).min` or `type(T).max` for elementary integer types.
-    Returns `none` for unrecognized type names. -/
+private def solTypeNameToHighType (name : String) : HighType :=
+  if name == "bool" then .TBool
+  else if name == "address" then .TInt
+  else .TInt  -- uint256, int256, etc. all map to TInt
+
+/-- Compute the integer value of `type(T).min` or `type(T).max` for elementary integer types. -/
 private def typeMinMax (typeName : String) (member : String) : Option Int :=
-  let parseBits (prefix : String) (default : Nat) : Option Nat :=
-    let suffix := typeName.drop prefix.length
+  let parseBits (pfx : String) (default : Nat) : Option Nat :=
+    let suffix := typeName.drop pfx.length
     if suffix.isEmpty then some default
     else suffix.toNat?
   if typeName.startsWith "uint" then do
@@ -437,11 +441,6 @@ private def typeMinMax (typeName : String) (member : String) : Option Int :=
     if member == "min" then some (-(2 ^ (bits - 1)))
     else some (2 ^ (bits - 1) - 1)  -- max
   else none
-
-private def solTypeNameToHighType (name : String) : HighType :=
-  if name == "bool" then .TBool
-  else if name == "address" then .TInt
-  else .TInt  -- uint256, int256, etc. all map to TInt
 
 /-- Parse a spec expression string into a Laurel StmtExprMd.
     Returns the parsed expression and remaining tokens. -/
@@ -558,6 +557,10 @@ where
       return (mkStmtExprMd (.Identifier "msg_sender"), rest)
     | "msg" :: "." :: "value" :: rest =>
       return (mkStmtExprMd (.Identifier "msg_value"), rest)
+    | "type" :: "(" :: typeName :: ")" :: "." :: member :: rest =>
+      match typeMinMax typeName member with
+      | some v => return (mkStmtExprMd (.LiteralInt v), rest)
+      | none => throw (.typeError s!"Unknown type member: type({typeName}).{member}")
     | "forall" :: varName :: ":" :: typeName :: "::" :: rest =>
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
@@ -585,31 +588,6 @@ def parseSpecExpr (s : String) : Except TranslationError StmtExprMd := do
   if !rest.isEmpty then
     throw (.typeError s!"Unexpected tokens after spec expression: {rest}")
   return expr
-
-/-- Process `__old` markers in a parsed spec expression.
-    Replaces `StaticCall "__old" [inner]` by applying `rewriteOldMappingRefs`
-    to the inner expression (rewrites mapping state vars to `_in` versions). -/
-partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars : List String)
-    (expr : StmtExprMd) : StmtExprMd :=
-  let go := processOldMarkers mappingStateVars arrayStateVars
-  match expr.val with
-  | .StaticCall "__old" args =>
-    match args with
-    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars (go inner)
-    | _ => expr
-  | .PrimitiveOp op args =>
-    { expr with val := .PrimitiveOp op (args.map go) }
-  | .StaticCall callee args =>
-    { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (go target) fieldName }
-  | .IfThenElse cond thenBr elseBr =>
-    { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
-  | .Forall param body =>
-    { expr with val := .Forall param (go body) }
-  | .Exists param body =>
-    { expr with val := .Exists param (go body) }
-  | _ => expr
 
 /-- Rewrite mapping state variable references in an old() expression to their
     `_in` input parameter versions. For array state vars, also rewrite
@@ -645,6 +623,31 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
     { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays body) }
+  | _ => expr
+
+/-- Process `__old` markers in a parsed spec expression.
+    Replaces `StaticCall "__old" [inner]` by applying `rewriteOldMappingRefs`
+    to the inner expression (rewrites mapping state vars to `_in` versions). -/
+partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars : List String)
+    (expr : StmtExprMd) : StmtExprMd :=
+  let go := processOldMarkers mappingStateVars arrayStateVars
+  match expr.val with
+  | .StaticCall "__old" args =>
+    match args with
+    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars (go inner)
+    | _ => expr
+  | .PrimitiveOp op args =>
+    { expr with val := .PrimitiveOp op (args.map go) }
+  | .StaticCall callee args =>
+    { expr with val := .StaticCall callee (args.map go) }
+  | .FieldSelect target fieldName =>
+    { expr with val := .FieldSelect (go target) fieldName }
+  | .IfThenElse cond thenBr elseBr =>
+    { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
+  | .Forall param body =>
+    { expr with val := .Forall param (go body) }
+  | .Exists param body =>
+    { expr with val := .Exists param (go body) }
   | _ => expr
 
 mutual
@@ -961,7 +964,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         match argsSeq.val.toList with
         | [.ElementaryTypeNameExpression _ typeNameAnn] =>
           if memberAnn.val == "min" || memberAnn.val == "max" then
-            match typeMinMax typeNameAnn.val memberAnn.val with
+            match SpecParser.typeMinMax typeNameAnn.val memberAnn.val with
             | some v => return mkStmtExprMd (.LiteralInt v)
             | none => throw (.unsupported s!"type({typeNameAnn.val}).{memberAnn.val}")
           else pure ()
@@ -1531,8 +1534,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
             -- Parse comma-separated variable names from modifies annotation
-            let modifiedVars := natspecModifies.bind fun s =>
-              (s.splitOn ",").map String.trim
+            let modifiedVars := natspecModifies.foldl (fun acc s =>
+              acc ++ (s.splitOn ",").map String.trim) []
             -- For each state variable NOT in modifies list, add var == old(var)
             let framePosts := ctx.stateVarNames.filterMap fun name =>
               if modifiedVars.contains name then none
@@ -1633,7 +1636,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq contractDocAnn => do
+  | .ContractDefinition _ nameAnn _kindAnn nodesSeq contractDocAnn _baseContracts => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
@@ -1806,7 +1809,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
 
     for node in nodesSeq.val do
       match node with
-      | .ContractDefinition _ _ _ _ _ => do
+      | .ContractDefinition _ _ _ _ _ _ => do
         let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types

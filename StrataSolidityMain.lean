@@ -67,7 +67,7 @@ private def formatPlainCounterexample (cex : LExprModel) : String :=
   else
     let entries := cex.map fun (id, e) =>
       let name := StrataSolidity.Sarif.cleanVarName (toString id)
-      let val := toString (Core.formatExprs [e])
+      let val := toString e
       s!"        {name} = {val}"
     "\n" ++ "\n".intercalate entries
 
@@ -133,14 +133,14 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
 private def formatJsonResults (vcResults : Array Core.VCResult)
     (sourceOpt : Option (String × String)) : String :=
   let arr := vcResults.map fun vcr =>
-    let mut fields : Array (String × Json) := #[
+    let baseFields : Array (String × Json) := #[
       ("name", Json.str vcr.obligation.label),
       ("status", Json.str (statusLabel vcr.result))
     ]
-    match resolvePosition vcr sourceOpt with
+    let fields := match resolvePosition vcr sourceOpt with
     | some (line, col) =>
-      fields := fields.push ("line", toJson line) |>.push ("col", toJson col)
-    | none => pure ()
+      baseFields.push ("line", toJson line) |>.push ("col", toJson col)
+    | none => baseFields
     Json.mkObj fields.toList
   (Json.arr arr).pretty
 

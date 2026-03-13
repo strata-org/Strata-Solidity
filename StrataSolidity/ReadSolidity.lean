@@ -6,7 +6,7 @@
 module
 
 import Strata.DDM.Ion
-public import Strata.Languages.Solidity.SolidityDialect
+public import StrataSolidity.SolidityDialect
 
 public section
 namespace Strata.Solidity
