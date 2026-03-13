@@ -258,7 +258,8 @@ class Converter:
                 self._opt_type_name(node.get("typeName")),
                 self._bool_str(node.get("stateVariable", False)),
                 self._bool_str(node.get("constant", False)),
-                self._str(node.get("storageLocation", "")), ann=ann)
+                self._str(node.get("storageLocation", "")),
+                self._opt_node(node.get("value")), ann=ann)
 
         if nt == "Block":
             return self.d.Block(
@@ -316,6 +317,10 @@ class Converter:
                 self.convert_node(node["subExpression"]),
                 self._str(node.get("operator")),
                 self._bool_str(node.get("prefix", True)), ann=ann)
+
+        if nt == "FunctionCallOptions":
+            # addr.call{value: amount}("") — strip options, keep inner expression
+            return self.convert_node(node["expression"])
 
         if nt == "FunctionCall":
             return self.d.FunctionCall(
