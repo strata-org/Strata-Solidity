@@ -258,15 +258,16 @@ def analyze(sol_path: str) -> CoverageReport:
                             ))
 
             # Check modifies against actual writes
-            modifies_vars = set()
+            modifies_key_counts = {}
             for spec in fn_specs:
                 if spec.kind == "modifies":
                     for v in spec.expr.split(","):
                         v = v.strip()
-                        # Strip index access: balances[to] -> balances
                         base = re.match(r'([a-zA-Z_]\w*)', v)
                         if base:
-                            modifies_vars.add(base.group(1))
+                            b = base.group(1)
+                            modifies_key_counts[b] = modifies_key_counts.get(b, 0) + 1
+            modifies_vars = set(modifies_key_counts.keys())
 
             body = fn.get("body")
             writes = find_writes(body) if body else []
@@ -291,11 +292,11 @@ def analyze(sol_path: str) -> CoverageReport:
             # Check for suspicious multiple writes to same mapping
             if has_modifies:
                 for vname, count in write_counts.items():
-                    if count > 1 and vname in modifies_vars:
+                    if count > modifies_key_counts.get(vname, 1) and vname in modifies_vars:
                         report.issues.append(Issue(
                             rule_id="strata/suspicious-write",
                             message=f"'{fn_name}' writes to '{vname}' {count} times "
-                                    f"but modifies only declares one access pattern — "
+                                    f"but modifies only declares {modifies_key_counts.get(vname, 1)} access pattern(s) — "
                                     f"possible undeclared key write",
                             file=sol_path, line=fn_line,
                             severity="warning"
