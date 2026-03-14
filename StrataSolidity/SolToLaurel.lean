@@ -650,6 +650,36 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
     { expr with val := .Exists param (go body) }
   | _ => expr
 
+/-- Rewrite bare state variable identifiers in NatSpec-parsed spec expressions.
+    Scalar state vars: `Identifier "x"` → `FieldSelect self "x"`
+    Mapping state vars: left as `Identifier "x"` (they're explicit parameters).
+    Skips identifiers that are local names, parameters, or not state vars. -/
+partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars : List String)
+    (localNames : List String) (expr : StmtExprMd) : StmtExprMd :=
+  let go := rewriteStateVarRefs stateVarNames mappingStateVars localNames
+  match expr.val with
+  | .Identifier name =>
+    if localNames.contains name.text then expr
+    else if mappingStateVars.contains name.text then expr  -- mappings are explicit params
+    else if stateVarNames.contains name.text then
+      mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+    else expr
+  | .PrimitiveOp op args =>
+    { expr with val := .PrimitiveOp op (args.map go) }
+  | .StaticCall callee args =>
+    { expr with val := .StaticCall callee (args.map go) }
+  | .FieldSelect target fieldName =>
+    { expr with val := .FieldSelect (go target) fieldName }
+  | .IfThenElse cond thenBr elseBr =>
+    { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
+  | .Forall param body =>
+    let locals' := localNames ++ [param.name.text]
+    { expr with val := .Forall param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
+  | .Exists param body =>
+    let locals' := localNames ++ [param.name.text]
+    { expr with val := .Exists param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
+  | _ => expr
+
 mutual
 
 /-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr. -/
@@ -1470,6 +1500,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let natspecLoopInvStrs := annotations.filterMap fun
       | .loopInvariant e => some e | _ => none
     let natspecLoopInvExprs ← natspecLoopInvStrs.mapM parseSpecExpr
+    -- Rewrite state var refs in loop invariants
+    let specLocalNames := userParamInfo.map (·.1) ++
+      (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
+    let rewriteSVGlobal := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+    let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
                               loopInvariantExprs := natspecLoopInvExprs }
@@ -1485,6 +1520,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specPostExprs ← natspecPosts.mapM fun s => do
           let expr ← parseSpecExpr s
           pure (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars expr)
+
+        -- Rewrite bare state variable identifiers to FieldSelect self "name"
+        -- for scalar state vars. Mapping state vars stay as bare Identifier.
+        -- Parameter names and output names are treated as locals (not rewritten).
+        let specLocalNames := userParamInfo.map (·.1) ++
+          (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
+        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let specPreExprs := specPreExprs.map rewriteSV
+        let specPostExprs := specPostExprs.map rewriteSV
 
         -- Rewrite precondition expressions: user parameter names → _param names
         -- and mapping state var names → _in names (preconditions reference pre-state)
@@ -1537,7 +1581,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView then [] else ctx.contractInvariantNatspec
+        let contractInvariants := if isPure || isView then []
+          else ctx.contractInvariantNatspec.map rewriteSV
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
         -- Generate frame conditions from @custom:strata modifies
@@ -1547,22 +1592,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           else
             -- Parse comma-separated variable names from modifies annotation
             let modifiedVars := natspecModifies.foldl (fun acc s =>
-              acc ++ (s.splitOn ",").map String.trim) []
-            -- For each state variable NOT in modifies list, add var == old(var)
-            let framePosts := ctx.stateVarNames.filterMap fun name =>
+              acc ++ ((s.splitOn ",").map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
+            -- For each mapping state variable NOT in modifies list, add var == old(var)
+            -- Scalar state vars are heap-allocated; their frame conditions are handled
+            -- by the Laurel heap parameterization automatically.
+            let framePosts := ctx.mappingStateVars.filterMap fun name =>
               if modifiedVars.contains name then none
-              else if ctx.mappingStateVars.contains name then
-                -- Mapping: name == name_in (pre-state)
+              else
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
                   mkStmtExprMd (.Identifier name),
-                  mkStmtExprMd (.Identifier s!"{name}_in")]))
-              else
-                -- Scalar: self.name == old(self.name) — via FieldSelect
-                some (mkStmtExprMd (.PrimitiveOp .Eq [
-                  mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "result_self"))
-                    ⟨name, none⟩),
-                  mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self"))
-                    ⟨name, none⟩)]))
+                  mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))]))
             framePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
         let allPosts := specPostExprs ++ frameConditions ++ contractInvariants
@@ -1571,8 +1610,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         else
           pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr) [], contractInvariants)
       | .missing_node _ =>
-        -- No body: use NatSpec invariants
-        let contractInvariants := if isPure || isView then [] else ctx.contractInvariantNatspec
+        -- No body: use NatSpec invariants (rewrite state var refs)
+        let specLocalNames := userParamInfo.map (·.1) ++
+          (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
+        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let contractInvariants := if isPure || isView then []
+          else ctx.contractInvariantNatspec.map rewriteSV
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract contractInvariants, contractInvariants)
 
