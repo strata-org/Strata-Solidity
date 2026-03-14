@@ -894,26 +894,21 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- selfdestruct(addr) → deprecated, model as no-op
         return mkStmtExprMd .Hole
       | funcName =>
-        -- Internal call to a non-pure function: thread `self`, `msg_sender`,
-        -- and mapping/array state variables.
-        -- Positional argument contract (must match callee signature in translateFunction):
-        --   [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args...]
-        -- where user_args are received into `name_param` formals on the callee side.
+        -- Internal call: prefix with contract name to match procedure declaration
+        let qualifiedName := s!"{ctx.contractName}_{funcName}"
         if ctx.nonPureFunctions.contains funcName then
           let mut implicitArgs : List StmtExprMd := []
-          -- Thread self only if there are non-mapping state vars
           let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
           if !nonMappingStateVars.isEmpty then
             implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "self")]
           implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "msg_sender")]
-          -- Thread mapping/array state variables
           for name in ctx.mappingStateVars do
             implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier name)]
             if ctx.arrayStateVars.contains name then
               implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier s!"{name}_length")]
-          return mkStmtExprMd (.StaticCall funcName (implicitArgs ++ args))
+          return mkStmtExprMd (.StaticCall qualifiedName (implicitArgs ++ args))
         else
-          return mkStmtExprMd (.StaticCall funcName args)
+          return mkStmtExprMd (.StaticCall qualifiedName args)
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val) on array state variables
       if memberAnn.val == "push" then do
@@ -1398,7 +1393,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
                     else if kindAnn.val == "fallback" then s!"{ctx.contractName}_fallback"
-                    else nameAnn.val
+                    else s!"{ctx.contractName}_{nameAnn.val}"
     let isPure := mutAnn.val == "pure"
     let isView := mutAnn.val == "view"
 
