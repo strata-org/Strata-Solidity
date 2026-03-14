@@ -564,6 +564,12 @@ where
         -- identified and rewritten by rewriteOldMappingRefs later.
         return (mkStmtExprMd (.StaticCall "__old" [inner]), rest'')
       | _ => throw (.typeError "Expected ')' after old(")
+    | "address" :: "(" :: rest =>
+      -- address(expr) is a type cast to address; treat as identity on the inner expr
+      let (inner, rest') ← parseExpr rest
+      match rest' with
+      | ")" :: rest'' => return (inner, rest'')
+      | _ => throw (.typeError "Expected ')' after address(")
     | "msg" :: "." :: "sender" :: rest =>
       return (mkStmtExprMd (.Identifier "msg_sender"), rest)
     | "msg" :: "." :: "value" :: rest =>
