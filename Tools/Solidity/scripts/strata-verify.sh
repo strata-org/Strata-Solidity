@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$(cd "$TOOLS_DIR/../.." && pwd)"
+STRATA_PYTHON="$(cd "$PROJECT_DIR/../Strata/Tools/Python" 2>/dev/null && pwd || echo "")"
 DIALECT="$TOOLS_DIR/dialects/Solidity.dialect.st.ion"
 STRATA_BIN="$PROJECT_DIR/.lake/build/bin/strataSolidity"
 
@@ -14,7 +15,7 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
-SOL_FILE="$1"
+SOL_FILE="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 shift
 EXTRA_ARGS="$*"
 
@@ -40,11 +41,11 @@ trap "rm -rf $TMPDIR" EXIT
 ION_FILE="$TMPDIR/$(basename "$SOL_FILE" .sol).solidity.st.ion"
 
 # Step 1: Solidity -> Ion (via solc + solast.py)
-PYTHONPATH="${TOOLS_DIR}/../../Strata/Tools/Python:${PYTHONPATH:-}" \
+(cd "$TOOLS_DIR" && PYTHONPATH="${STRATA_PYTHON}:${PYTHONPATH:-}" \
   python3 -m src.solast sol_to_strata \
     --dialect "$DIALECT" \
     "$SOL_FILE" \
-    "$ION_FILE" \
+    "$ION_FILE") \
   2>&1 || { echo "Error: Failed to parse $SOL_FILE" >&2; exit 1; }
 
 # Step 2: Ion -> Verification (via strataSolidity)
