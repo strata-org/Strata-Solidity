@@ -965,7 +965,8 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         | .Identifier _ baseNameAnn =>
           if baseNameAnn.val == "abi" then do
             let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-            return mkStmtExprMd (.StaticCall s!"abi_{memberAnn.val}" args)
+            let suffix := if args.length > 1 then s!"{args.length}" else ""
+            return mkStmtExprMd (.StaticCall s!"abi_{memberAnn.val}{suffix}" args)
         | _ => pure ()
         -- General method call: obj.method(args) → StaticCall "method" (obj :: args)
         let base ← translateExpr ctx baseNode
@@ -1893,8 +1894,48 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
       | _ => pure ()  -- Skip unsupported top-level nodes
 
+    -- Declare uninterpreted functions used by the translator.
+    -- These are abstract procedures with no body, giving the solver
+    -- functional consistency (same inputs → same output) but no other axioms.
+    let mkUninterpBinary (name : String) : Procedure := {
+      name := name
+      inputs := [{ name := "a", type := mkHighTypeMd .TInt },
+                 { name := "b", type := mkHighTypeMd .TInt }]
+      outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
+      preconditions := []
+      determinism := .deterministic none
+      decreases := none
+      isFunctional := true
+      body := .Abstract []
+      md := default
+    }
+    let mkUninterpUnary (name : String) : Procedure := {
+      name := name
+      inputs := [{ name := "a", type := mkHighTypeMd .TInt }]
+      outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
+      preconditions := []
+      determinism := .deterministic none
+      decreases := none
+      isFunctional := true
+      body := .Abstract []
+      md := default
+    }
+    let uninterpFunctions := [
+      mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
+      mkUninterpBinary "bit_xor", mkUninterpBinary "bit_shl",
+      mkUninterpBinary "bit_shr", mkUninterpUnary "bit_not",
+      mkUninterpUnary "keccak256", mkUninterpUnary "sha256",
+      mkUninterpUnary "abi_encode", mkUninterpBinary "abi_encode2",
+      mkUninterpUnary "abi_encodePacked", mkUninterpBinary "abi_encodePacked2",
+      mkUninterpUnary "abi_encodeWithSelector",
+      mkUninterpUnary "abi_encodeWithSignature",
+      mkUninterpUnary "abi_decode",
+      mkUninterpUnary "address_balance",
+      mkUninterpUnary "address_code", mkUninterpUnary "address_codehash"
+    ]
+
     return {
-      staticProcedures := allProcedures
+      staticProcedures := uninterpFunctions ++ allProcedures
       staticFields := []
       types := allTypes
       constants := []
