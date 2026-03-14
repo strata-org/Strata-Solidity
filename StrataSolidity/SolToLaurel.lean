@@ -420,6 +420,17 @@ private def tokenize (s : String) : List String :=
 private def isDigitStr (s : String) : Bool :=
   !s.isEmpty && s.toList.all Char.isDigit
 
+/-- Try to parse a scientific notation token like "1e24" → some (1 * 10^24). -/
+private def parseSciNotation (s : String) : Option Nat :=
+  match s.splitOn "e" with
+  | [base, exp] =>
+    if isDigitStr base && isDigitStr exp then
+      match base.toNat?, exp.toNat? with
+      | some b, some e => some (b * 10 ^ e)
+      | _, _ => none
+    else none
+  | _ => none
+
 /-- Map a Solidity type name string to a Laurel HighType (for quantifier bindings). -/
 private def solTypeNameToHighType (name : String) : HighType :=
   if name == "bool" then .TBool
@@ -576,8 +587,9 @@ where
         match tok.toNat? with
         | some n => return (mkStmtExprMd (.LiteralInt n), rest)
         | none => throw (.typeError s!"Invalid integer literal: {tok}")
-      else
-        return (mkStmtExprMd (.Identifier tok), rest)
+      else match parseSciNotation tok with
+        | some n => return (mkStmtExprMd (.LiteralInt n), rest)
+        | none => return (mkStmtExprMd (.Identifier tok), rest)
 
 end SpecParser
 
