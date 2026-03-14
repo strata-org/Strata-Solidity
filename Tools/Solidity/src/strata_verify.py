@@ -11,11 +11,14 @@ Usage:
 """
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOOLS_DIR = SCRIPT_DIR.parent
@@ -24,7 +27,8 @@ DIALECT = TOOLS_DIR / "dialects" / "Solidity.dialect.st.ion"
 STRATA_BIN = PROJECT_DIR / ".lake" / "build" / "bin" / "strataSolidity"
 
 
-def verify_file(sol_path: str, sarif: bool = False, timeout: int = 0) -> dict:
+def verify_file(sol_path: str, sarif: bool = False, timeout: int = 0,
+                solver: str = "z3") -> dict:
     """Run the Strata pipeline on a .sol file, return solc-compatible JSON."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ion_path = os.path.join(tmpdir, Path(sol_path).stem + ".solidity.st.ion")
@@ -79,7 +83,39 @@ def verify_file(sol_path: str, sarif: bool = False, timeout: int = 0) -> dict:
         return {"errors": errors}
 
 
+def _parse_model_checker(mc: dict) -> dict:
+    """Extract and validate modelChecker settings, return normalized config."""
+    cfg = {"engine": mc.get("engine", "strata"), "timeout": mc.get("timeout", 0)}
+
+    targets = mc.get("targets")
+    if targets:
+        cfg["targets"] = targets
+
+    contracts = mc.get("contracts")
+    if contracts:
+        cfg["contracts"] = contracts
+        logger.warning("settings.modelChecker.contracts filtering is not yet supported; all contracts will be verified")
+
+    solvers = mc.get("solvers")
+    solver = "z3"
+    if solvers:
+        cfg["solvers"] = solvers
+        solver = solvers[0]
+        if solver != "z3":
+            logger.warning("Solver '%s' requested; defaulting to z3 (only z3 currently supported)", solver)
+            solver = "z3"
+    cfg["_solver"] = solver
+    return cfg
+
+
 def main():
+    # Parse --fail-under N
+    fail_under = None
+    if "--fail-under" in sys.argv:
+        idx = sys.argv.index("--fail-under")
+        fail_under = float(sys.argv[idx + 1])
+        del sys.argv[idx:idx + 2]
+
     # Mode 1: --file <path.sol>
     if "--file" in sys.argv:
         idx = sys.argv.index("--file")
@@ -87,6 +123,8 @@ def main():
         sarif = "--sarif" in sys.argv
         result = verify_file(sol_path, sarif=sarif)
         print(json.dumps(result, indent=2))
+        if fail_under is not None:
+            _check_fail_under(sol_path, fail_under)
         return
 
     # Mode 2: standard-json on stdin
@@ -104,8 +142,10 @@ def main():
                                        "message": f"Unsupported engine: {engine}. Use 'strata'."}]}))
         return
 
-    timeout = (input_json.get("settings", {})
-               .get("modelChecker", {}).get("timeout", 0))
+    mc = input_json.get("settings", {}).get("modelChecker", {})
+    mc_cfg = _parse_model_checker(mc)
+    timeout = mc_cfg["timeout"]
+    solver = mc_cfg["_solver"]
     sarif = "--sarif" in sys.argv
 
     sources = input_json.get("sources", {})
@@ -116,10 +156,25 @@ def main():
             os.makedirs(os.path.dirname(sol_path), exist_ok=True)
             content = source_info.get("content", "")
             Path(sol_path).write_text(content)
-            result = verify_file(sol_path, sarif=sarif, timeout=timeout)
+            result = verify_file(sol_path, sarif=sarif, timeout=timeout,
+                                 solver=solver)
             all_errors.extend(result.get("errors", []))
 
-    print(json.dumps({"errors": all_errors}, indent=2))
+    output = {"errors": all_errors}
+    if "targets" in mc_cfg:
+        output["modelCheckerTargets"] = mc_cfg["targets"]
+    print(json.dumps(output, indent=2))
+
+
+def _check_fail_under(sol_path: str, threshold: float):
+    """Run coverage analysis and exit non-zero if score < threshold%."""
+    from src.strata_coverage import analyze
+    report = analyze(sol_path)
+    pct = report.score * 100
+    if pct < threshold:
+        print(f"FAIL: coverage {pct:.1f}% < {threshold}%", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: coverage {pct:.1f}% >= {threshold}%", file=sys.stderr)
 
 
 if __name__ == "__main__":
