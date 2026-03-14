@@ -27,6 +27,10 @@ into the Laurel intermediate representation.
 - Arithmetic and comparison operators
 - Contracts as CompositeType with state-variable fields + static procedures
 - Struct definitions as CompositeType
+- Transient storage variables (`uint256 transient x`): treated identically to
+  regular state variables for single-transaction verification. Transient storage
+  is cleared between transactions (EIP-1153); cross-transaction reasoning would
+  need to model this reset, but within a single transaction the semantics match.
 
 ## Design (Option A from design doc)
 Uses `solc --ast-json` via the external Python tooling; this module
