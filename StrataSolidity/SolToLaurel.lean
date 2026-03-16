@@ -565,7 +565,7 @@ where
       match rest' with
       | ")" :: rest'' =>
         -- Mark old() expressions with a StaticCall "__old" so they can be
-        -- identified and rewritten by rewriteOldMappingRefs later.
+        -- identified and rewritten by processOldMarkers later.
         return (mkStmtExprMd (.StaticCall "__old" [inner]), rest'')
       | _ => throw (.typeError "Expected ')' after old(")
     | "address" :: "(" :: rest =>
@@ -611,19 +611,21 @@ def parseSpecExpr (s : String) : Except TranslationError StmtExprMd := do
     throw (.typeError s!"Unexpected tokens after spec expression: {rest}")
   return expr
 
-/-- Rewrite mapping state variable references in an old() expression to their
-    `_in` input parameter versions. For array state vars, also rewrite
-    `name_length` to `name_length_in`.
-    This desugars `old(balances[to])` to `select(balances_in, to)`. -/
+/-- Rewrite state variable references inside an old() expression.
+    Mapping state vars: `name` → `name_in` (explicit input parameter).
+    Array length refs: `name_length` → `name_length_in`.
+    Scalar state vars: `name` → `__old_name` (marker for rewriteStateVarRefs). -/
 partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVars : List String)
+    (scalarStateVars : List String)
     (expr : StmtExprMd) : StmtExprMd :=
-  let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars e
+  let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars e
   match expr.val with
   | .Identifier name =>
     if mappingStateVars.contains name.text then
       { expr with val := .Identifier s!"{name.text}_in" }
+    else if scalarStateVars.contains name.text then
+      { expr with val := .Identifier s!"__old_{name.text}" }
     else
-      -- Check for array length references: name_length → name_length_in
       let isArrayLength := arrayStateVars.any fun av => name.text == s!"{av}_length"
       if isArrayLength then
         { expr with val := .Identifier s!"{name.text}_in" }
@@ -637,26 +639,28 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
   | .Forall param body =>
-    -- Don't rewrite the bound variable if it shadows a mapping state var name
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
-    { expr with val := .Forall param (rewriteOldMappingRefs shadowedMappings shadowedArrays body) }
+    let shadowedScalars := scalarStateVars.filter (· != param.name.text)
+    { expr with val := .Forall param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
   | .Exists param body =>
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
-    { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays body) }
+    let shadowedScalars := scalarStateVars.filter (· != param.name.text)
+    { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
   | _ => expr
 
 /-- Process `__old` markers in a parsed spec expression.
     Replaces `StaticCall "__old" [inner]` by applying `rewriteOldMappingRefs`
-    to the inner expression (rewrites mapping state vars to `_in` versions). -/
+    to the inner expression. -/
 partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars : List String)
+    (scalarStateVars : List String)
     (expr : StmtExprMd) : StmtExprMd :=
-  let go := processOldMarkers mappingStateVars arrayStateVars
+  let go := processOldMarkers mappingStateVars arrayStateVars scalarStateVars
   match expr.val with
   | .StaticCall "__old" args =>
     match args with
-    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars (go inner)
+    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars (go inner)
     | _ => expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map go) }
@@ -683,6 +687,11 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
   | .Identifier name =>
     if localNames.contains name.text then expr
     else if mappingStateVars.contains name.text then expr  -- mappings are explicit params
+    else if name.text.startsWith "__old_" then
+      let realName : Identifier := (name.text.drop 6).toString
+      if stateVarNames.contains realName.text then
+        mkStmtExprMd (.Old (mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) realName)))
+      else expr
     else if stateVarNames.contains name.text then
       mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
     else expr
@@ -1537,7 +1546,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specPreExprs ← natspecPres.mapM parseSpecExpr
         let specPostExprs ← natspecPosts.mapM fun s => do
           let expr ← parseSpecExpr s
-          pure (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars expr)
+          pure (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames expr)
 
         -- Rewrite bare state variable identifiers to FieldSelect self "name"
         -- for scalar state vars. Mapping state vars stay as bare Identifier.
@@ -1553,7 +1562,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let userParamNames := userParamInfo.map (·.1)
         let specPreExprs := specPreExprs.map (rewriteParamRefs userParamNames)
         let specPreExprs := if !isPure && !isView && !isConstructor then
-          specPreExprs.map (rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars)
+          specPreExprs.map (rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
         else specPreExprs
         -- Rewrite postcondition expressions: user parameter names → _param names
         let specPostExprs := specPostExprs.map (rewriteParamRefs userParamNames)
