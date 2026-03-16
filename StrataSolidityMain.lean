@@ -149,8 +149,15 @@ def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose"
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
-  let flags := ["--verbose", "--sarif", "--json"]
-  let files := args.filter (fun a => !flags.contains a)
+  let useArrays := args.contains "--array-theory"
+  let dumpVcDir : Option String := match args.filter (·.startsWith "--dump-vc=") with
+    | t :: _ => some (t.drop "--dump-vc=".length).toString
+    | _ => none
+  let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
+    | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
+    | _ => 10
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory"]
+  let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=")
   match files with
   | [filePath] =>
     let cmds ← readSolidityStrata' filePath
@@ -185,14 +192,29 @@ def main (args : List String) : IO Unit := do
           IO.print coreProgram
 
         -- Verify using Core verifier
-        let vcResults ← IO.FS.withTempDir (fun tempDir =>
+        let vcResults ← match dumpVcDir with
+          | some dir => do
+            IO.FS.createDirAll ⟨dir⟩
             EIO.toIO
               (fun f => IO.Error.userError (toString f))
-              (Core.verify coreProgram tempDir .none
+              (Core.verify coreProgram ⟨dir⟩ .none
                 { VerifyOptions.default with
                   stopOnFirstError := false,
                   verbose := .quiet,
-                  solver := "z3" }))
+                  solver := "z3",
+                  solverTimeout := timeoutVal,
+                  useArrayTheory := useArrays })
+          | none =>
+            IO.FS.withTempDir (fun tempDir =>
+              EIO.toIO
+                (fun f => IO.Error.userError (toString f))
+                (Core.verify coreProgram tempDir .none
+                  { VerifyOptions.default with
+                    stopOnFirstError := false,
+                    verbose := .quiet,
+                    solver := "z3",
+                    solverTimeout := timeoutVal,
+                    useArrayTheory := useArrays }))
 
         -- Print results
         if sarifMode then
