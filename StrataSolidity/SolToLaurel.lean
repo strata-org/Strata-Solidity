@@ -1631,7 +1631,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                   mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))]))
             framePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
-        let allPosts := specPostExprs ++ frameConditions ++ contractInvariants
+        -- Tag invariant postconditions with __strata_invariant wrapper for label generation
+        let taggedInvariants := contractInvariants.map fun inv =>
+          mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
+        let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
