@@ -1638,7 +1638,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
-          pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr) [], contractInvariants)
+          pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr)
+            [mkStmtExprMd (.Identifier "self")], contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++
