@@ -1691,8 +1691,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
+          -- Only include self in modifies list when contract has scalar (non-mapping) state vars
+          let modifiesList := if hasNonMappingState then
+            [mkStmtExprMd (.Identifier "self")]
+          else []
           pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr)
-            [mkStmtExprMd (.Identifier "self")], contractInvariants)
+            modifiesList, contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++
