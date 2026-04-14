@@ -531,6 +531,20 @@ where
     let (base, rest) ← parseAtom tokens
     parsePostfixTail base rest
 
+  parseArgList (tokens : List String) : Except TranslationError (List StmtExprMd × List String) := do
+    match tokens with
+    | ")" :: rest => return ([], rest)
+    | _ =>
+      let (arg, rest) ← parseExpr tokens
+      let rec go (acc : List StmtExprMd) (toks : List String) : Except TranslationError (List StmtExprMd × List String) := do
+        match toks with
+        | ")" :: rest => return (acc.reverse, rest)
+        | "," :: rest =>
+          let (arg, rest') ← parseExpr rest
+          go (arg :: acc) rest'
+        | _ => throw (.typeError "Expected ')' or ',' in argument list")
+      go [arg] rest
+
   parsePostfixTail (base : StmtExprMd) (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
     match tokens with
     | "[" :: rest =>
@@ -540,6 +554,23 @@ where
         let sel := mkStmtExprMd (.StaticCall "select" [base, idx])
         parsePostfixTail sel rest''
       | _ => throw (.typeError "Expected ']' in index access")
+    | "(" :: rest =>
+      -- Function call: base(arg1, arg2, ...) or obj.method(arg1, ...)
+      let fname := match base.val with
+        | .Identifier name => name.text
+        | .FieldSelect obj field =>
+          -- obj.method → "obj_method" for Strata builtins (abi.encodePacked → abi_encodePacked)
+          match obj.val with
+          | .Identifier objName => s!"{objName.text}_{field.text}"
+          | _ => s!"__unknown_{field.text}"
+        | _ => "__unknown_call"
+      let (args, rest') ← parseArgList rest
+      -- Dispatch multi-arg builtins: abi_encode(a,b) → abi_encode2(a,b)
+      let fname' := if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
+        s!"{fname}2"
+      else fname
+      let call := mkStmtExprMd (.StaticCall fname' args)
+      parsePostfixTail call rest'
     | "." :: member :: rest =>
       if member == "length" then
         -- x.length → Identifier "x_length" (for arrays)
@@ -1617,19 +1648,41 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           | .modifies vars => some vars | _ => none
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
-            -- Parse comma-separated variable names from modifies annotation
-            let modifiedVars := natspecModifies.foldl (fun acc s =>
+            -- Parse comma-separated variable names from modifies annotation.
+            -- Each entry may be "varName" or "varName[keyExpr]".
+            let modifiedEntries := natspecModifies.foldl (fun acc s =>
               acc ++ ((s.splitOn ",").map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- For each mapping state variable NOT in modifies list, add var == old(var)
-            -- Scalar state vars are heap-allocated; their frame conditions are handled
-            -- by the Laurel heap parameterization automatically.
-            let framePosts := ctx.mappingStateVars.filterMap fun name =>
-              if modifiedVars.contains name then none
+            -- Split entries into base names (strip [key] suffixes for now)
+            let stripKey (entry : String) : String :=
+              match entry.splitOn "[" with
+              | [base] => base.trim
+              | [base, _] => base.trim  -- TODO: key-scoped modifies (needs resolution pass changes)
+              | _ => entry.trim
+            let modifiedBaseNames := modifiedEntries.map stripKey
+            -- For each mapping state variable NOT in modifies list, add var == var_in
+            -- For key-scoped modifies (e.g., balances[msg.sender]), add:
+            --   forall __k : int :: __k != key ==> select(var, __k) == select(var_in, __k)
+            let framePosts := ctx.mappingStateVars.filterMap fun (name : String) =>
+              if modifiedBaseNames.contains name then
+                none  -- Modified mapping, no frame needed
               else
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
                   mkStmtExprMd (.Identifier name),
-                  mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))]))
-            framePosts
+                  mkStmtExprMd (.Identifier (name ++ "_in"))]))
+            -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
+            -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
+            -- not other fields of self. We need explicit field-level framing.
+            let scalarFramePosts := ctx.stateVarNames.filterMap fun name =>
+              if ctx.mappingStateVars.contains name then none  -- handled above
+              else if modifiedBaseNames.contains name then none  -- declared as modified
+              else
+                -- scalar not modified: self#name == old(self#name)
+                -- Generate in already-rewritten form (post rewriteStateVarRefs)
+                let selfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+                let oldSelfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+                let oldWrapped := mkStmtExprMd (.StaticCall "old" [oldSelfField])
+                some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, oldWrapped]))
+            framePosts ++ scalarFramePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
         -- Tag invariant postconditions with __strata_invariant wrapper for label generation
         let taggedInvariants := contractInvariants.map fun inv =>
