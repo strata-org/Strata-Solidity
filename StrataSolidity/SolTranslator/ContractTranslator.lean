@@ -135,9 +135,24 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Only include public/internal functions; external functions cannot be called internally.
     let stateVarNames := fields.map (·.name.text)
     -- Identify mapping-typed state variables (these bypass the heap)
-    let mappingStateVars := fields.filterMap fun f =>
+    -- Collect struct names for filtering struct-valued mappings
+    let structNames := structFieldMap.map (·.1)
+    -- Exclude struct-valued mappings entirely (unsupported in Core HeapParameterization)
+    let structMappingNames := fields.filterMap fun f =>
       match f.type.val with
-      | .TMap _ _ => some f.name.text
+      | .TMap _ valTy => match valTy.val with
+        | .UserDefined name => if structNames.contains name.text then some f.name.text else none
+        | _ => none
+      | _ => none
+    let activeFields := fields.filter fun f => !structMappingNames.contains f.name.text
+    let activeStateVarNames := stateVarNames.filter fun n => !structMappingNames.contains n
+    let mappingStateVars := activeFields.filterMap fun f =>
+      match f.type.val with
+      | .TMap _ valTy =>
+        -- Exclude mappings whose value type is a struct (unsupported in Core)
+        match valTy.val with
+        | .UserDefined name => if structNames.contains name.text then none else some f.name.text
+        | _ => some f.name.text
       | _ => none
     -- Identify array-typed state variables (subset of mappingStateVars).
     -- We re-scan the DDM nodes to distinguish ArrayTypeName from MappingType,
@@ -168,8 +183,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let baseFnCtx : TransCtx :=
       { ctx with structFields := sfm
                  contractName := nameAnn.val
-                 contractFields := fields
-                 stateVarNames := stateVarNames
+                 contractFields := activeFields
+                 stateVarNames := activeStateVarNames
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions
@@ -189,9 +204,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ _ => do
-          let proc ← translateFunction fnCtx member
-          procedures := procedures ++ [proc]
+      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ bodyOpt _ _ => do
+          -- Skip functions that reference struct-valued mappings (unsupported in Core)
+          let bodyText := match bodyOpt with
+            | .some_node _ _ => toString (repr bodyOpt)
+            | _ => ""
+          let usesStructMapping := structMappingNames.any fun name => (bodyText.splitOn name).length > 1
+          if usesStructMapping then pure ()
+          else do
+            let proc ← translateFunction fnCtx member
+            procedures := procedures ++ [proc]
       | _ => pure ()
 
     -- Contract invariants are checked via injection into public functions'
@@ -199,7 +221,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
 
     -- Emit a CompositeType for the contract only when it has non-mapping state-variable fields.
     -- Mapping fields are passed as explicit parameters, not stored on the heap.
-    let nonMappingFields := fields.filter fun f => !mappingStateVars.contains f.name.text
+    let nonMappingFields := activeFields.filter fun f => !mappingStateVars.contains f.name.text
     if !nonMappingFields.isEmpty then
       let contractType : TypeDefinition := .Composite {
         name := nameAnn.val

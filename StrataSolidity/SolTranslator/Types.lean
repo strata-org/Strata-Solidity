@@ -150,6 +150,13 @@ def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtE
 
 /-! ## Translation Error -/
 
+/-- Check if a spec string contains struct-through-mapping access (e.g., `m[k].field`).
+    These are unsupported and must be filtered out before reaching Core. -/
+def hasStructAccess (s : String) : Bool :=
+  let chars := s.toList
+  chars.zip (chars.drop 1 |>.zip (chars.drop 2)) |>.any fun (c, (c1, c2)) =>
+    c == ']' && c1 == '.' && c2.isAlpha
+
 inductive TranslationError where
   | unsupported (msg : String)
   | typeError (msg : String)

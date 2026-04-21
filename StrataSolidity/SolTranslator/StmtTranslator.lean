@@ -189,9 +189,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
         let natspecPres := annotations.filterMap fun
-          | .requires e => some e | _ => none
+          | .requires e => if hasStructAccess e then none else some e | _ => none
         let natspecPosts := annotations.filterMap fun
-          | .ensures e => some e | _ => none
+          | .ensures e => if hasStructAccess e then none else some e | _ => none
 
         -- Parse NatSpec spec expressions
         let specPreExprs ← natspecPres.mapM parseSpecExpr
