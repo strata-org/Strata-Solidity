@@ -8,6 +8,5 @@
 
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
-import StrataSolidity.SolToLaurel
 import StrataSolidity.Solidity
 import StrataSolidity.SarifOutput

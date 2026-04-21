@@ -8,4 +8,9 @@
 
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
-import StrataSolidity.SolToLaurel
+import StrataSolidity.SolTranslator.Types
+import StrataSolidity.SolTranslator.SpecParser
+import StrataSolidity.SolTranslator.SpecRewriter
+import StrataSolidity.SolTranslator.ExprTranslator
+import StrataSolidity.SolTranslator.StmtTranslator
+import StrataSolidity.SolTranslator.ContractTranslator
