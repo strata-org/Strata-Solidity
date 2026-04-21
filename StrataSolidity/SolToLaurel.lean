@@ -1594,6 +1594,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let specLocalNames := userParamInfo.map (·.1) ++
       (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
     let rewriteSVGlobal := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+    -- Process old() markers in loop invariants BEFORE rewriting state var refs
+    let natspecLoopInvExprs := natspecLoopInvExprs.map
+      (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
     let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,

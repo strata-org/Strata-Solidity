@@ -1,10 +1,10 @@
 benchmark,functions,specs,state_vars,mappings,status,time_ms,pass,fail,unknown,total
 b1_trivial,2,1,0
-0,ok,378,2,0,0,2
+0,ok,217,2,0,0,2
 b2_counter,2,7,0
-0,ok,407,6,0,0,6
-b3_token,3,12,1,ok,537,9,0,0,9
-b4_vault,3,10,1,ok,409,8,0,0,8
+0,ok,294,6,0,0,6
+b3_token,3,12,1,ok,374,9,0,0,9
+b4_vault,3,10,1,ok,355,8,0,0,8
 b5_escrow,4,14,0
-0,error,237,0,0,0,0
-b6_erc20,4,16,3,ok,458,14,0,0,14
+0,error,239,0,0,0,0
+b6_erc20,4,16,3,ok,401,14,0,0,14
