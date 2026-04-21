@@ -80,6 +80,22 @@ See `LIMITATIONS.md` for the full supported/unsupported matrix. In summary:
 
 **Not working:** Struct fields through mappings (Core limitation), counterexample generation (z3 mbqi disabled), external calls/reentrancy, inheritance, assembly.
 
+## Why does Solidity need fewer simplification passes than Java?
+
+JVerify runs ~10 simplification passes on the Java AST before translating to Laurel: lambda-to-anonymous-class conversion, generic type erasure, method reference desugaring, array covariance handling, etc. Strata Solidity has none of these.
+
+Solidity doesn't have lambdas, generics, method references, anonymous classes, covariant arrays, checked exceptions, or autoboxing. The language that reaches the translator is essentially what the developer wrote — there's very little to desugar. The spec parser and frame condition generator are the most complex parts of our front-end, not the body translation.
+
+This is why `SolToLaurel.lean` is one file (~2100 lines) while JVerify's translation layer is ~30 Java files. It's not that our code is more compact — Solidity genuinely has fewer constructs to handle.
+
+## Why doesn't Solidity need the heap aliasing reasoning that Java does?
+
+In Java, two variables can reference the same object: `List<Integer> a = b;` means `a` and `b` alias the same heap location. Modifying `a` modifies `b`. JVerify must reason about this — every method call could potentially modify any object reachable through any alias. This is the core difficulty of heap verification in object-oriented languages.
+
+Solidity storage has no aliasing. Each state variable occupies a distinct storage slot. `mapping(address => uint256) balances` and `uint256 totalSupply` can never point to the same memory. There are no references, no pointers, no shared mutable state between variables. The only way to modify `balances` is to write to `balances` directly.
+
+This means our heap model is simpler: each mapping is an independent `Map[int, int]` parameter, and scalar state vars are fields of a single `self` composite. We don't need alias analysis, separation logic, or ownership tracking. The frame condition "only `balances` changed" is a direct equality check on the other variables, not a complex reachability argument.
+
 ## Where is the code hosted?
 
 Currently independent (option 3 per Strata's `frontend_hosting.md`). Target: `strata-org` organization (option 2) once we meet the quality bar — test suite, source location propagation, codebase restructuring. See the "Front-end conformity" task in Asana for the gap analysis.
