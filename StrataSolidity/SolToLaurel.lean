@@ -231,7 +231,7 @@ def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidit
     match declsSeq.val.toList with
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn _ _) =>
         if storageLocAnn.val == "storage" then some (nameAnn.val, initOpt) else none
       | _ => none
     | _ => none
@@ -243,7 +243,7 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
   match n with
   | .VariableDeclarationStatement _ declsSeq _ =>
     match declsSeq.val.toList with
-    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _)] =>
+    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _ _)] =>
       match typeNameOpt with
       | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => some nameAnn.val
       | _ => none
@@ -1272,7 +1272,7 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _)] =>
+          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _)] =>
             { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
           | _ => ctx
         | _ => ctx
@@ -1385,7 +1385,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn _ _) =>
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1517,7 +1517,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     | .ParameterList _ paramsSeq =>
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn _ =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn _ _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1543,7 +1543,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | .ParameterList _ retSeq =>
         retSeq.val.toList.mapM fun param =>
           match param with
-          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ =>
+          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -1831,7 +1831,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ _ =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode ctx tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
@@ -1868,6 +1868,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
+    let mut stateVarInvariants : List StrataAnnotation := []
     let mut constantDefs : List (String × StmtExprMd) := []
 
     -- Pass 1: collect struct definitions and state variables
@@ -1907,8 +1908,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           body := .Abstract postconds
           md := default
         }]
-      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt =>
+      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
+          -- Collect @custom:strata invariant from state variable NatSpec
+          let varAnnotations := parseStrataAnnotations docAnn.val
+          for ann in varAnnotations do
+            match ann with
+            | .invariant _ => stateVarInvariants := stateVarInvariants ++ [ann]
+            | _ => pure ()
           if constAnn.val == "true" then
             -- Constant state variable: record name→value for constant folding
             match valueOpt with
@@ -1954,7 +1961,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut arrayStateVars : List String := []
     for member in nodesSeq.val do
       match member with
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
           | .some_type_name _ (.ArrayTypeName _ _) =>
@@ -1986,7 +1993,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  constantDefs := constantDefs }
     -- Parse @custom:strata invariant from contract NatSpec
     let contractAnnotations := parseStrataAnnotations contractDocAnn.val
-    let natspecInvariantStrs := contractAnnotations.filterMap fun
+    let allInvariantAnnotations := contractAnnotations ++ stateVarInvariants
+    let natspecInvariantStrs := allInvariantAnnotations.filterMap fun
       | .invariant e => some e | _ => none
     let natspecInvariantExprs ← natspecInvariantStrs.mapM parseSpecExpr
 

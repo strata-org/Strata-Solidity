@@ -267,7 +267,8 @@ class Converter:
                 self._bool_str(node.get("stateVariable", False)),
                 self._bool_str(node.get("constant", False)),
                 self._str(node.get("storageLocation", "")),
-                self._opt_node(node.get("value")), ann=ann)
+                self._opt_node(node.get("value")),
+                self._str(self._doc_text(node)), ann=ann)
 
         if nt == "Block":
             return self.d.Block(
