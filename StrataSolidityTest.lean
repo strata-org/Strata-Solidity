@@ -5,5 +5,7 @@
 -/
 
 -- Test root for StrataSolidity.
--- Shell-based integration tests live in StrataSolidityTest/Solidity/.
 import StrataSolidity
+import StrataSolidityTest.Solidity.TypesTest
+import StrataSolidityTest.Solidity.SpecParserTest
+import StrataSolidityTest.Solidity.SpecRewriterTest
