@@ -1711,7 +1711,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 -- Generate in already-rewritten form (post rewriteStateVarRefs)
                 let selfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
                 let oldSelfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
-                let oldWrapped := mkStmtExprMd (.StaticCall "old" [oldSelfField])
+                let oldWrapped := mkStmtExprMd (.Old oldSelfField)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, oldWrapped]))
             framePosts ++ scalarFramePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
