@@ -6,7 +6,7 @@ All three add deductive verification to existing languages. The differences come
 
 **Spec language:**
 
-- **Strata Solidity** — NatSpec comments (`/// @custom:strata ensures ...`). Solidity's compiler has no plugin system, so structured comments are the only extension point.
+- **Strata Solidity** — NatSpec comments (`/// @custom:strata ensures ...`). We avoid modifying solc due to its GPL-3.0 license, so structured comments are our spec mechanism.
 - **JVerify** — Java library calls (`precondition(x > 0)`). Specs are valid Java that compiles and runs as no-ops. Possible because javac has a plugin API.
 - **Verus** — Rust macros (`ensures(result > 0)`). Specs are part of the type system via a custom rustc fork.
 
@@ -22,7 +22,9 @@ Strata Solidity and JVerify share everything from Laurel onward. Improvements to
 
 ## Why NatSpec comments instead of a library like JVerify?
 
-Solidity's compiler (solc) has no plugin system. There is no way to hook into solc's compilation pipeline the way JVerify hooks into javac. NatSpec is the standard mechanism for structured metadata in Solidity — it's already used by tools like Etherscan, NatSpec doc generators, and Slither. Using `@custom:strata` follows this convention.
+Solidity's compiler (solc) does have a plugin system, but solc is licensed under GPL-3.0. Building a compiler plugin would create a derivative work with GPL obligations. Using NatSpec comments avoids any compiler modification — we use solc only to produce the AST, and all spec parsing happens in our own pipeline.
+
+NatSpec is also the standard mechanism for structured metadata in Solidity — it's already used by Etherscan, documentation generators, and static analysis tools. Using `@custom:strata` follows this established convention.
 
 The tradeoff: JVerify specs are type-checked by javac (you get IDE autocomplete and compile errors on malformed specs). Strata Solidity specs are parsed by our own spec parser, so spec syntax errors only surface at verification time.
 
