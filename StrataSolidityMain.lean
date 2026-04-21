@@ -153,15 +153,24 @@ def main (args : List String) : IO Unit := do
   let dumpVcDir : Option String := match args.filter (·.startsWith "--dump-vc=") with
     | t :: _ => some (t.drop "--dump-vc=".length).toString
     | _ => none
+  let solSourcePath : Option String := match args.filter (·.startsWith "--sol-source=") with
+    | t :: _ => some (t.drop "--sol-source=".length).toString
+    | _ => none
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
   let flags := ["--verbose", "--sarif", "--json", "--array-theory"]
-  let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=")
+  let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
     let cmds ← readSolidityStrata' filePath
-    let solSourceOpt ← tryReadSoliditySource filePath
+    let solSourceOpt ← match solSourcePath with
+      | some p => do
+        try
+          let content ← IO.FS.readFile p
+          pure (some (p, content))
+        catch _ => tryReadSoliditySource filePath
+      | none => tryReadSoliditySource filePath
     if cmds.size != 1 then
       exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
     let cmd := cmds[0]!
@@ -169,9 +178,11 @@ def main (args : List String) : IO Unit := do
     if verbose then
       IO.println "==== Solidity AST (Ion) loaded ===="
 
-    let sourcePathForMetadata := match solSourceOpt with
-      | some (solPath, _) => solPath
-      | none => filePath
+    let sourcePathForMetadata := match solSourcePath with
+      | some p => p
+      | none => match solSourceOpt with
+        | some (solPath, _) => solPath
+        | none => filePath
 
     -- Translate Solidity AST → Laurel
     match Strata.Solidity.solidityToLaurel cmd (some sourcePathForMetadata) with

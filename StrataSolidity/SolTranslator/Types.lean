@@ -141,6 +141,13 @@ def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : Stmt
   | some uri => { val := expr, md := sourceRangeToMd uri sr }
   | none => { val := expr, md := defaultMetadata }
 
+/-- Attach source range metadata to an existing StmtExprMd. -/
+def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtExprMd :=
+  if sr == default then e
+  else match ctx.uri with
+  | some uri => { e with md := sourceRangeToMd uri sr }
+  | none => e
+
 /-! ## Translation Error -/
 
 inductive TranslationError where

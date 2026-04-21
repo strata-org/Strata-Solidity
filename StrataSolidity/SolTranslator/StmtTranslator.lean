@@ -45,7 +45,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition _ nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
+  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
@@ -336,6 +336,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let taggedInvariants := contractInvariants.map fun inv =>
           mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
         let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
+        -- Attach function source range to postconditions for SARIF location reporting
+        let allPosts := allPosts.map (withSourceRange ctx fnSr)
         if allPosts.isEmpty then
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
