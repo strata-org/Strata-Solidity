@@ -387,6 +387,9 @@ private def tokenize (s : String) : List String :=
       else if c == '(' || c == ')' || c == '[' || c == ']' || c == ',' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
+      else if c == '=' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' && i + 2 < s.length && s.get ⟨i+2⟩ == '>' then
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 3) (acc' ++ ["==>"]) "" (fuel - 1)
       else if c == '=' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 2) (acc' ++ ["=="]) "" (fuel - 1)
@@ -460,9 +463,17 @@ private def typeMinMax (typeName : String) (member : String) : Option Int :=
 /-- Parse a spec expression string into a Laurel StmtExprMd.
     Returns the parsed expression and remaining tokens. -/
 private partial def parseExpr (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
-  parseOr tokens
+  parseImplies tokens
 
 where
+  parseImplies (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    let (lhs, rest) ← parseOr tokens
+    match rest with
+    | "==>" :: rest' =>
+      let (rhs, rest'') ← parseImplies rest'
+      return (mkStmtExprMd (.PrimitiveOp .Implies [lhs, rhs]), rest'')
+    | _ => return (lhs, rest)
+
   parseOr (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
     let (lhs, rest) ← parseAnd tokens
     match rest with
@@ -1652,23 +1663,43 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             -- Each entry may be "varName" or "varName[keyExpr]".
             let modifiedEntries := natspecModifies.foldl (fun acc s =>
               acc ++ ((s.splitOn ",").map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- Split entries into base names (strip [key] suffixes for now)
-            let stripKey (entry : String) : String :=
+            -- Split entries into (baseName, optionalKeyExpr) pairs
+            let parseEntry (entry : String) : String × Option String :=
               match entry.splitOn "[" with
-              | [base] => base.trim
-              | [base, _] => base.trim  -- TODO: key-scoped modifies (needs resolution pass changes)
-              | _ => entry.trim
-            let modifiedBaseNames := modifiedEntries.map stripKey
+              | [base] => (base.trim, none)
+              | [base, keyPart] => (base.trim, some (keyPart.dropRight 1 |>.trim))  -- strip trailing ]
+              | _ => (entry.trim, none)
+            let parsedEntries := modifiedEntries.map parseEntry
+            let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
             -- For key-scoped modifies (e.g., balances[msg.sender]), add:
             --   forall __k : int :: __k != key ==> select(var, __k) == select(var_in, __k)
             let framePosts := ctx.mappingStateVars.filterMap fun (name : String) =>
-              if modifiedBaseNames.contains name then
-                none  -- Modified mapping, no frame needed
-              else
+              let entry := parsedEntries.find? fun (b, _) => b == name
+              match entry with
+              | none =>
+                -- Not in modifies list: full frame (var == var_in)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
                   mkStmtExprMd (.Identifier name),
                   mkStmtExprMd (.Identifier (name ++ "_in"))]))
+              | some (_, none) =>
+                none  -- Whole-mapping modified, no frame
+              | some (_, some keyStr) =>
+                -- Key-scoped: forall __k : int :: __k != keyExpr ==> select(var, __k) == select(var_in, __k)
+                -- Rewrite key expression through parameter name mapping (msg.sender → msg_sender)
+                let specLocalNames := userParamInfo.map (·.1) ++ ctx.stateVarNames
+                match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
+                | .ok (keyExpr, _) =>
+                  let kVar := mkStmtExprMd (.Identifier "__k")
+                  let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }
+                  let neq := mkStmtExprMd (.PrimitiveOp .Neq [kVar, keyExpr])
+                  let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier name), kVar])
+                  let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier (name ++ "_in")), kVar])
+                  let eq := mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs])
+                  let body := mkStmtExprMd (.PrimitiveOp .Implies [neq, eq])
+                  some (mkStmtExprMd (.Forall kParam body))
+                | .error _ =>
+                  none  -- Can't parse key, fall back to no frame (safe)
             -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
             -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
             -- not other fields of self. We need explicit field-level framing.
