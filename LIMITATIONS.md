@@ -1,5 +1,22 @@
 # Strata Solidity — Current Limitations
 
+## No Counterexample Generation
+
+**Status:** Not supported  
+**Tracking:** [Asana P0](https://app.asana.com/1/8442528107068/project/1213978144576593/task/1214145784885275)
+
+When a postcondition is violated, the verifier returns `unknown` (❓) instead of `failed` (❌) with a concrete counterexample showing the bug. This is because z3's model-based quantifier instantiation (mbqi) is disabled — enabling it causes infinite loops on the universally quantified Map axioms.
+
+**User impact:** You know something is wrong (it doesn't pass ✅), but you don't get values like "fails when `amount = 5, balance = 3`."
+
+**Extension UX alternatives (while counterexamples are unavailable):**
+- ❓ decoration with tooltip: "Could not prove. Possible violation — check logic manually."
+- Quick-action: "Simplify spec" — break complex ensures into smaller parts to isolate which sub-property fails
+- Quick-action: "Add requires" — suggest preconditions that might make the property provable
+- Diagnostic message linking to the SMT file (`STRATA_SMT_DIR`) for advanced users
+
+---
+
 ## Struct Fields Through Mappings
 
 **Status:** Not supported  
