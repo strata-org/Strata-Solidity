@@ -205,8 +205,11 @@ def main (args : List String) : IO Unit := do
                   solverTimeout := timeoutVal,
                   useArrayTheory := useArrays })
           | none =>
-            IO.FS.withTempDir (fun tempDir =>
-              EIO.toIO
+            let tempDir : System.FilePath := match (← IO.getEnv "STRATA_SMT_DIR") with
+              | some d => d
+              | none => "/tmp/strata-smt-tmp"
+            IO.FS.createDirAll tempDir
+            let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
                 (Core.verify coreProgram tempDir .none
                   { VerifyOptions.default with
@@ -214,7 +217,10 @@ def main (args : List String) : IO Unit := do
                     verbose := .quiet,
                     solver := "z3",
                     solverTimeout := timeoutVal,
-                    useArrayTheory := useArrays }))
+                    useArrayTheory := useArrays })
+            if (← IO.getEnv "STRATA_SMT_DIR").isNone then
+              IO.FS.removeDirAll tempDir |>.catchExceptions (fun _ => pure ())
+            pure result
 
         -- Print results
         if sarifMode then
