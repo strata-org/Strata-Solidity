@@ -1991,10 +1991,10 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
                  constantDefs := constantDefs }
-    -- Parse @custom:strata invariant from contract NatSpec
-    let contractAnnotations := parseStrataAnnotations contractDocAnn.val
-    let allInvariantAnnotations := contractAnnotations ++ stateVarInvariants
-    let natspecInvariantStrs := allInvariantAnnotations.filterMap fun
+    -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
+    -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
+    -- to avoid ambiguity in files with multiple contracts.
+    let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
     let natspecInvariantExprs ← natspecInvariantStrs.mapM parseSpecExpr
 
