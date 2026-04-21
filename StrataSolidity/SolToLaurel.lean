@@ -577,7 +577,12 @@ where
         | _ => "__unknown_call"
       let (args, rest') ← parseArgList rest
       -- Dispatch multi-arg builtins: abi_encode(a,b) → abi_encode2(a,b)
-      let fname' := if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
+      -- Dispatch sum(mapping) → sum_<mapping>(mapping)
+      let fname' := if fname == "sum" && args.length == 1 then
+        match args.head?.map (·.val) with
+        | some (.Identifier name) => s!"sum_{name.text}"
+        | _ => fname
+      else if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
         s!"{fname}2"
       else fname
       let call := mkStmtExprMd (.StaticCall fname' args)
@@ -652,6 +657,22 @@ def parseSpecExpr (s : String) : Except TranslationError StmtExprMd := do
   if !rest.isEmpty then
     throw (.typeError s!"Unexpected tokens after spec expression: {rest}")
   return expr
+
+/-- Rewrite mapping identifiers to _in form (for invariant preconditions). -/
+partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtExprMd) : StmtExprMd :=
+  let go := rewriteMappingIdsToIn mappingStateVars
+  match expr.val with
+  | .Identifier name =>
+    if mappingStateVars.contains name.text then
+      { expr with val := .Identifier (name.text ++ "_in") }
+    else expr
+  | .PrimitiveOp op args => { expr with val := .PrimitiveOp op (args.map go) }
+  | .StaticCall callee args => { expr with val := .StaticCall callee (args.map go) }
+  | .FieldSelect target f => { expr with val := .FieldSelect (go target) f }
+  | .Forall p body => { expr with val := .Forall p (go body) }
+  | .Exists p body => { expr with val := .Exists p (go body) }
+  | .Old inner => { expr with val := .Old (go inner) }
+  | _ => expr
 
 /-- Rewrite state variable references inside an old() expression.
     Mapping state vars: `name` → `name_in` (explicit input parameter).
@@ -1673,33 +1694,41 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
             -- For key-scoped modifies (e.g., balances[msg.sender]), add:
-            --   forall __k : int :: __k != key ==> select(var, __k) == select(var_in, __k)
+            --   forall __k : int :: __k != key1 && __k != key2 ==> select(var, __k) == select(var_in, __k)
             let framePosts := ctx.mappingStateVars.filterMap fun (name : String) =>
-              let entry := parsedEntries.find? fun (b, _) => b == name
-              match entry with
-              | none =>
+              let entries := parsedEntries.filter fun (b, _) => b == name
+              if entries.isEmpty then
                 -- Not in modifies list: full frame (var == var_in)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
                   mkStmtExprMd (.Identifier name),
                   mkStmtExprMd (.Identifier (name ++ "_in"))]))
-              | some (_, none) =>
-                none  -- Whole-mapping modified, no frame
-              | some (_, some keyStr) =>
-                -- Key-scoped: forall __k : int :: __k != keyExpr ==> select(var, __k) == select(var_in, __k)
-                -- Rewrite key expression through parameter name mapping (msg.sender → msg_sender)
-                let specLocalNames := userParamInfo.map (·.1) ++ ctx.stateVarNames
-                match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
-                | .ok (keyExpr, _) =>
+              else if entries.any fun (_, k) => k.isNone then
+                none  -- Whole-mapping modified (at least one entry has no key), no frame
+              else
+                -- Collect all key expressions for this mapping
+                let keyExprs := entries.filterMap fun (_, k) => k
+                let parsedKeys := keyExprs.filterMap fun keyStr =>
+                  match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
+                  | .ok (keyExpr, _) => some (rewriteParamRefs userParamNames keyExpr)
+                  | .error _ => none
+                if parsedKeys.isEmpty then none
+                else
                   let kVar := mkStmtExprMd (.Identifier "__k")
                   let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }
-                  let neq := mkStmtExprMd (.PrimitiveOp .Neq [kVar, keyExpr])
+                  -- __k != key1 && __k != key2 && ...
+                  let neqs := parsedKeys.map fun keyExpr =>
+                    mkStmtExprMd (.PrimitiveOp .Neq [kVar, keyExpr])
+                  let guard := match neqs with
+                    | [single] => single
+                    | _ => neqs.foldl (fun acc neq =>
+                        if acc.val matches .LiteralBool true then neq
+                        else mkStmtExprMd (.PrimitiveOp .And [acc, neq]))
+                      (mkStmtExprMd (.LiteralBool true))
                   let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier name), kVar])
                   let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier (name ++ "_in")), kVar])
                   let eq := mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs])
-                  let body := mkStmtExprMd (.PrimitiveOp .Implies [neq, eq])
+                  let body := mkStmtExprMd (.PrimitiveOp .Implies [guard, eq])
                   some (mkStmtExprMd (.Forall kParam body))
-                | .error _ =>
-                  none  -- Can't parse key, fall back to no frame (safe)
             -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
             -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
             -- not other fields of self. We need explicit field-level framing.
@@ -1741,8 +1770,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Reuse the already-translated contract invariants for preconditions.
     -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
     -- (Constructors establish the invariant; they don't assume it.)
+    -- Preconditions reference input state: rewrite mapping names to _in form.
+    let rewriteMapNamesToIn := rewriteMappingIdsToIn ctx.mappingStateVars
     let applicableInvariantPres := if isPure || isView || isConstructor then []
-      else contractInvariants
+      else contractInvariants.map rewriteMapNamesToIn
     -- Collect modifier preconditions: for each applied modifier, translate its
     -- pre-_ require statement nodes in this function's context and add as assumes.
     let mut modifierPres : List StmtExprMd := []
@@ -1756,7 +1787,25 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             modifierPres := modifierPres ++ [e]
         | none => pure ()
       | _ => pure ()
-    let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres
+    -- Sum axioms: for each mapping, assume the update axiom as a precondition.
+    -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
+    let sumAxioms := if isPure || isView then [] else ctx.mappingStateVars.map fun name =>
+      let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
+      let mVar := mkStmtExprMd (.Identifier "m")
+      let kVar := mkStmtExprMd (.Identifier "k")
+      let vVar := mkStmtExprMd (.Identifier "v")
+      let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
+      let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])
+      let sumM := mkStmtExprMd (.StaticCall s!"sum_{name}" [mVar])
+      let selMK := mkStmtExprMd (.StaticCall "select" [mVar, kVar])
+      let rhs := mkStmtExprMd (.PrimitiveOp .Add [
+        mkStmtExprMd (.PrimitiveOp .Sub [sumM, selMK]), vVar])
+      mkStmtExprMd (.Forall { name := "m", type := mapType }
+        (mkStmtExprMd (.Forall { name := "k", type := mkHighTypeMd .TInt }
+          (mkStmtExprMd (.Forall { name := "v", type := mkHighTypeMd .TInt }
+            (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
+
+    let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres ++ sumAxioms
 
     return {
       name := funcName
@@ -1990,6 +2039,17 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
       | _ => pure ()  -- Skip unsupported top-level nodes
 
+    -- Collect all mapping state variable names from procedure parameters.
+    -- Mapping state vars appear as "<name>_in : Map[int, ...]" input parameters.
+    let allMappingNames := allProcedures.foldl (fun acc proc =>
+      acc ++ (proc.inputs.filterMap fun param =>
+        if param.name.text.endsWith "_in" then
+          match param.type.val with
+          | .TMap _ _ => some (param.name.text.dropRight 3)  -- strip "_in"
+          | _ => none
+        else none)) ([] : List String)
+    let allMappingNames := allMappingNames.eraseDups
+
     -- Declare uninterpreted functions used by the translator.
     -- These are abstract procedures with no body, giving the solver
     -- functional consistency (same inputs → same output) but no other axioms.
@@ -2030,8 +2090,50 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       mkUninterpUnary "address_code", mkUninterpUnary "address_codehash"
     ]
 
+    -- Declare sum() for each mapping state variable that appears in a sum() call in specs.
+    -- sum : Map[int, int] → int, with update axiom:
+    --   forall m : Map[int,int], k : int, v : int ::
+    --     sum(update(m, k, v)) == sum(m) - select(m, k) + v
+    -- Also: sum(const(0)) == 0  (empty mapping has zero sum)
+    let sumFunctions := allMappingNames.filterMap fun name =>
+      if true then  -- declare sum for all mappings; unused ones don't affect z3
+        let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
+        let mVar := mkStmtExprMd (.Identifier "m")
+        let kVar := mkStmtExprMd (.Identifier "k")
+        let vVar := mkStmtExprMd (.Identifier "v")
+        -- sum(update(m, k, v)) == sum(m) - select(m, k) + v
+        let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
+        let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])
+        let sumM := mkStmtExprMd (.StaticCall s!"sum_{name}" [mVar])
+        let selMK := mkStmtExprMd (.StaticCall "select" [mVar, kVar])
+        let rhs := mkStmtExprMd (.PrimitiveOp .Add [
+          mkStmtExprMd (.PrimitiveOp .Sub [sumM, selMK]), vVar])
+        let updateAxiom := mkStmtExprMd (.Forall
+          { name := "m", type := mapType }
+          (mkStmtExprMd (.Forall
+            { name := "k", type := mkHighTypeMd .TInt }
+            (mkStmtExprMd (.Forall
+              { name := "v", type := mkHighTypeMd .TInt }
+              (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
+        -- sum(const(0)) == 0
+        let emptyMap := mkStmtExprMd (.StaticCall "const" [mkStmtExprMd (.LiteralInt 0)])
+        let sumEmpty := mkStmtExprMd (.StaticCall s!"sum_{name}" [emptyMap])
+        let emptyAxiom := mkStmtExprMd (.PrimitiveOp .Eq [sumEmpty, mkStmtExprMd (.LiteralInt 0)])
+        some {
+          name := s!"sum_{name}"
+          inputs := [{ name := "m", type := mapType }]
+          outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
+          preconditions := []
+          determinism := .deterministic none
+          decreases := none
+          isFunctional := true
+          body := .Abstract [updateAxiom, emptyAxiom]
+          md := default
+        }
+      else none
+
     return {
-      staticProcedures := uninterpFunctions ++ allProcedures
+      staticProcedures := uninterpFunctions ++ sumFunctions ++ allProcedures
       staticFields := []
       types := allTypes
       constants := []
