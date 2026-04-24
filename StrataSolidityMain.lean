@@ -149,6 +149,7 @@ def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose"
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
+  let pipelineJson := args.contains "--pipeline-json"
   let useArrays := args.contains "--array-theory"
   let dumpVcDir : Option String := match args.filter (·.startsWith "--dump-vc=") with
     | t :: _ => some (t.drop "--dump-vc=".length).toString
@@ -159,7 +160,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--pipeline-json"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
@@ -189,18 +190,20 @@ def main (args : List String) : IO Unit := do
     | .error e =>
       exitFailure s!"Solidity to Laurel translation failed: {e}"
     | .ok laurelProgram =>
+      let laurelStr := toString (f!"{laurelProgram}")
       if verbose then
         IO.println "\n==== Laurel Program ===="
-        IO.println f!"{laurelProgram}"
+        IO.println laurelStr
 
       -- Translate Laurel → Core
       match Strata.Laurel.translate laurelProgram with
       | .error diagnostics =>
         exitFailure s!"Laurel to Core translation failed: {diagnostics}"
       | .ok (coreProgram, _modifiesDiags) =>
+        let coreStr := toString (f!"{coreProgram}")
         if verbose then
           IO.println "\n==== Core Program ===="
-          IO.print coreProgram
+          IO.print coreStr
 
         -- Verify using Core verifier
         let vcResults ← match dumpVcDir with
@@ -234,7 +237,26 @@ def main (args : List String) : IO Unit := do
             pure result
 
         -- Print results
-        if sarifMode then
+        if pipelineJson then
+          -- Structured pipeline output with Laurel, Core, and per-obligation results
+          let obligations := vcResults.toList.map fun r =>
+            let status := if r.isSuccess then "pass"
+              else if r.isFailure then "fail"
+              else "unknown"
+            Json.mkObj [("label", r.obligation.label), ("status", status)]
+          let pipeline := Json.mkObj [
+            ("laurel", Json.str (toString laurelStr)),
+            ("core", Json.str (toString coreStr)),
+            ("obligations", Json.arr obligations.toArray),
+            ("summary", Json.mkObj [
+              ("total", vcResults.size),
+              ("passed", (vcResults.filter VCResult.isSuccess).size),
+              ("failed", (vcResults.filter VCResult.isFailure).size),
+              ("unknown", (vcResults.filter VCResult.isUnknown).size)
+            ])
+          ]
+          IO.println (toString pipeline)
+        else if sarifMode then
           IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt)
         else if jsonMode then
           IO.println (formatJsonResults vcResults solSourceOpt)

@@ -88,7 +88,7 @@ def tokenize (s : String) : List String :=
       else if c == '>' || c == '<' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
-      else if c == '+' || c == '-' || c == '*' || c == '.' then
+      else if c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '.' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
       else
@@ -207,6 +207,12 @@ where
     | "*" :: rest =>
       let (rhs, rest') ← parsePostfix rest
       parseMulTail (mkStmtExprMd (.PrimitiveOp .Mul [lhs, rhs])) rest'
+    | "/" :: rest =>
+      let (rhs, rest') ← parsePostfix rest
+      parseMulTail (mkStmtExprMd (.PrimitiveOp .Div [lhs, rhs])) rest'
+    | "%" :: rest =>
+      let (rhs, rest') ← parsePostfix rest
+      parseMulTail (mkStmtExprMd (.PrimitiveOp .Mod [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
 
   parsePostfix (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do

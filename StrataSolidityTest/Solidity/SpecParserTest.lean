@@ -26,6 +26,8 @@ private def parseFail (s : String) : Bool := !parseOk s
 /-! ## Tokenizer tests -/
 
 #guard SpecParser.tokenize "a + b" == ["a", "+", "b"]
+#guard SpecParser.tokenize "a / b" == ["a", "/", "b"]
+#guard SpecParser.tokenize "a % b" == ["a", "%", "b"]
 #guard SpecParser.tokenize "a == b" == ["a", "==", "b"]
 #guard SpecParser.tokenize "a ==> b" == ["a", "==>", "b"]
 #guard SpecParser.tokenize "a != b" == ["a", "!=", "b"]
@@ -93,6 +95,14 @@ private def parseFail (s : String) : Bool := !parseOk s
 
 -- sum
 #guard parseOk "sum(balances)"
+
+-- Division and modulo
+#guard parseOk "a / b"
+#guard parseOk "a % b"
+#guard parseOk "a * b / c"
+#guard parseOk "(a * b) / 1000"
+#guard parseOk "x + (x * rate) / 1000"
+#guard parseOk "a / b * b + a % b == a"
 
 -- Complex expressions
 #guard parseOk "balances[msg.sender] == old(balances[msg.sender]) + amount"
