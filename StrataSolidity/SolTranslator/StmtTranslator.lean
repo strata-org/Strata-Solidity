@@ -65,6 +65,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
                               type := mkHighTypeMd (.UserDefined ⟨ctx.contractName, none⟩) }]
+      -- Assert non-negativity for uint scalar state vars (Solidity uints are always >= 0)
+      for name in nonMappingStateVars do
+        let fieldExpr := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+        preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
 
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
