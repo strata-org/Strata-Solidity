@@ -1,0 +1,10 @@
+[book]
+language = "en"
+src = "src"
+title = "StrataSolidity User Guide"
+
+[output.html]
+curly-quotes = true
+
+[output.html.playground]
+runnable = false

@@ -93,3 +93,13 @@ This is not practical for verifying existing contracts but works for new designs
 | Dynamic arrays (push/pop) | ⚠️ Partial | `.length` works, push/pop not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |
 | Events / errors | Ignored | No effect on verification |
+
+## Storage References
+
+**Status:** Partially supported
+
+Storage references to struct fields through mappings (`Voter storage sender = voters[addr]`) are not supported — blocked by the same struct-through-mapping limitation.
+
+Mapping storage references (`mapping(...) storage ref = stateVar`) are not supported.
+
+Direct state variable access without storage references works fully.
