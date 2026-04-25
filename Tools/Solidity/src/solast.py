@@ -132,6 +132,7 @@ class Converter:
         "EventDefinition",   # Events carry no verification semantics
         "EmitStatement",     # emit is a no-op for verification
         "ErrorDefinition",   # Custom error declarations carry no verification semantics
+        "RevertStatement",   # revert aborts execution — sound to skip (postconditions assume non-reverting path)
         "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
         "UsingForDirective",               # resolved by solc, no verification semantics
         "TryStatement",      # try/catch is error handling — sound to skip (external call already nondeterministic)
@@ -207,6 +208,10 @@ class Converter:
     def convert_node(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
         ann = self._source_range(node)
+
+        # Skip node types with no verification semantics
+        if nt in self._SKIP_NODE_TYPES:
+            return self.d.Block(Seq(()), ann=ann)  # no-op block
 
         if nt == "PragmaDirective":
             return self.d.PragmaDirective(
