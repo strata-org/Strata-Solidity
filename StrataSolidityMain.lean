@@ -219,22 +219,31 @@ def main (args : List String) : IO Unit := do
                   solverTimeout := timeoutVal,
                   useArrayTheory := useArrays })
           | none =>
-            let tempDir : System.FilePath := match (← IO.getEnv "STRATA_SMT_DIR") with
-              | some d => d
-              | none => "/tmp/strata-smt-tmp"
-            IO.FS.createDirAll tempDir
-            let result ← EIO.toIO
+            let smtDirEnv ← IO.getEnv "STRATA_SMT_DIR"
+            match smtDirEnv with
+            | some d =>
+              IO.FS.createDirAll d
+              let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
-                (Core.verify coreProgram tempDir .none
+                (Core.verify coreProgram d .none
                   { VerifyOptions.default with
                     stopOnFirstError := false,
                     verbose := .quiet,
                     solver := "z3",
                     solverTimeout := timeoutVal,
                     useArrayTheory := useArrays })
-            if (← IO.getEnv "STRATA_SMT_DIR").isNone then
-              IO.FS.removeDirAll tempDir |>.catchExceptions (fun _ => pure ())
-            pure result
+              pure result
+            | none =>
+              IO.FS.withTempDir (fun tempDir =>
+                EIO.toIO
+                  (fun f => IO.Error.userError (toString f))
+                  (Core.verify coreProgram tempDir .none
+                    { VerifyOptions.default with
+                      stopOnFirstError := false,
+                      verbose := .quiet,
+                      solver := "z3",
+                      solverTimeout := timeoutVal,
+                      useArrayTheory := useArrays }))
 
         -- Print results
         if pipelineJson then
