@@ -206,10 +206,10 @@ def main (args : List String) : IO Unit := do
           IO.print coreStr
 
         -- Verify using Core verifier
-        let vcResults ← match dumpVcDir with
+        let (vcResults, smtDir) ← match dumpVcDir with
           | some dir => do
             IO.FS.createDirAll ⟨dir⟩
-            EIO.toIO
+            let r ← EIO.toIO
               (fun f => IO.Error.userError (toString f))
               (Core.verify coreProgram ⟨dir⟩ .none
                 { VerifyOptions.default with
@@ -218,23 +218,33 @@ def main (args : List String) : IO Unit := do
                   solver := "z3",
                   solverTimeout := timeoutVal,
                   useArrayTheory := useArrays })
+            pure (r, (⟨dir⟩ : System.FilePath))
           | none =>
             let smtDirEnv ← IO.getEnv "STRATA_SMT_DIR"
-            match smtDirEnv with
-            | some d =>
-              IO.FS.createDirAll d
+            -- For --pipeline-json, always keep SMT files so we can read them
+            let useFixedDir := smtDirEnv.isSome || pipelineJson
+            if useFixedDir then
+              let dir : System.FilePath := match smtDirEnv with
+                | some d => d
+                | none => "/tmp/strata-pipeline-smt"
+              IO.FS.createDirAll dir
+              -- Clean previous run's files
+              let entries ← (dir.readDir).catchExceptions (fun _ => pure #[])
+              for e in entries do
+                if e.fileName.endsWith ".smt2" then
+                  IO.FS.removeFile e.path |>.catchExceptions (fun _ => pure ())
               let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
-                (Core.verify coreProgram d .none
+                (Core.verify coreProgram dir .none
                   { VerifyOptions.default with
                     stopOnFirstError := false,
                     verbose := .quiet,
                     solver := "z3",
                     solverTimeout := timeoutVal,
                     useArrayTheory := useArrays })
-              pure result
-            | none =>
-              IO.FS.withTempDir (fun tempDir =>
+              pure (result, dir)
+            else
+              let r ← IO.FS.withTempDir (fun tempDir =>
                 EIO.toIO
                   (fun f => IO.Error.userError (toString f))
                   (Core.verify coreProgram tempDir .none
@@ -244,15 +254,29 @@ def main (args : List String) : IO Unit := do
                       solver := "z3",
                       solverTimeout := timeoutVal,
                       useArrayTheory := useArrays }))
+              pure (r, ("" : System.FilePath))
 
         -- Print results
         if pipelineJson then
-          -- Structured pipeline output with Laurel, Core, and per-obligation results
-          let obligations := vcResults.toList.map fun r =>
+          let obligations ← vcResults.toList.mapM fun r => do
             let status := if r.isSuccess then "pass"
               else if r.isFailure then "fail"
               else "unknown"
-            Json.mkObj [("label", r.obligation.label), ("status", status)]
+            -- Try to read the SMT file for this obligation
+            let smtContent ← do
+              let candidates ← (smtDir.readDir).catchExceptions (fun _ => pure #[])
+              let matching := candidates.filter fun e =>
+                (e.fileName.splitOn r.obligation.label).length > 1 && e.fileName.endsWith ".smt2"
+              match matching.toList.head? with
+              | some entry => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
+              | none => pure ""
+            let smtResult := if r.isSuccess then "unsat" else if r.isFailure then "sat" else "unknown"
+            return Json.mkObj [
+              ("label", r.obligation.label),
+              ("status", status),
+              ("smt", Json.str smtContent),
+              ("smtResult", Json.str smtResult)
+            ]
           let pipeline := Json.mkObj [
             ("laurel", Json.str (toString laurelStr)),
             ("core", Json.str (toString coreStr)),
