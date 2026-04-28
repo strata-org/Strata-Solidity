@@ -4,7 +4,7 @@ src = "src"
 title = "StrataSolidity User Guide"
 
 [output.html]
-curly-quotes = true
+smart-punctuation = true
 
 [output.html.playground]
 runnable = false

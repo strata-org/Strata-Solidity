@@ -21,7 +21,6 @@
 
 - [Mappings](./mappings.md)
 - [Old Expressions](./old_expressions.md)
-<!-- - [Structs](./structs.md) -->
 
 # Output and Integration
 
