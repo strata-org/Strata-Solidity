@@ -37,6 +37,12 @@ from .base_dialect import gen_dialect
 def invoke_solc(sol_path: str) -> dict:
     """Run solc --standard-json and return the parsed JSON output."""
     source = Path(sol_path).read_text()
+    # Preprocess: @strata → @custom:strata (solc only accepts @custom: prefix for non-standard tags)
+    import re
+    source = re.sub(r'@strata\b', '@custom:strata', source)
+    source = re.sub(r'@custom:custom:strata\b', '@custom:strata', source)  # avoid double-prefix
+    source = re.sub(r'@spec\b', '@custom:spec', source)
+    source = re.sub(r'@custom:custom:spec\b', '@custom:spec', source)
     input_json = json.dumps({
         "language": "Solidity",
         "sources": {
