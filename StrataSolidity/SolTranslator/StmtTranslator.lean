@@ -263,7 +263,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView then []
+        let contractInvariants := if isPure || isView || isConstructor then []
           else ctx.contractInvariantNatspec.map rewriteSV
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
@@ -356,7 +356,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
         let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
-        let contractInvariants := if isPure || isView then []
+        let contractInvariants := if isPure || isView || isConstructor then []
           else ctx.contractInvariantNatspec.map rewriteSV
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract contractInvariants, contractInvariants)
