@@ -263,8 +263,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView || isConstructor then []
-          else ctx.contractInvariantNatspec.map rewriteSV
+        let contractInvariants := if isPure || isView then []
+          else if isConstructor then ctx.contractInvariantNatspec else ctx.contractInvariantNatspec.map rewriteSV
         -- Rewrite invariant expressions: user parameter names → _param names
         let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
         -- Generate frame conditions from @custom:strata modifies
@@ -346,7 +346,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
         else
           -- Only include self in modifies list when contract has scalar (non-mapping) state vars
-          let modifiesList := if hasNonMappingState then
+          let modifiesList := if hasNonMappingState && !isConstructor then
             [mkStmtExprMd (.Identifier "self")]
           else []
           pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr)
@@ -356,7 +356,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
         let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
-        let contractInvariants := if isPure || isView || isConstructor then []
+        let contractInvariants := if isPure || isView then []
           else ctx.contractInvariantNatspec.map rewriteSV
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract contractInvariants, contractInvariants)
