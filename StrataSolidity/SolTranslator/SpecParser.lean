@@ -18,15 +18,12 @@ inductive StrataAnnotation where
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
   let lines := doc.splitOn "\n" |>.map String.trim
   lines.filterMap fun line =>
-    -- Support both @strata and legacy @custom:strata
-    let rest? := if line.startsWith "@strata " then
-        some ((line.drop "@strata ".length).toString.trim)
-      else if line.startsWith "@custom:strata " then
-        some ((line.drop "@custom:strata ".length).toString.trim)
-      else if line.startsWith "* @strata " then
-        some ((line.drop "* @strata ".length).toString.trim)
-      else if line.startsWith "* @custom:strata " then
-        some ((line.drop "* @custom:strata ".length).toString.trim)
+    let tag := "@custom:strata "
+    let mtag := "* @custom:strata "
+    let rest? := if line.startsWith tag then
+        some ((line.drop tag.length).toString.trim)
+      else if line.startsWith mtag then
+        some ((line.drop mtag.length).toString.trim)
       else none
     match rest? with
     | none => none
