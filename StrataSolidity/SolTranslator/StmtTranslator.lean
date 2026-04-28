@@ -74,6 +74,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
+      -- msg.sender is always > 0 (zero address cannot send transactions)
+      preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Gt [
+        mkStmtExprMd (.Identifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
       inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_value"]
 
