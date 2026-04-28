@@ -400,6 +400,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
 
     let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres ++ sumAxioms
+    -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
+    let allPreconditions := allPreconditions.foldl (fun acc p =>
+      if acc.any (fun q => toString (repr p.val) == toString (repr q.val)) then acc else acc ++ [p]) []
 
     return {
       name := funcName
