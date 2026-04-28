@@ -13,14 +13,24 @@ inductive StrataAnnotation where
   | modifies (vars : String)
   | loopInvariant (expr : String)
 
-/-- Parse `@custom:strata` annotations from a NatSpec documentation string.
-    Each line matching `@custom:strata <keyword> <expr>` produces an annotation. -/
+/-- Parse `@strata` (or legacy `@custom:strata`) annotations from a NatSpec documentation string.
+    Each line matching `@strata <keyword> <expr>` produces an annotation. -/
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
   let lines := doc.splitOn "\n" |>.map String.trim
   lines.filterMap fun line =>
-    let tag := "@custom:strata "
-    if line.startsWith tag then
-      let rest := (line.drop tag.length).toString.trim
+    -- Support both @strata and legacy @custom:strata
+    let rest? := if line.startsWith "@strata " then
+        some ((line.drop "@strata ".length).toString.trim)
+      else if line.startsWith "@custom:strata " then
+        some ((line.drop "@custom:strata ".length).toString.trim)
+      else if line.startsWith "* @strata " then
+        some ((line.drop "* @strata ".length).toString.trim)
+      else if line.startsWith "* @custom:strata " then
+        some ((line.drop "* @custom:strata ".length).toString.trim)
+      else none
+    match rest? with
+    | none => none
+    | some rest =>
       if rest.startsWith "requires " then
         some (.requires ((rest.drop "requires ".length).toString.trim))
       else if rest.startsWith "ensures " then
@@ -32,7 +42,6 @@ def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
       else if rest.startsWith "loop-invariant " then
         some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trim))
       else none
-    else none
 
 /-! ## Spec Expression Parser
 

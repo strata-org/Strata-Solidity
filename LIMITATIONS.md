@@ -29,7 +29,7 @@ Specs cannot reference struct fields accessed through mapping values.
 struct Payment { uint256 amount; bool captured; }
 mapping(bytes32 => Payment) public payments;
 
-/// @custom:strata ensures payments[id].amount == amt
+/// @strata ensures payments[id].amount == amt
 ```
 
 The Laurel translation is correct, but Strata Core's heap parameterization cannot resolve struct field names through composite types.
@@ -47,7 +47,7 @@ The Laurel translation is correct, but Strata Core's heap parameterization canno
 mapping(bytes32 => uint256) public paymentAmounts;
 mapping(bytes32 => bool) public paymentCaptured;
 
-/// @custom:strata ensures paymentAmounts[id] == amt
+/// @strata ensures paymentAmounts[id] == amt
 ```
 
 This is not practical for verifying existing contracts but works for new designs.
@@ -85,7 +85,7 @@ This is not practical for verifying existing contracts but works for new designs
 |---|---|---|
 | Struct fields through mappings | ❌ Blocked (Core) | See above |
 | `old()` in loop invariants | ❌ Blocked (Core) | `__old` marker not resolved in loop context |
-| `@custom:strata lemma` | ❌ Not started | Needs Laurel grammar extension |
+| `@strata lemma` | ❌ Not started | Needs Laurel grammar extension |
 | `block.timestamp` | ❌ Not modeled | No time abstraction yet |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ❌ | No cross-contract reasoning |
