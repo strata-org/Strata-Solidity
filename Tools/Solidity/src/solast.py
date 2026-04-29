@@ -37,10 +37,20 @@ from .base_dialect import gen_dialect
 def invoke_solc(sol_path: str) -> dict:
     """Run solc --standard-json and return the parsed JSON output."""
     source = Path(sol_path).read_text()
+    sol_dir = str(Path(sol_path).resolve().parent)
+    sol_name = Path(sol_path).name
+    # Walk up to find project root (look for common markers)
+    project_root = Path(sol_path).resolve().parent
+    for _ in range(10):
+        if any((project_root / m).exists() for m in ["foundry.toml", "hardhat.config.js", "hardhat.config.ts", "package.json", "remappings.txt"]):
+            break
+        if project_root.parent == project_root:
+            break
+        project_root = project_root.parent
     input_json = json.dumps({
         "language": "Solidity",
         "sources": {
-            sol_path: {"content": source}
+            sol_name: {"content": source}
         },
         "settings": {
             "outputSelection": {
@@ -49,7 +59,7 @@ def invoke_solc(sol_path: str) -> dict:
         }
     })
     result = subprocess.run(
-        ["solc", "--standard-json"],
+        ["solc", "--standard-json", "--base-path", sol_dir, "--allow-paths", str(project_root)],
         input=input_json,
         capture_output=True,
         text=True,
@@ -128,6 +138,7 @@ class Converter:
     # Node types that carry no verification semantics and should be
     # silently dropped from sequences (e.g. NatSpec documentation).
     _SKIP_NODE_TYPES = frozenset({
+        "ImportDirective",   # Imports resolved by solc, no verification semantics
         "StructuredDocumentation",
         "EventDefinition",   # Events carry no verification semantics
         "EmitStatement",     # emit is a no-op for verification
