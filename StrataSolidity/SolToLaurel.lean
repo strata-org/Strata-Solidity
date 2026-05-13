@@ -345,21 +345,21 @@ inductive StrataAnnotation where
 /-- Parse `@custom:strata` annotations from a NatSpec documentation string.
     Each line matching `@custom:strata <keyword> <expr>` produces an annotation. -/
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
-  let lines := doc.splitOn "\n" |>.map String.trim
+  let lines := doc.splitOn "\n" |>.map (·.trimAscii.toString)
   lines.filterMap fun line =>
     let tag := "@custom:strata "
     if line.startsWith tag then
-      let rest := (line.drop tag.length).toString.trim
+      let rest := (line.drop tag.length).toString.trimAscii.toString
       if rest.startsWith "requires " then
-        some (.requires ((rest.drop "requires ".length).toString.trim))
+        some (.requires ((rest.drop "requires ".length).toString.trimAscii.toString))
       else if rest.startsWith "ensures " then
-        some (.ensures ((rest.drop "ensures ".length).toString.trim))
+        some (.ensures ((rest.drop "ensures ".length).toString.trimAscii.toString))
       else if rest.startsWith "invariant " then
-        some (.invariant ((rest.drop "invariant ".length).toString.trim))
+        some (.invariant ((rest.drop "invariant ".length).toString.trimAscii.toString))
       else if rest.startsWith "modifies " then
-        some (.modifies ((rest.drop "modifies ".length).toString.trim))
+        some (.modifies ((rest.drop "modifies ".length).toString.trimAscii.toString))
       else if rest.startsWith "loop-invariant " then
-        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trim))
+        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trimAscii.toString))
       else none
     else none
 
@@ -375,6 +375,7 @@ boolean operators (`&&`, `||`), and parentheses.
 namespace SpecParser
 
 /-- Tokenize a spec expression string into a list of tokens. -/
+set_option linter.deprecated false in
 private def tokenize (s : String) : List String :=
   let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=
     if fuel == 0 then (if cur.isEmpty then acc else acc ++ [cur]).reverse
@@ -1690,9 +1691,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             -- Split entries into (baseName, optionalKeyExpr) pairs
             let parseEntry (entry : String) : String × Option String :=
               match entry.splitOn "[" with
-              | [base] => (base.trim, none)
-              | [base, keyPart] => (base.trim, some (keyPart.dropRight 1 |>.trim))  -- strip trailing ]
-              | _ => (entry.trim, none)
+              | [base] => (base.trimAscii.toString, none)
+              | [base, keyPart] => (base.trimAscii.toString, some (keyPart.dropEnd 1 |>.trimAscii.toString))  -- strip trailing ]
+              | _ => (entry.trimAscii.toString, none)
             let parsedEntries := modifiedEntries.map parseEntry
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
@@ -1862,7 +1863,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq contractDocAnn _baseContracts => do
+  | .ContractDefinition _ nameAnn _kindAnn nodesSeq _contractDocAnn _baseContracts => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
@@ -2005,7 +2006,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ _ _ _ => do
+      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ _ _ _ => do
           let proc ← translateFunction fnCtx member
           procedures := procedures ++ [proc]
       | _ => pure ()
@@ -2056,7 +2057,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       acc ++ (proc.inputs.filterMap fun param =>
         if param.name.text.endsWith "_in" then
           match param.type.val with
-          | .TMap _ _ => some (param.name.text.dropRight 3)  -- strip "_in"
+          | .TMap _ _ => some (param.name.text.dropEnd 3 |>.toString)  -- strip "_in"
           | _ => none
         else none)) ([] : List String)
     let allMappingNames := allMappingNames.eraseDups

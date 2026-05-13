@@ -16,28 +16,28 @@ inductive StrataAnnotation where
 /-- Parse `@strata` (or legacy `@custom:strata`) annotations from a NatSpec documentation string.
     Each line matching `@strata <keyword> <expr>` produces an annotation. -/
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
-  let lines := doc.splitOn "\n" |>.map String.trim
+  let lines := doc.splitOn "\n" |>.map (·.trimAscii.toString)
   lines.filterMap fun line =>
     let tag := "@custom:strata "
     let mtag := "* @custom:strata "
     let rest? := if line.startsWith tag then
-        some ((line.drop tag.length).toString.trim)
+        some ((line.drop tag.length).toString.trimAscii.toString)
       else if line.startsWith mtag then
-        some ((line.drop mtag.length).toString.trim)
+        some ((line.drop mtag.length).toString.trimAscii.toString)
       else none
     match rest? with
     | none => none
     | some rest =>
       if rest.startsWith "requires " then
-        some (.requires ((rest.drop "requires ".length).toString.trim))
+        some (.requires ((rest.drop "requires ".length).toString.trimAscii.toString))
       else if rest.startsWith "ensures " then
-        some (.ensures ((rest.drop "ensures ".length).toString.trim))
+        some (.ensures ((rest.drop "ensures ".length).toString.trimAscii.toString))
       else if rest.startsWith "invariant " then
-        some (.invariant ((rest.drop "invariant ".length).toString.trim))
+        some (.invariant ((rest.drop "invariant ".length).toString.trimAscii.toString))
       else if rest.startsWith "modifies " then
-        some (.modifies ((rest.drop "modifies ".length).toString.trim))
+        some (.modifies ((rest.drop "modifies ".length).toString.trimAscii.toString))
       else if rest.startsWith "loop-invariant " then
-        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trim))
+        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trimAscii.toString))
       else none
 
 /-! ## Spec Expression Parser
@@ -51,6 +51,7 @@ boolean operators (`&&`, `||`), and parentheses.
 
 namespace SpecParser
 
+set_option linter.deprecated false in
 /-- Tokenize a spec expression string into a list of tokens. -/
 def tokenize (s : String) : List String :=
   let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=

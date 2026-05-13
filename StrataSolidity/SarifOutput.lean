@@ -16,9 +16,9 @@ namespace StrataSolidity.Sarif
 /-- Strip internal suffixes from variable names for readability. -/
 def cleanVarName (name : String) : String :=
   let s := name
-  let s := if s.startsWith "self." then s.drop 5 else s
-  let s := if s.endsWith "_param" then s.dropRight 6 else s
-  let s := if s.endsWith "_in" then s.dropRight 3 else s
+  let s := if s.startsWith "self." then (s.drop 5).toString else s
+  let s := if s.endsWith "_param" then (s.dropEnd 6).toString else s
+  let s := if s.endsWith "_in" then (s.dropEnd 3).toString else s
   let s := s.replace "__" "."
   s
 
