@@ -2,13 +2,13 @@
 
 StrataSolidity is under active development. This page documents known limitations.
 
-## No counterexample generation
+## No counterexample generation (GAP-001)
 
 When a postcondition cannot be proven, the verifier reports `unknown` (❓) instead of `fail` (❌) with a concrete counterexample. You know something is wrong, but you don't get values like "fails when `amount = 5, balance = 3`."
 
 This is because z3's model-based quantifier instantiation (mbqi) is disabled — enabling it causes infinite loops on the universally quantified map axioms.
 
-## Struct fields through mappings
+## Struct fields through mappings (GAP-002)
 
 Specifications cannot reference struct fields accessed through mapping values:
 
@@ -50,12 +50,12 @@ mapping(bytes32 => bool) public paymentCaptured;
 
 | Pattern | Notes |
 |---|---|
-| Struct fields through mappings | Blocked on Strata Core heap parameterization |
-| `old()` in loop invariants | `__old` marker not resolved in loop context |
-| `block.timestamp` | No time abstraction yet |
-| `msg.sender` in constructors | Constructor handling incomplete |
-| External calls / reentrancy | No cross-contract reasoning |
+| Struct fields through mappings (GAP-002) | Blocked on Strata Core heap parameterization |
+| `old()` in loop invariants (GAP-003) | `__old` marker not resolved in loop context |
+| `block.timestamp` (GAP-005) | No time abstraction yet |
+| `msg.sender` in constructors (GAP-006) | Constructor handling incomplete |
+| External calls / reentrancy (GAP-007) | No cross-contract reasoning |
 | Assembly / inline Yul | Not parsed |
-| Dynamic arrays (`push`/`pop`) | `.length` works, `push`/`pop` not modeled |
-| Inheritance | Single contract only, no virtual dispatch |
-| Lemmas (`@custom:strata lemma`) | Needs Laurel grammar extension |
+| Dynamic arrays (`push`/`pop`) (GAP-008) | `.length` works, `push`/`pop` not modeled |
+| Inheritance (GAP-009) | Single contract only, no virtual dispatch |
+| Lemmas (`@custom:strata lemma`) (GAP-004) | Needs Laurel grammar extension |

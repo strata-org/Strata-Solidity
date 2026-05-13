@@ -86,23 +86,9 @@ contract Token {
 
 ## Supported Solidity features
 
-**Core:** contracts, functions (public/external/internal/private), state variables, constructors, inheritance (single and diamond), modifiers
+StrataSolidity accepts a subset of Solidity 0.8.x covering contracts and interfaces, functions and modifiers, common value and reference types (integers, `bool`, `address`, `bytes32`, mappings, arrays, structs, enums), standard control flow and expressions, and NatSpec-annotated specifications. Pipeline-specific conventions (events as no-ops, hashes and ABI encoders as uninterpreted functions, inline assembly under a havoc strategy) are part of the accepted subset.
 
-**Types:** `uint`/`int` (all sizes 8–256), `bool`, `address`, `bytes32`, mappings, arrays (fixed and dynamic), structs, enums, user-defined value types
-
-**Statements:** `if`/`else`, `while`, `for`, `return`, `require`, `assert`, `revert`, `unchecked` blocks, `delete`
-
-**Expressions:** arithmetic (`+`, `-`, `*`, `/`, `%`, `**`), comparison, boolean logic, bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), ternary (`? :`), index access, member access, type casts
-
-**Additional:**
-- Modifiers (with arguments and `_` placeholder inlining)
-- Events (`emit`) — treated as no-ops for verification
-- `receive`/`fallback` functions
-- `immutable` and `constant` variables
-- Hash functions (`keccak256`, `sha256`) and `abi.encode*` — modeled as uninterpreted functions
-- Inline assembly — havoc strategy (all touched state treated as unknown)
-- Custom errors with `revert`
-- `msg.sender`, `msg.value`, `block.*`, `tx.*` globals
+For the authoritative, per-feature enumeration, see [`.kiro/specs/strata-solidity-baseline/requirements.md`](.kiro/specs/strata-solidity-baseline/requirements.md) §3 — Supported Solidity Subset (REQ-SOL-001..REQ-SOL-100). That document is the source of truth; this README intentionally does not duplicate the list to avoid drift.
 
 ## Output formats
 
