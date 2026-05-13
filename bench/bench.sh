@@ -44,3 +44,8 @@ cat "$RESULTS" | column -t -s,
 echo ""
 awk -F, 'NR>1 && $5=="ok" { n++; t+=$6; p+=$7; tot+=$10 }
   END { printf "OK: %d/%d | Total: %dms | Avg: %dms | Obligations: %d/%d passed\n", n+0, NR-1, t, (n>0?t/n:0), p, tot }' "$RESULTS"
+
+# Post-run schema check (REQ-PBT-008). Runs alongside the embedded-newline fix
+# from task 3.1 (REQ-TEST-036); on an unfixed CSV this exits non-zero, which
+# is the intended enforcement behavior for the baseline.
+python3 "$SCRIPT_DIR/check_csv_schema.py" "$RESULTS"
