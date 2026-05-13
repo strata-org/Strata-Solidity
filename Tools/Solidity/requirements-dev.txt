@@ -1,0 +1,10 @@
+# Development-only Python dependencies for Tools/Solidity.
+#
+# These packages are used by the characterization test harness
+# (see Tools/Solidity/test/) and are NOT required to run the
+# Solidity verification pipeline itself. Runtime dependencies, if
+# any, live elsewhere — do not promote anything from this file
+# into a runtime requirements file without an explicit spec change.
+#
+# Realizes: REQ-PBT-004 (SARIF 2.1.0 schema compliance).
+jsonschema>=4.0
