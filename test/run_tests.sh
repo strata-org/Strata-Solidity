@@ -43,4 +43,18 @@ done
 
 echo ""
 echo "$pass passed, $fail failed, $skip skipped, $update generated"
-[ "$fail" -eq 0 ]
+
+# -----------------------------------------------------------------------------
+# Sub-stage: exit-code contract (REQ-PBT-007).
+# Pins REQ-CLI-050 (fail ⇒ exit 1), REQ-CLI-051 (pass/unknown only ⇒ exit 0),
+# and REQ-CLI-052 (unknown is not a failing exit code). Implemented as a
+# sibling script so the golden-file logic above is unchanged.
+# -----------------------------------------------------------------------------
+exit_code_fail=0
+if [ -x "$SCRIPT_DIR/run_exit_code_tests.sh" ]; then
+    echo ""
+    STRATA_VERIFY="$STRATA_VERIFY" \
+        bash "$SCRIPT_DIR/run_exit_code_tests.sh" "$TIMEOUT" || exit_code_fail=1
+fi
+
+[ "$fail" -eq 0 ] && [ "$exit_code_fail" -eq 0 ]
