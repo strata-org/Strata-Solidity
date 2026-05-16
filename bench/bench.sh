@@ -11,11 +11,26 @@ echo "benchmark,functions,specs,state_vars,mappings,status,time_ms,pass,fail,unk
 
 for sol in "$SCRIPT_DIR"/b*.sol; do
   name=$(basename "$sol" .sol)
-  funcs=$(grep -c "function " "$sol" 2>/dev/null || echo 0)
-  specs=$(grep -c "@custom:strata" "$sol" 2>/dev/null || echo 0)
-  maps=$(grep -c "mapping" "$sol" 2>/dev/null || echo 0)
+  # Each count is piped through `tr '\n' ' ' | awk '{print $1}'` to collapse
+  # the `grep -c` + `|| echo 0` artifact noted in REQ-TEST-036. `grep -c`
+  # exits 1 on zero matches (while still printing "0\n"), which fires the
+  # `|| echo 0` fallback and concatenates a second "0\n". Wrapping the
+  # fallback in a command group `{ ... ; }` keeps the same semantics (count
+  # on match, 0 on no-match); `tr` flattens the embedded newlines and `awk`
+  # picks the first whitespace-separated token so the zero-match case
+  # collapses to a single "0" rather than "00".
+  #
+  # Per design §10.4 and REQ-TEST-036, all four columns (functions, specs,
+  # state_vars, mappings) are populated by `grep -c` against the .sol file.
+  # `state_vars` counts `public` declarations: in the bench corpus, every
+  # state variable is `public` and no function is (functions use `external`),
+  # so the count is a faithful proxy for state variables.
+  funcs=$({ grep -c "function "      "$sol" 2>/dev/null || echo 0; } | tr '\n' ' ' | awk '{print $1}')
+  specs=$({ grep -c "@custom:strata" "$sol" 2>/dev/null || echo 0; } | tr '\n' ' ' | awk '{print $1}')
+  svars=$({ grep -c "public"         "$sol" 2>/dev/null || echo 0; } | tr '\n' ' ' | awk '{print $1}')
+  maps=$( { grep -c "mapping"        "$sol" 2>/dev/null || echo 0; } | tr '\n' ' ' | awk '{print $1}')
 
-  printf "%-15s funcs=%-2s specs=%-2s maps=%-2s " "$name" "$funcs" "$specs" "$maps"
+  printf "%-15s funcs=%-2s specs=%-2s svars=%-2s maps=%-2s " "$name" "$funcs" "$specs" "$svars" "$maps"
 
   start=$(python3 -c "import time; print(int(time.time()*1000))")
   output=$(bash "$VERIFY" "$sol" --timeout="$TIMEOUT" 2>&1) || true
@@ -36,13 +51,13 @@ for sol in "$SCRIPT_DIR"/b*.sol; do
   fi
 
   printf "=> %-6s %5dms  %s/%s pass\n" "$status" "$elapsed" "$pass" "$total"
-  echo "$name,$funcs,$specs,$maps,$status,$elapsed,$pass,$fail,$unknown,$total" >> "$RESULTS"
+  echo "$name,$funcs,$specs,$svars,$maps,$status,$elapsed,$pass,$fail,$unknown,$total" >> "$RESULTS"
 done
 
 echo ""
 cat "$RESULTS" | column -t -s,
 echo ""
-awk -F, 'NR>1 && $5=="ok" { n++; t+=$6; p+=$7; tot+=$10 }
+awk -F, 'NR>1 && $6=="ok" { n++; t+=$7; p+=$8; tot+=$11 }
   END { printf "OK: %d/%d | Total: %dms | Avg: %dms | Obligations: %d/%d passed\n", n+0, NR-1, t, (n>0?t/n:0), p, tot }' "$RESULTS"
 
 # Post-run schema check (REQ-PBT-008). Runs alongside the embedded-newline fix
