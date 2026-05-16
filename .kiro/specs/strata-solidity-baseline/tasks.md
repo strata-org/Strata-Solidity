@@ -129,45 +129,45 @@ closed; those gaps are explicitly **out of scope** here.
     - Invoke the checker from the tail of `bench/bench.sh` as a post-run step; exit non-zero on any schema violation
     - _Realizes: REQ-PBT-008_
 
-- [ ] 3. Group C — Known-defect fixes that do not change behavior
-  - [ ] 3.1 Fix `bench/bench.sh` `grep -c` embedded-newline artifact
+- [x] 3. Group C — Known-defect fixes that do not change behavior
+  - [x] 3.1 Fix `bench/bench.sh` `grep -c` embedded-newline artifact
     - Locate the `grep -c` invocations that populate `state_vars`, `mappings`, `functions`, and `specs` columns
     - Pipe each count through `tr -d '\n'` (or equivalent, e.g. `| tr '\n' ' ' | awk '{print $1}'`) before it is interpolated into the CSV row
     - Do not change column count, column order, header literal, or any data semantics — only collapse embedded newlines from the `grep -c` artifact noted in REQ-TEST-036
     - Regenerate `bench/results.csv` as part of running the harness locally, then verify with task 2.9's checker
     - _Realizes: REQ-TEST-036, REQ-PBT-008, design §14.2 risk "`bench/bench.sh` `grep -c` artifact"_
 
-  - [ ] 3.2 Add a precondition check for the `../Strata` sibling path
+  - [x] 3.2 Add a precondition check for the `../Strata` sibling path
     - Add a shell helper (e.g. `scripts/check-strata-sibling.sh`) that exits non-zero with a friendly message (`"Error: expected sibling checkout at ../Strata. Clone https://... as a sibling directory before running 'lake build'."`) when `../Strata/lakefile.toml` is missing
     - Call the helper from the top of `Tools/Solidity/scripts/strata-verify.sh` (before the existing dialect/binary checks) and from the top of `bench/bench.sh` and `test/run_tests.sh`
     - Do **not** modify `lakefile.toml`; the `[[require]]` `path = "../Strata"` stays unchanged (REQ-STRATA-001)
     - Document the helper in `README.md`'s build-prerequisites section
     - _Realizes: REQ-STRATA-001, REQ-STRATA-005, REQ-SH-003..REQ-SH-005, design §14.2 risk "Fragile sibling-path coupling"_
 
-- [ ] 4. Checkpoint — Ensure all tests pass
+- [~] 4. Checkpoint — Ensure all tests pass
   - Ensure `lake build` succeeds, `lake test` passes, `StrataSolidityTest/Solidity/run_sol_analyze_laurel.sh` reports all non-XFAIL tests green and exactly the two XFAILs from REQ-TEST-016, `test/run_tests.sh` passes including the new REQ-PBT-007 assertions, `bench/bench.sh` emits a schema-valid `results.csv` and the new `check_csv_schema.py` exits 0, and `jsonschema` validation of the SARIF fixture passes
   - Ask the user if questions arise
 
 - [ ] 5. Group D — Publication and handoff
-  - [ ] 5.1 Run requirements analysis against the baseline
+  - [~] 5.1 Run requirements analysis against the baseline
     - Run `analyzeRequirements` against `.kiro/specs/strata-solidity-baseline/requirements.md`
     - Only apply auto-resolvable clarifications; surface any non-auto clarifications to the user before changing anything
     - If changes are applied, re-verify by re-running `analyzeRequirements` once more to confirm a clean pass
     - _Realizes: `requirements.md` §1 (stability guarantee), design §1.1_
 
-  - [ ] 5.2 Add the baseline spec to the mdBook
+  - [~] 5.2 Add the baseline spec to the mdBook
     - Add a new chapter (e.g. `docs/guide/src/baseline/`) containing `requirements.md` and `design.md` rendered as book pages (use symlinks or `mdBook`'s include directive so the canonical files remain in `.kiro/specs/strata-solidity-baseline/`)
     - Update `docs/guide/src/SUMMARY.md` to include the new chapter
     - Confirm `mdbook build` succeeds locally and that `.github/workflows/deploy-pages.yml` still runs green
     - _Realizes: REQ-DIST-006, REQ-DIST-007_
 
-  - [ ] 5.3 Create `.kiro/specs/strata-solidity-baseline/CITING.md`
+  - [~] 5.3 Create `.kiro/specs/strata-solidity-baseline/CITING.md`
     - Add a one-page "How to cite this baseline" note
     - Include at least three worked examples: "REQ-SOL-027 → expanded to support push/pop; see GAP-008", "REQ-CLI-050 → exit-code contract preserved by strata-solidity-next", "REQ-PBT-002 → pipeline determinism characterization test"
     - Link CITING.md from `.kiro/specs/README.md` (created in 1.5) and from the mdBook chapter (added in 5.2)
     - _Realizes: GAP-001..GAP-012, REQ-PBT-001..REQ-PBT-008_
 
-  - [ ] 5.4 Tag the repo at the baseline commit (**user action**)
+  - [~] 5.4 Tag the repo at the baseline commit (**user action**)
     - Once tasks 1.1 through 5.3 are all green and the checkpoint (task 4) has passed, the user tags the current `main` commit as `v0.1.0-baseline`
     - The tag message should reference `.kiro/specs/strata-solidity-baseline/` and cite the corresponding `CHANGELOG.md` entry
     - Do not push the tag automatically; wait for explicit user confirmation
