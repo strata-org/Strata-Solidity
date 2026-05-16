@@ -15,6 +15,18 @@ Solidity (.sol) → solc + solast.py → Ion → SolToLaurel → Laurel IR
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
 - z3 or cvc5 SMT solver
 
+### Checking the `../Strata` sibling path
+
+The Lake package wires Strata in via `[[require]] path = "../Strata"` (see `lakefile.toml`). If the sibling checkout is missing or at the wrong location, `lake build` and every wrapper script fails deep in the toolchain with an opaque error.
+
+Run `scripts/check-strata-sibling.sh` from the repo root to verify the sibling is in place before building:
+
+```bash
+scripts/check-strata-sibling.sh
+```
+
+The helper exits non-zero with a friendly message when `../Strata/lakefile.toml` is missing. It is invoked automatically at the top of `Tools/Solidity/scripts/strata-verify.sh`, `bench/bench.sh`, and `test/run_tests.sh`, so the same precondition is enforced for the verification pipeline, the benchmark harness, and the test runner.
+
 ## Building
 
 ```bash

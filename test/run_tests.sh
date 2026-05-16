@@ -6,6 +6,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Precondition: sibling ../Strata checkout must exist (REQ-STRATA-001,
+# REQ-STRATA-005). Runs at the top so the test harness aborts with a friendly
+# message before any test case invokes strata-verify.sh.
+bash "$SCRIPT_DIR/../scripts/check-strata-sibling.sh"
+
 EXAMPLES_DIR="$SCRIPT_DIR/examples"
 EXPECTED_DIR="$SCRIPT_DIR/expected"
 STRATA_VERIFY="${STRATA_VERIFY:-$(dirname "$SCRIPT_DIR")/vscode-strata-solidity/bin/strata-verify.sh}"

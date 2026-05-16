@@ -3,6 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Precondition: sibling ../Strata checkout must exist (REQ-STRATA-001,
+# REQ-STRATA-005). Runs at the top so the benchmark aborts with a friendly
+# message before invoking strata-verify.sh.
+bash "$SCRIPT_DIR/../scripts/check-strata-sibling.sh"
+
 VERIFY="${STRATA_VERIFY:-$SCRIPT_DIR/../Tools/Solidity/scripts/strata-verify.sh}"
 TIMEOUT="${1:-30}"
 RESULTS="$SCRIPT_DIR/results.csv"
