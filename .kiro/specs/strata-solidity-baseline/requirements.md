@@ -8,18 +8,18 @@ The baseline has three consumers:
 
 1. A stable reference that the follow-on spec `strata-solidity-next` diffs against line-by-line. Every capability, flag, annotation, and gap carries a stable ID of the form `REQ-<CATEGORY>-<NNN>` or `GAP-<NNN>` so that future specs can cite them unambiguously.
 2. A characterization surface for property-based tests that pin down today's behavior (the `Correctness Properties` section).
-3. A conformity reference for the Strata front-end (sibling-path dependency on `../Strata`).
+3. A conformity reference for the Strata front-end (vendored as a git submodule at `./Strata`).
 
 Scope boundary. This document describes the current Solidity subset, specification language, pipeline stages, CLI surface, Python tooling, output formats, test harnesses, distribution packaging, and known gaps. It does not propose changes, does not define acceptance for new features, and does not re-specify Strata Core or Laurel. Where the checked-in documentation disagrees with the compiled code, the code wins and the disagreement is surfaced as an acceptance-criterion note.
 
-Relationship to Strata. The project depends on a sibling checkout at `../Strata` via a Lake `path` require. Python helpers expect `../Strata/Tools/Python` on `PYTHONPATH`. The Laurel dialect is targeted (not Core directly, not C_Simp). Moving, symlinking, or modifying `../Strata` is out of scope for this baseline.
+Relationship to Strata. The project depends on a Strata checkout vendored as a git submodule at `./Strata` via a Lake `path` require. Python helpers expect `./Strata/Tools/Python` on `PYTHONPATH`. The Laurel dialect is targeted (not Core directly, not C_Simp). The submodule is not modified within the StrataSolidity repository for this baseline; bumps to the pinned commit are made by updating the submodule reference.
 
 Relationship to `strata-solidity-next`. The `Current Gaps` section enumerates every tracked limitation with its root cause and, where available, its Asana ticket. `strata-solidity-next` closes one or more of these gaps; it must cite the gap IDs it targets and must leave the other baseline requirements unchanged.
 
 ## Glossary
 
 - **StrataSolidity**: The Lean 4 package and CLI binary providing the Solidity front-end to the Strata verification framework.
-- **Strata**: The verification framework that StrataSolidity depends on, located at `../Strata` relative to the project root. Provides Laurel, Core, VCG, and the SMT encoder.
+- **Strata**: The verification framework that StrataSolidity depends on, vendored as a git submodule at `./Strata` (see `.gitmodules`). Provides Laurel, Core, VCG, and the SMT encoder.
 - **Laurel**: High-level intermediate verification language in Strata. Target dialect of StrataSolidity's translation. Preserves structured control flow, heap-allocated objects, and fields.
 - **Core**: Low-level verification language in Strata, roughly equivalent to Boogie. Laurel is translated to Core during verification. Flat procedures, explicit `spec {}` blocks, maps with `select`/`update`.
 - **Ion**: Binary/textual serialization format used to exchange AST data between the Python front-end (`solast.py`) and the Lean binary.
@@ -58,15 +58,15 @@ Relationship to `strata-solidity-next`. The `Current Gaps` section enumerates ev
 
 ### Requirement 2 — Strata Framework Contract (REQ-STRATA-*)
 
-**User Story:** As the consumer of the `../Strata` sibling package, I want the path-require contract pinned, so that the framework is neither relocated nor version-drifted.
+**User Story:** As the consumer of the Strata package, I want the require contract pinned, so that the framework is neither relocated nor version-drifted.
 
 #### Acceptance Criteria
 
-1. REQ-STRATA-001. THE `lakefile.toml` SHALL contain a `[[require]]` entry with `name = "Strata"` and `path = "../Strata"`.
-2. REQ-STRATA-002. THE `lake-manifest.json` SHALL list `Strata` with `"type": "path"` and `"dir": "../Strata"`.
-3. REQ-STRATA-003. WHEN `strata-verify.sh` runs, THE Shell_Wrapper SHALL set `PYTHONPATH` to include `$PROJECT_DIR/../Strata/Tools/Python` before invoking `src.solast`.
+1. REQ-STRATA-001. THE `lakefile.lean` SHALL contain a `require` entry of the form `require Strata from "Strata"`, where `Strata/` is a git submodule of the StrataSolidity repository.
+2. REQ-STRATA-002. THE `lake-manifest.json` SHALL list `Strata` with `"type": "path"` and `"dir": "Strata"`. The submodule's pinned commit is recorded in `.gitmodules` and the repository tree, not in `lake-manifest.json`.
+3. REQ-STRATA-003. WHEN `strata-verify.sh` runs, THE Shell_Wrapper SHALL set `PYTHONPATH` to include `$PROJECT_DIR/Strata/Tools/Python` before invoking `src.solast`.
 4. REQ-STRATA-004. THE Translation_Pipeline SHALL target the Laurel dialect of Strata and SHALL NOT target Core directly or C_Simp.
-5. REQ-STRATA-005. THE StrataSolidity_Project SHALL treat `../Strata` as external and SHALL NOT require `../Strata` to be moved, symlinked, or modified for this baseline.
+5. REQ-STRATA-005. THE StrataSolidity_Project SHALL treat the `Strata` submodule as external and SHALL NOT modify it within the StrataSolidity repository; bumps to the pinned commit are made by updating the submodule reference, not by editing files inside `Strata/`.
 
 ---
 
@@ -314,7 +314,7 @@ Relationship to `strata-solidity-next`. The `Current Gaps` section enumerates ev
 4. REQ-SH-004. IF `Tools/Solidity/dialects/Solidity.dialect.st.ion` does not exist, THEN THE Shell_Wrapper SHALL print `Error: Dialect not found at <path>. Run gen_dialect.sh first.` and exit 1.
 5. REQ-SH-005. IF `.lake/build/bin/strataSolidity` does not exist, THEN THE Shell_Wrapper SHALL print `Error: strataSolidity not built. Run 'lake build' in <project> first.` and exit 1.
 6. REQ-SH-006. WHEN all prerequisites pass, THE Shell_Wrapper SHALL create a temporary directory, run `python3 -m src.solast sol_to_strata --dialect <dialect> <input.sol> <out.ion>` inside `Tools/Solidity`, and then invoke `.lake/build/bin/strataSolidity <out.ion> <extra-args…>`.
-7. REQ-SH-007. WHEN invoking `solast`, THE Shell_Wrapper SHALL set `PYTHONPATH` to include `$PROJECT_DIR/../Strata/Tools/Python` followed by any pre-existing `PYTHONPATH`.
+7. REQ-SH-007. WHEN invoking `solast`, THE Shell_Wrapper SHALL set `PYTHONPATH` to include `$PROJECT_DIR/Strata/Tools/Python` followed by any pre-existing `PYTHONPATH`.
 8. REQ-SH-008. IF the `solast` stage fails, THEN THE Shell_Wrapper SHALL print `Error: Failed to parse <input.sol>` to stderr and exit non-zero.
 9. REQ-SH-009. THE Shell_Wrapper SHALL forward the exit code of the Lean binary as its own exit code.
 10. REQ-SH-010. THE Shell_Wrapper SHALL delete the temporary directory on exit via a `trap` handler.

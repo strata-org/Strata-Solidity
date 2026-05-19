@@ -176,12 +176,12 @@ The pipeline has five stages. Each subsection below describes one stage, identif
 **Contract.** The input is a path to a `.sol` file and a dialect descriptor (`Solidity.dialect.st.ion`). The output is a sibling `*.solidity.st.ion` Ion file written to a temporary directory. The invocation shape is fixed by `strata-verify.sh`:
 
 ```bash
-PYTHONPATH="$PROJECT_DIR/../Strata/Tools/Python:${PYTHONPATH:-}" \
+PYTHONPATH="$PROJECT_DIR/Strata/Tools/Python:${PYTHONPATH:-}" \
   python3 -m src.solast sol_to_strata \
     --dialect "$DIALECT" "$SOL_FILE" "$ION_FILE"
 ```
 
-`PYTHONPATH` is set so that `src.solast` can import Strata's Python Ion helpers from the sibling checkout (REQ-STRATA-003). `solast.py` drives solc (`solc --ast-json`), walks the JSON AST through the dialect-defined visitor, and writes the Ion payload.
+`PYTHONPATH` is set so that `src.solast` can import Strata's Python Ion helpers from the vendored submodule (REQ-STRATA-003). `solast.py` drives solc (`solc --ast-json`), walks the JSON AST through the dialect-defined visitor, and writes the Ion payload.
 
 **NatSpec passthrough.** The solc JSON AST carries NatSpec as a `documentation` field on functions, state variables, and contracts. `solast.py` preserves this field unchanged into the Ion stream so that `SpecParser.lean` can see the raw annotation lines downstream. No `@custom:strata` parsing happens in Python — the Python layer only moves bytes.
 
@@ -287,7 +287,7 @@ Emits `Geq(Identifier paramName, LiteralInt 0)`. Applied once per unsigned integ
 
 ### 4.4 Stage 4 — Laurel → Core (REQ-PIPE-004)
 
-**Module:** `Strata.Languages.Laurel.LaurelToCoreTranslator` inside `../Strata`. StrataSolidity calls it via `Strata.Laurel.translate`. The return type is `Except Diagnostics (Core.Program × ModifiesDiagnostics)`; the `modifiesDiags` half is currently discarded in `StrataSolidityMain` but retained by the API.
+**Module:** `Strata.Languages.Laurel.LaurelToCoreTranslator` inside the `Strata` submodule. StrataSolidity calls it via `Strata.Laurel.translate`. The return type is `Except Diagnostics (Core.Program × ModifiesDiagnostics)`; the `modifiesDiags` half is currently discarded in `StrataSolidityMain` but retained by the API.
 
 **Mapping table (see §9 for the full version).** The following subset, drawn from `docs/ir-reference.md`, is what StrataSolidity relies on:
 
@@ -310,7 +310,7 @@ Emits `Geq(Identifier paramName, LiteralInt 0)`. Applied once per unsigned integ
 
 ### 4.5 Stage 5 — Core → SMT (REQ-PIPE-005)
 
-**Module:** `Strata.Languages.Core.Verifier.Core.verify` inside `../Strata`. Invoked with `VerifyOptions` configured by `StrataSolidityMain` (REQ-CLI-030):
+**Module:** `Strata.Languages.Core.Verifier.Core.verify` inside the `Strata` submodule. Invoked with `VerifyOptions` configured by `StrataSolidityMain` (REQ-CLI-030):
 
 ```
 { VerifyOptions.default with
@@ -600,7 +600,7 @@ Responsibilities, in order of execution:
 3. **Dialect check.** If `Tools/Solidity/dialects/Solidity.dialect.st.ion` is missing, print `Error: Dialect not found at <path>. Run gen_dialect.sh first.` and exit 1 (REQ-SH-004).
 4. **Binary check.** If `.lake/build/bin/strataSolidity` is missing, print `Error: strataSolidity not built. Run 'lake build' in <project> first.` and exit 1 (REQ-SH-005).
 5. **Temp dir.** `TMPDIR=$(mktemp -d)` then `trap "rm -rf $TMPDIR" EXIT` (REQ-SH-010).
-6. **`PYTHONPATH` injection.** `PYTHONPATH="${STRATA_PYTHON}:${PYTHONPATH:-}"` where `STRATA_PYTHON="$PROJECT_DIR/../Strata/Tools/Python"` (REQ-STRATA-003, REQ-SH-007).
+6. **`PYTHONPATH` injection.** `PYTHONPATH="${STRATA_PYTHON}:${PYTHONPATH:-}"` where `STRATA_PYTHON="$PROJECT_DIR/Strata/Tools/Python"` (REQ-STRATA-003, REQ-SH-007).
 7. **Stage-1 invocation.** `cd "$TOOLS_DIR" && python3 -m src.solast sol_to_strata --dialect "$DIALECT" "$SOL_FILE" "$ION_FILE"`. On failure: print `Error: Failed to parse $SOL_FILE` and exit non-zero (REQ-SH-008).
 8. **Stage-2 invocation.** `"$STRATA_BIN" "$ION_FILE" $EXTRA_ARGS`. The script uses `set -euo pipefail`, so the Lean binary's non-zero exit code propagates to the script's exit code (REQ-SH-009).
 
@@ -973,7 +973,7 @@ This section documents what `lake build` produces and how the binary reaches the
 
 ```
 StrataSolidity (lean_lib)              globs: StrataSolidity/**
-├── depends on Strata (path require, ../Strata)
+├── depends on Strata (path require, ./Strata submodule)
 ├── depends on plausible (git require, transitive via Strata)
 └── produces .lake/build/lib/StrataSolidity.olean and friends
 
@@ -991,7 +991,7 @@ StrataSolidityTest (lean_lib, globs = ["StrataSolidityTest.+"])
 
 ### 11.2 Strata dependency surface
 
-The dependency on `../Strata` is declared as a Lake path-require (REQ-STRATA-001). The manifest (`lake-manifest.json`, REQ-STRATA-002) records `"type": "path"` and `"dir": "../Strata"`. The following surfaces are consumed from Strata:
+The dependency on Strata is declared as a Lake path-require pointing at the `./Strata` submodule (REQ-STRATA-001). The manifest (`lake-manifest.json`, REQ-STRATA-002) records `"type": "path"` and `"dir": "Strata"`; the submodule's pinned commit is recorded in `.gitmodules` and the repository tree, not in `lake-manifest.json`. The following surfaces are consumed from Strata:
 
 | Surface | Used by | Purpose |
 |---|---|---|
@@ -1001,9 +1001,9 @@ The dependency on `../Strata` is declared as a Lake path-require (REQ-STRATA-001
 | `Strata.Languages.Core.Verifier` | `StrataSolidityMain.lean` | `Core.verify`, `VCResult`, `Outcome`, `LExprModel` (REQ-PIPE-005). |
 | `Strata.Languages.Core.Options` | `StrataSolidityMain.lean` | `VerifyOptions` with `solver := "z3"` hardcoded (REQ-CLI-030, GAP-012). |
 | `Strata.DL.Imperative.MetaData` | both | `Imperative.MetaData Core.Expression` and `getFileRange`. |
-| `../Strata/Tools/Python` | `strata-verify.sh`, `strata_verify.py` | Python helpers and generated dialect code; added to `PYTHONPATH` at invocation time (REQ-STRATA-003). |
+| `./Strata/Tools/Python` | `strata-verify.sh`, `strata_verify.py` | Python helpers and generated dialect code; added to `PYTHONPATH` at invocation time (REQ-STRATA-003). |
 
-The `Strata` checkout is not vendored, symlinked, or modified for this baseline (REQ-STRATA-005). Risks from this coupling are discussed in §14.
+The `Strata` submodule is treated as external and is not modified within the StrataSolidity repository for this baseline (REQ-STRATA-005); bumps to the pinned commit are made by updating the submodule reference. Risks from this coupling are discussed in §14.
 
 ### 11.3 IDE extension wiring
 
@@ -1046,7 +1046,7 @@ This section describes, for each `GAP-*` in `requirements.md`, which architectur
 **Subsystem that would change to close it.** Two routes:
 
 1. Extend `SolTranslator/ContractTranslator.lean` and `SolTranslator/StmtTranslator.lean` to pre-flatten `mapping(K => Struct)` into one `Map[K, T_field]` per struct field, analogous to the existing scalar/mapping pre-flattening. This is a front-end-only change.
-2. Extend Strata Core's HeapParameterization in `../Strata` to walk struct field names through composite map values. This is a framework change that benefits JVerify too.
+2. Extend Strata Core's HeapParameterization in the `Strata` submodule to walk struct field names through composite map values. This is a framework change that benefits JVerify too.
 
 ### 12.3 GAP-003 — `old()` in loop invariants
 
@@ -1197,7 +1197,7 @@ This section maps each `REQ-PBT-*` to a concrete test harness and property. Thes
 
 | Risk | Description | Surface |
 |---|---|---|
-| Fragile sibling-path coupling | `../Strata` is a hard path-require (REQ-STRATA-001). Any consumer who clones StrataSolidity without a sibling `Strata` checkout fails at `lake build` before anything else. `README.md` documents this but the build system has no friendlier guidance. | `lakefile.toml`, `strata-verify.sh`, installation docs. |
+| Fragile submodule-path coupling | The `Strata` submodule is a hard path-require (REQ-STRATA-001). Any consumer who clones StrataSolidity without `--recurse-submodules` (and forgets `git submodule update --init`) fails at `lake build` before anything else. `scripts/check-strata.sh` surfaces this with a friendly message and is invoked at the top of `strata-verify.sh`, `bench/bench.sh`, and `test/run_tests.sh`. | `lakefile.lean`, `strata-verify.sh`, installation docs. |
 | Counterexample absence shifts trust burden to the user | GAP-001 means a failing obligation reports `unknown` instead of `fail + model`. Users without SMT expertise cannot triage the failure to a concrete input. The extension documents this (`LIMITATIONS.md` and the `unknown` tooltip) but it still shapes the UX. | CLI output, extension UX, SARIF reports. |
 | Python subprocess overhead dominates small-file latency | Every verification spawns `python3 -m src.solast` and then the Lean binary. On very small contracts the fixed spawn cost is visible; `bench/results.csv` shows ~200 ms for the trivial benchmark. An in-process Python-free path would help but is not in scope. | `strata-verify.sh`, `strata_verify.py`. |
 | `@strata` vs `@custom:strata` documentation drift | `LIMITATIONS.md` still uses `@strata` in some example code, while the parser only recognizes `@custom:strata` (REQ-SOL-100). Users copy-pasting from `LIMITATIONS.md` see silent no-op annotations. A documentation sweep is a small pre-req for the next phase. | `LIMITATIONS.md`, `STRATA_REFERENCE.md`. |

@@ -33,7 +33,7 @@ are safe to cite from code comments, tests, and follow-on specs.
 
 | Prefix         | Scope                                                                         |
 | -------------- | ----------------------------------------------------------------------------- |
-| `REQ-STRATA-*` | Contract with the sibling `../Strata` framework checkout                      |
+| `REQ-STRATA-*` | Contract with the vendored `Strata` git submodule                              |
 | `REQ-SOL-*`    | Supported Solidity subset accepted by the translator                          |
 | `REQ-SPEC-*`   | `@custom:strata` specification annotation language                            |
 | `REQ-PIPE-*`   | Pipeline stages (AST ingest → Laurel → Core → VCG → SMT)                      |
