@@ -15,7 +15,13 @@ public import Strata.DDM.Integration.Lean.OfAstM
 
 public section
 namespace Strata.Solidity
-#load_dialect "../../../Tools/Solidity/dialects/Solidity.dialect.st.ion"
+-- `#load_dialect` resolves relative to this Lean file's directory
+-- (Strata/.../HashCommands.lean::resolveLeanRelPath). This file lives at
+-- `<repo>/StrataSolidity/SolidityDialect.lean`, so one `..` reaches the
+-- repo root and the dialect lives at `<repo>/Tools/Solidity/dialects/`.
+-- The previous `../../../Tools/...` path resolved to a sibling checkout
+-- on a developer machine and broke on CI (REQ-STRATA-005, design §14.2).
+#load_dialect "../Tools/Solidity/dialects/Solidity.dialect.st.ion"
 
 #strata_gen Solidity
 
