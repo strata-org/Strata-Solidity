@@ -1,6 +1,10 @@
+# Lake build artefacts. lake-manifest.json is intentionally NOT ignored:
+# leanprover/lean-action requires it in the checkout (it's both a cache
+# key and an input to `lake build`), and committing it pins exact
+# dependency revisions for reproducible builds.
 .lake/
 build/
 build.log
-lake-manifest.json
 __pycache__/
 *.solidity.st.ion
+.DS_Store
