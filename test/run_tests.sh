@@ -32,18 +32,22 @@ for sol in "$EXAMPLES_DIR"/*.sol; do
         # No expected file — generate it
         echo "$actual" > "$expected"
         echo "📝 $name: generated expected output"
-        ((update++))
+        # Use $((var+1)) (not ((var++))) so the increment is safe under
+        # `set -e`: the post-increment form returns exit status 1 when the
+        # variable is 0, which would abort the harness silently after the
+        # first fixture and prevent the REQ-PBT-007 sub-stage from running.
+        update=$((update+1))
         continue
     fi
 
     expected_content=$(cat "$expected")
     if [ "$actual" = "$expected_content" ]; then
         echo "✅ $name"
-        ((pass++))
+        pass=$((pass+1))
     else
         echo "❌ $name"
         diff <(echo "$expected_content") <(echo "$actual") || true
-        ((fail++))
+        fail=$((fail+1))
     fi
 done
 
