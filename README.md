@@ -33,6 +33,20 @@ The helper exits non-zero with a friendly message when `../Strata/lakefile.toml`
 lake build
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on push to `main`, `feat/**`, `fix/**`, and on every pull request. The workflow:
+
+1. Checks out StrataSolidity into `./StrataSolidity` and the sibling `strata-org/Strata` into `./Strata` (pinned by SHA; override via the `strata_ref` workflow_dispatch input)
+2. Verifies the sibling layout via `scripts/check-strata-sibling.sh`
+3. Installs `solc` (via the `ethereum/ethereum` PPA) and the Python dev dependencies in `Tools/Solidity/requirements-dev.txt`
+4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action) (which handles elan install and `.lake` caching)
+5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)
+6. Runs `python3 bench/check_csv_schema.py bench/results.csv` (REQ-PBT-008 schema enforcer against the committed CSV)
+7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema compliance)
+
+`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow). The primary golden harness `StrataSolidityTest/Solidity/run_sol_analyze_laurel.sh` is also not wired (see `StrataSolidityTest/Solidity/CHECKPOINT_GAP.md`).
+
 ## Quick start
 
 ```bash

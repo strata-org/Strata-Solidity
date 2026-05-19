@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      strata_ref:
+        description: 'Strata git ref to clone as ../Strata sibling (commit SHA, branch, or tag).'
+        required: false
+        default: 'f9895a94f68d61bf7f58fa845cae4c3e88d148bc'
+
+# Run only one CI per ref; cancel superseded runs on the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build + test (ubuntu)
+    runs-on: ubuntu-latest
+
+    # Pinned Strata sibling commit. Defaults to the same revision the
+    # repository's lake-manifest.json was last verified against (REQ-STRATA-002).
+    # Override via the workflow_dispatch input when bumping the sibling.
+    env:
+      STRATA_REF: ${{ inputs.strata_ref || 'f9895a94f68d61bf7f58fa845cae4c3e88d148bc' }}
+
+    steps:
+      - name: Checkout StrataSolidity into ./StrataSolidity
+        uses: actions/checkout@v4
+        with:
+          path: StrataSolidity
+
+      # The Lake [[require]] in lakefile.lean is `path = "../Strata"`
+      # (REQ-STRATA-001), so the sibling must live next to ./StrataSolidity
+      # in the workspace.
+      - name: Checkout sibling Strata into ./Strata
+        uses: actions/checkout@v4
+        with:
+          repository: strata-org/Strata
+          ref: ${{ env.STRATA_REF }}
+          path: Strata
+
+      # Verify the sibling layout the build expects (REQ-STRATA-001,
+      # REQ-STRATA-005). This script is the same one strata-verify.sh,
+      # bench/bench.sh, and test/run_tests.sh invoke at startup; running
+      # it here surfaces a missing/misplaced sibling before the heavy
+      # toolchain steps.
+      - name: Verify ../Strata sibling precondition
+        working-directory: StrataSolidity
+        run: bash scripts/check-strata-sibling.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install solc
+        run: |
+          # solc is a runtime prerequisite for solast.py (Tools/Solidity/src/solast.py
+          # invokes `solc --standard-json`). The Ubuntu PPA package is fine for
+          # the AST-extraction-only path that StrataSolidity uses.
+          sudo add-apt-repository -y ppa:ethereum/ethereum
+          sudo apt-get update -y
+          sudo apt-get install -y solc
+          solc --version
+
+      - name: Install Python dev dependencies
+        working-directory: StrataSolidity
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r Tools/Solidity/requirements-dev.txt
+          python3 -m pip install pytest
+
+      # ---- Stages 2 + 3: lake build + lake test ----
+      # leanprover/lean-action handles elan install, .lake caching
+      # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
+      # and `lake test` in one step. The sibling Strata path resolves
+      # because we checked it out under ./Strata at the workflow root.
+      - name: lake build + lake test
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: StrataSolidity
+          build: true
+          test: true
+          lint: false
+
+      # ---- Stage 5: golden + REQ-PBT-007 exit-code sub-stage ----
+      # test/run_tests.sh runs strata-verify.sh against test/examples/*.sol
+      # and diffs against test/expected/*.expected. After the per-fixture
+      # loop it invokes test/run_exit_code_tests.sh which pins the
+      # REQ-PBT-007 exit-code contract (REQ-CLI-050..REQ-CLI-052).
+      - name: test/run_tests.sh (golden + REQ-PBT-007)
+        working-directory: StrataSolidity
+        run: bash test/run_tests.sh
+
+      # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
+      # bench/bench.sh itself is intentionally NOT run in CI: b6_erc20
+      # routinely takes 10+ minutes locally, which is too slow for the
+      # hot path. The schema enforcer is run against the committed
+      # bench/results.csv so any drift in the CSV header or row shape
+      # (REQ-TEST-032..REQ-TEST-034) blocks the merge.
+      - name: bench/check_csv_schema.py (REQ-PBT-008, committed CSV)
+        working-directory: StrataSolidity
+        run: python3 bench/check_csv_schema.py bench/results.csv
+
+      # ---- Stage 7: SARIF 2.1.0 schema compliance (REQ-PBT-004) ----
+      # The pytest fixture spawns strata-verify.sh --sarif against curated
+      # fixtures and validates the stdout against the vendored OASIS schema.
+      # Skipped automatically if the binary, dialect, or solc are missing
+      # (the test prints a Skip with a reason); this stage will fail only
+      # on a real schema violation.
+      - name: pytest Tools/Solidity/test (REQ-PBT-004 SARIF schema)
+        working-directory: StrataSolidity
+        run: python3 -m pytest Tools/Solidity/test -v
