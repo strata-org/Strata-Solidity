@@ -14,7 +14,12 @@ bash "$SCRIPT_DIR/../scripts/check-strata-sibling.sh"
 
 EXAMPLES_DIR="$SCRIPT_DIR/examples"
 EXPECTED_DIR="$SCRIPT_DIR/expected"
-STRATA_VERIFY="${STRATA_VERIFY:-$(dirname "$SCRIPT_DIR")/vscode-strata-solidity/bin/strata-verify.sh}"
+# Default STRATA_VERIFY to the canonical wrapper at Tools/Solidity/scripts/.
+# The original default (vscode-strata-solidity/bin/strata-verify.sh) referred
+# to an earlier project layout that no longer exists in this repo; aligning
+# with bench/bench.sh and test/run_exit_code_tests.sh which both use this
+# path as their default.
+STRATA_VERIFY="${STRATA_VERIFY:-$(dirname "$SCRIPT_DIR")/Tools/Solidity/scripts/strata-verify.sh}"
 TIMEOUT="${1:-15}"
 
 pass=0; fail=0; skip=0; update=0
