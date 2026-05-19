@@ -43,7 +43,11 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          # Match the documented minimum (README.md, docs/guide/src/installation.md
+          # both list Python 3.12+ as a prerequisite). Ubuntu runners ship 3.12
+          # by default; pinning here keeps CI in lockstep with the published
+          # install instructions.
+          python-version: '3.12'
 
       - name: Install solc
         run: |
@@ -54,6 +58,18 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y solc
           solc --version
+
+      - name: Install z3
+        run: |
+          # The Strata Core verifier shells out to a `z3` binary on PATH
+          # (StrataSolidityMain.lean wires `solver := "z3"` into VerifyOptions,
+          # see design.md §6.5 / GAP-012). Without it, every obligation fails
+          # with `SMT Solver Invocation Error: could not execute external
+          # process 'z3'`. Listed as a prerequisite in README.md and
+          # docs/guide/src/installation.md; the CI install step had been
+          # missing.
+          sudo apt-get install -y z3
+          z3 --version
 
       - name: Install Python dev dependencies
         run: |
