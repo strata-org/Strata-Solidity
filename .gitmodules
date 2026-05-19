@@ -1,0 +1,4 @@
+[submodule "Strata"]
+	path = Strata
+	url = https://github.com/evertonfraga/Strata.git
+	branch = solidity

@@ -8,11 +8,6 @@ on:
       - 'fix/**'
   pull_request:
   workflow_dispatch:
-    inputs:
-      strata_ref:
-        description: 'Strata git ref to clone as ../Strata sibling (commit SHA, branch, or tag).'
-        required: false
-        default: 'f9895a94f68d61bf7f58fa845cae4c3e88d148bc'
 
 # Run only one CI per ref; cancel superseded runs on the same branch/PR.
 concurrency:
@@ -27,36 +22,23 @@ jobs:
     name: build + test (ubuntu)
     runs-on: ubuntu-latest
 
-    # Pinned Strata sibling commit. Defaults to the same revision the
-    # repository's lake-manifest.json was last verified against (REQ-STRATA-002).
-    # Override via the workflow_dispatch input when bumping the sibling.
-    env:
-      STRATA_REF: ${{ inputs.strata_ref || 'f9895a94f68d61bf7f58fa845cae4c3e88d148bc' }}
-
     steps:
-      - name: Checkout StrataSolidity into ./StrataSolidity
+      # Strata is vendored as a git submodule at ./Strata (REQ-STRATA-001).
+      # `submodules: recursive` ensures the submodule (and any of its own
+      # nested submodules, should they appear later) is initialized at the
+      # SHA recorded in this repo's tree.
+      - name: Checkout StrataSolidity (with Strata submodule)
         uses: actions/checkout@v4
         with:
-          path: StrataSolidity
+          submodules: recursive
 
-      # The Lake [[require]] in lakefile.lean is `path = "../Strata"`
-      # (REQ-STRATA-001), so the sibling must live next to ./StrataSolidity
-      # in the workspace.
-      - name: Checkout sibling Strata into ./Strata
-        uses: actions/checkout@v4
-        with:
-          repository: strata-org/Strata
-          ref: ${{ env.STRATA_REF }}
-          path: Strata
-
-      # Verify the sibling layout the build expects (REQ-STRATA-001,
+      # Verify the submodule layout the build expects (REQ-STRATA-001,
       # REQ-STRATA-005). This script is the same one strata-verify.sh,
       # bench/bench.sh, and test/run_tests.sh invoke at startup; running
-      # it here surfaces a missing/misplaced sibling before the heavy
-      # toolchain steps.
-      - name: Verify ../Strata sibling precondition
-        working-directory: StrataSolidity
-        run: bash scripts/check-strata-sibling.sh
+      # it here surfaces a missing/uninitialized submodule before the
+      # heavy toolchain steps.
+      - name: Verify Strata submodule precondition
+        run: bash scripts/check-strata.sh
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -74,7 +56,6 @@ jobs:
           solc --version
 
       - name: Install Python dev dependencies
-        working-directory: StrataSolidity
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -r Tools/Solidity/requirements-dev.txt
@@ -83,12 +64,10 @@ jobs:
       # ---- Stages 2 + 3: lake build + lake test ----
       # leanprover/lean-action handles elan install, .lake caching
       # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
-      # and `lake test` in one step. The sibling Strata path resolves
-      # because we checked it out under ./Strata at the workflow root.
+      # and `lake test` in one step.
       - name: lake build + lake test
         uses: leanprover/lean-action@v1
         with:
-          lake-package-directory: StrataSolidity
           build: true
           test: true
           lint: false
@@ -99,7 +78,6 @@ jobs:
       # loop it invokes test/run_exit_code_tests.sh which pins the
       # REQ-PBT-007 exit-code contract (REQ-CLI-050..REQ-CLI-052).
       - name: test/run_tests.sh (golden + REQ-PBT-007)
-        working-directory: StrataSolidity
         run: bash test/run_tests.sh
 
       # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
@@ -109,7 +87,6 @@ jobs:
       # bench/results.csv so any drift in the CSV header or row shape
       # (REQ-TEST-032..REQ-TEST-034) blocks the merge.
       - name: bench/check_csv_schema.py (REQ-PBT-008, committed CSV)
-        working-directory: StrataSolidity
         run: python3 bench/check_csv_schema.py bench/results.csv
 
       # ---- Stage 7: SARIF 2.1.0 schema compliance (REQ-PBT-004) ----
@@ -119,5 +96,4 @@ jobs:
       # (the test prints a Skip with a reason); this stage will fail only
       # on a real schema violation.
       - name: pytest Tools/Solidity/test (REQ-PBT-004 SARIF schema)
-        working-directory: StrataSolidity
         run: python3 -m pytest Tools/Solidity/test -v

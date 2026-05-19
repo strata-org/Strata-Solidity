@@ -7,12 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$(cd "$TOOLS_DIR/../.." && pwd)"
 
-# Precondition: sibling ../Strata checkout must exist (REQ-STRATA-001,
+# Precondition: Strata submodule must be initialized at ./Strata (REQ-STRATA-001,
 # REQ-STRATA-005). Runs before the dialect/binary checks below so users
 # see a friendly message before any of the REQ-SH-003..REQ-SH-005 errors.
-bash "$PROJECT_DIR/scripts/check-strata-sibling.sh"
+bash "$PROJECT_DIR/scripts/check-strata.sh"
 
-STRATA_PYTHON="$(cd "$PROJECT_DIR/../Strata/Tools/Python" 2>/dev/null && pwd || echo "")"
+STRATA_PYTHON="$(cd "$PROJECT_DIR/Strata/Tools/Python" 2>/dev/null && pwd || echo "")"
 DIALECT="$TOOLS_DIR/dialects/Solidity.dialect.st.ion"
 STRATA_BIN="$PROJECT_DIR/.lake/build/bin/strataSolidity"
 

@@ -10,22 +10,22 @@ Solidity (.sol) → solc + solast.py → Ion → SolToLaurel → Laurel IR
 ## Prerequisites
 
 - [Lean 4](https://lean-lang.org/) v4.27.0 (see `lean-toolchain`)
-- [Strata](https://github.com/strata-org/Strata) checked out as a sibling directory (`../Strata`)
+- [Strata](https://github.com/evertonfraga/Strata/tree/solidity) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
 - Python 3.12+
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
 - z3 or cvc5 SMT solver
 
-### Checking the `../Strata` sibling path
+### Strata submodule
 
-The Lake package wires Strata in via `[[require]] path = "../Strata"` (see `lakefile.toml`). If the sibling checkout is missing or at the wrong location, `lake build` and every wrapper script fails deep in the toolchain with an opaque error.
-
-Run `scripts/check-strata-sibling.sh` from the repo root to verify the sibling is in place before building:
+StrataSolidity vendors the [Strata framework](https://github.com/evertonfraga/Strata) as a git submodule at `./Strata`, wired through `lakefile.lean`'s `[[require]] path = "Strata"` (see `lake-manifest.json`). Clone with submodules so the dependency is materialized before `lake build`:
 
 ```bash
-scripts/check-strata-sibling.sh
+git clone --recurse-submodules https://github.com/evertonfraga/StrataSolidity.git
+# or, after a plain clone:
+git submodule update --init --recursive
 ```
 
-The helper exits non-zero with a friendly message when `../Strata/lakefile.toml` is missing. It is invoked automatically at the top of `Tools/Solidity/scripts/strata-verify.sh`, `bench/bench.sh`, and `test/run_tests.sh`, so the same precondition is enforced for the verification pipeline, the benchmark harness, and the test runner.
+`scripts/check-strata.sh` exits non-zero with a friendly message when `Strata/lakefile.toml` is missing. It is invoked automatically at the top of `Tools/Solidity/scripts/strata-verify.sh`, `bench/bench.sh`, and `test/run_tests.sh`, so the same precondition is enforced for the verification pipeline, the benchmark harness, and the test runner.
 
 ## Building
 
@@ -37,8 +37,8 @@ lake build
 
 `.github/workflows/ci.yml` runs on push to `main`, `feat/**`, `fix/**`, and on every pull request. The workflow:
 
-1. Checks out StrataSolidity into `./StrataSolidity` and the sibling `strata-org/Strata` into `./Strata` (pinned by SHA; override via the `strata_ref` workflow_dispatch input)
-2. Verifies the sibling layout via `scripts/check-strata-sibling.sh`
+1. Checks out StrataSolidity with `submodules: recursive` so the Strata submodule is materialized at the recorded SHA
+2. Verifies the submodule layout via `scripts/check-strata.sh`
 3. Installs `solc` (via the `ethereum/ethereum` PPA) and the Python dev dependencies in `Tools/Solidity/requirements-dev.txt`
 4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action) (which handles elan install and `.lake` caching)
 5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)

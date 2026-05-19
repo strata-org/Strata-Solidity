@@ -6,7 +6,7 @@ package StrataSolidity where
   testDriver := "StrataSolidityTest"
   version := v!"0.1.0"
 
-require Strata from "../Strata"
+require Strata from "Strata"
 
 @[default_target] lean_lib StrataSolidity
 

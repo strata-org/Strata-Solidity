@@ -42,8 +42,8 @@
 
   ### Robustness
 
-  If the `strataSolidity` binary is not built, if the `../Strata` sibling
-  checkout is missing, or if `python3 -m src.solast` cannot emit an Ion
+  If the `strataSolidity` binary is not built, if the `Strata` submodule
+  is not initialized, or if `python3 -m src.solast` cannot emit an Ion
   file, the setup helpers return a `.error` outcome and the `#eval`
   asserts fail with an actionable message rather than silently skipping.
   This is deliberate: characterization tests must fail loud when the
@@ -95,8 +95,9 @@ structure TestPaths where
   /-- Absolute path to the Solidity dialect Ion file produced by the
       Python front-end. -/
   dialectIon : System.FilePath
-  /-- Absolute path to `../Strata/Tools/Python` (added to `PYTHONPATH`
-      so that `src.solast` can import Strata's Python bindings). -/
+  /-- Absolute path to `Strata/Tools/Python` inside the submodule
+      (added to `PYTHONPATH` so that `src.solast` can import Strata's
+      Python bindings). -/
   strataPython : System.FilePath
 
 /-- Resolve the repo-relative paths by walking upward from CWD until we
@@ -126,7 +127,7 @@ def mkTestPaths : IO TestPaths := do
     binary := root / ".lake" / "build" / "bin" / "strataSolidity"
     toolsDir := root / "Tools" / "Solidity"
     dialectIon := root / "Tools" / "Solidity" / "dialects" / "Solidity.dialect.st.ion"
-    strataPython := root / ".." / "Strata" / "Tools" / "Python"
+    strataPython := root / "Strata" / "Tools" / "Python"
   }
 
 /-- Outcome of running the test pipeline for one fixture. -/

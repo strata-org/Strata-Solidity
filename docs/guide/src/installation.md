@@ -4,25 +4,26 @@ StrataSolidity can currently only be used by building from source.
 
 ## Prerequisites
 
-1. **[Lean 4](https://lean-lang.org/)** v4.27.0 (via `elan`) — needed to build StrataSolidity and the [Strata](https://github.com/strata-org/Strata) back-end.
-2. **[Strata](https://github.com/strata-org/Strata)** checked out as a sibling directory (`../Strata`).
+1. **[Lean 4](https://lean-lang.org/)** v4.27.0 (via `elan`) — needed to build StrataSolidity and the [Strata](https://github.com/evertonfraga/Strata/tree/solidity) back-end.
+2. **[Strata](https://github.com/evertonfraga/Strata/tree/solidity)** vendored as a git submodule at `./Strata`.
 3. **Python 3.12+** — used by the parser (`solast.py`).
 4. **[solc](https://docs.soliditylang.org/en/latest/installing-solidity.html)** — the Solidity compiler (used for AST extraction only).
 5. **z3** or **cvc5** SMT solver on your `PATH`.
 
 ## Building
 
-1. Check out the StrataSolidity repository:
+1. Check out the StrataSolidity repository with submodules:
    ```bash
-   git clone https://github.com/strata-org/StrataSolidity.git
+   git clone --recurse-submodules https://github.com/evertonfraga/StrataSolidity.git
+   # or, after a plain clone:
+   git submodule update --init --recursive
    ```
-2. Ensure Strata is checked out as a sibling:
+2. Verify the submodule layout:
    ```bash
-   ls ../Strata  # should exist
+   bash scripts/check-strata.sh
    ```
 3. Build:
    ```bash
-   cd StrataSolidity
    lake build
    ```
 
