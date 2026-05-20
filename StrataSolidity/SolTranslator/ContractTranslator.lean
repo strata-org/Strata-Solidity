@@ -46,7 +46,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq contractDocAnn _baseContracts => do
+  | .ContractDefinition _ nameAnn _kindAnn nodesSeq _contractDocAnn _baseContracts => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
@@ -204,7 +204,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn _ _ _ _ _ bodyOpt _ _ => do
+      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ bodyOpt _ _ => do
           -- Skip functions that reference struct-valued mappings (unsupported in Core)
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
@@ -262,7 +262,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       acc ++ (proc.inputs.filterMap fun param =>
         if param.name.text.endsWith "_in" then
           match param.type.val with
-          | .TMap _ _ => some (param.name.text.dropRight 3)  -- strip "_in"
+          | .TMap _ _ => some (param.name.text.dropEnd 3 |>.toString)  -- strip "_in"
           | _ => none
         else none)) ([] : List String)
     let allMappingNames := allMappingNames.eraseDups

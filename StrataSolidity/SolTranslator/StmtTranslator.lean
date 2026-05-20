@@ -282,9 +282,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             -- Split entries into (baseName, optionalKeyExpr) pairs
             let parseEntry (entry : String) : String × Option String :=
               match entry.splitOn "[" with
-              | [base] => (base.trim, none)
-              | [base, keyPart] => (base.trim, some (keyPart.dropRight 1 |>.trim))  -- strip trailing ]
-              | _ => (entry.trim, none)
+              | [base] => (base.trimAscii.toString, none)
+              | [base, keyPart] => (base.trimAscii.toString, some (keyPart.dropEnd 1 |>.trimAscii.toString))  -- strip trailing ]
+              | _ => (entry.trimAscii.toString, none)
             let parsedEntries := modifiedEntries.map parseEntry
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
