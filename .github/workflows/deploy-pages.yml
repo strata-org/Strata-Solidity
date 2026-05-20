@@ -1,8 +1,8 @@
 name: Deploy mdBook site to Pages
 
+# Disabled: GitHub Pages is not enabled for this repository.
+# Re-enable by restoring the `push` trigger once Pages is configured.
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
 
 permissions:

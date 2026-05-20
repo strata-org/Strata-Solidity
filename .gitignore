@@ -8,3 +8,5 @@ build.log
 __pycache__/
 *.solidity.st.ion
 .DS_Store
+
+notes/
