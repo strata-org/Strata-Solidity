@@ -54,6 +54,115 @@ the baseline. When you propose a change:
    the code), a gap closure (listed in §12 of `requirements.md`), or a
    genuinely new capability (new ID in `strata-solidity-next`).
 
+## Branch and PR workflow
+
+StrataSolidity uses a **rebase-only history**. The repository is configured
+so that `Rebase and merge` is the only PR-merge button on GitHub; no merge
+commits enter `main`. The sections below describe the day-to-day mechanics.
+
+### 1. Branch hygiene
+
+One coherent change per branch. A reviewer should be able to describe the
+branch in one sentence (for example, "disables the Pages workflow," or
+"moves the dialect to Lean"). If you cannot, split the branch.
+
+Naming conventions:
+
+- `feat/<short-noun>` — new features and capability work.
+- `fix/<short-noun>` — bug fixes.
+- `chore/<short-noun>` — tooling, CI, dependency, and docs work that does
+  not change pipeline behavior.
+- `refactor/<short-noun>` — restructure with no behavior change.
+- `wip/<scratch>` — branches you do not intend to push or merge.
+
+Branch off `main`, never off another feature branch — the only exception
+is **stacked PRs**, where a follow-on branch depends on a yet-unmerged
+PR (see §3 below).
+
+Stale branches make the local list unreadable. After a PR merges, delete
+the local branch and prune remote-tracking branches:
+
+```bash
+git checkout main
+git pull
+git fetch --prune
+git branch -d <merged-branch>
+```
+
+### 2. Keeping a branch current
+
+Run this whenever `main` advances and before requesting review:
+
+```bash
+git fetch origin
+git rebase origin/main
+# resolve conflicts as they come up:
+git add <file>
+git rebase --continue
+git push --force-with-lease origin <branch>
+```
+
+Three settings make rebasing the path of least resistance:
+
+```bash
+git config --global pull.rebase true       # `git pull` rebases instead of merging
+git config --global rebase.autoStash true  # auto-stash dirty work before a rebase
+git config --global merge.ff only          # `git merge` errors instead of producing a merge commit
+```
+
+Always force-push with `--force-with-lease`, never plain `--force`. The
+lease variant fails the push if the remote tip moved since your last
+fetch, which protects collaborators (and you on a different machine)
+from being silently overwritten.
+
+If a rebase goes wrong, `git rebase --abort` returns you to the state
+before the rebase started.
+
+### 3. Pull-request etiquette with rebase
+
+This is where rebase workflows differ most from merge workflows. The
+biggest reviewer-facing surprise is that force-pushing during review can
+disorient them. Two rules of thumb make it painless:
+
+**Before review starts, rebase freely.** Squash, reword, reorder, drop
+commits — whatever produces a clean history. `git rebase -i origin/main`
+lets you mark commits `squash`, `fixup`, `reword`, or `drop` interactively.
+
+**During active review, prefer fixup commits over rewriting history.**
+Reviewers can then see exactly what changed since their last pass, and
+GitHub's review-comment threads stay anchored to their original lines.
+
+```bash
+# while addressing review comments
+git commit --fixup=<commit-hash>     # creates "fixup! <subject>" commits
+
+# right before merge:
+git rebase -i --autosquash origin/main
+git push --force-with-lease
+```
+
+`--autosquash` automatically reorders fixup commits next to their targets
+and marks them for squashing, so the PR history ends up tidy without
+manual squashing.
+
+When you must rewrite during review (for example, to resolve a base-branch
+conflict), leave a PR comment: "Rebased onto `main` to pick up X. No
+content changes since your last review." Reviewers can compare the
+pre/post-rebase state via the GitHub PR's commits tab.
+
+PR descriptions should include:
+
+- **What** — one paragraph summary.
+- **How to test** — exact commands.
+- **Out of scope** — what the PR explicitly does NOT do.
+- **Linked specs/issues** — `Closes #N`, `Refs REQ-FEIL-001` (see "Adding
+  new features or closing gaps" above for the citation rules).
+
+If the PR ends up rebased a few times, add a short "Changelog" section at
+the bottom noting the major revisions ("v2: addressed review of
+`Frontend.lean` parser; v3: rebased onto `main` to pick up dialect parity
+check"). Reviewers will thank you.
+
 ## Where else to look
 
 - [`README.md`](./README.md) — quick-start and build prerequisites.
