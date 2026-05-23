@@ -4,19 +4,33 @@ import StrataSolidity.SolTranslator.SpecParser
 namespace Strata.Solidity
 open Laurel
 
+/-! ## Spec rewriters
+
+These rewriters traverse parsed spec expressions and adjust identifier
+references to match the function/contract context (e.g., scalar state vars
+become `self.field` accesses, mapping state vars become explicit `_in`
+parameters in pre-state contexts).
+
+After upstream PR #1077, identifier reads are `StmtExpr.Var (Variable.Local id)`
+and field reads are `StmtExpr.Var (Variable.Field target id)`. After PR #1024,
+quantifiers are `StmtExpr.Quantifier mode param trigger body`.
+
+The match arms below pattern-match on the new shapes. Triggers are preserved
+unchanged through the rewriters. -/
+
 /-- Rewrite mapping identifiers to _in form (for invariant preconditions). -/
 partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtExprMd) : StmtExprMd :=
   let go := rewriteMappingIdsToIn mappingStateVars
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
-      { expr with val := .Identifier (name.text ++ "_in") }
+      { expr with val := mkIdentifier (name.text ++ "_in") }
     else expr
   | .PrimitiveOp op args => { expr with val := .PrimitiveOp op (args.map go) }
   | .StaticCall callee args => { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target f => { expr with val := .FieldSelect (go target) f }
-  | .Forall p body => { expr with val := .Forall p (go body) }
-  | .Exists p body => { expr with val := .Exists p (go body) }
+  | .Var (.Field target f) => { expr with val := mkFieldSelect (go target) f.text }
+  | .Quantifier mode p trigger body =>
+    { expr with val := .Quantifier mode p trigger (go body) }
   | .Old inner => { expr with val := .Old (go inner) }
   | _ => expr
 
@@ -29,34 +43,30 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
     (expr : StmtExprMd) : StmtExprMd :=
   let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars e
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
-      { expr with val := .Identifier s!"{name.text}_in" }
+      { expr with val := mkIdentifier s!"{name.text}_in" }
     else if scalarStateVars.contains name.text then
-      { expr with val := .Identifier s!"__old_{name.text}" }
+      { expr with val := mkIdentifier s!"__old_{name.text}" }
     else
       let isArrayLength := arrayStateVars.any fun av => name.text == s!"{av}_length"
       if isArrayLength then
-        { expr with val := .Identifier s!"{name.text}_in" }
+        { expr with val := mkIdentifier s!"{name.text}_in" }
       else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map rewrite) }
   | .StaticCall callee args =>
     { expr with val := .StaticCall callee (args.map rewrite) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (rewrite target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (rewrite target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
-  | .Forall param body =>
+  | .Quantifier mode param trigger body =>
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
     let shadowedScalars := scalarStateVars.filter (· != param.name.text)
-    { expr with val := .Forall param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
-  | .Exists param body =>
-    let shadowedMappings := mappingStateVars.filter (· != param.name.text)
-    let shadowedArrays := arrayStateVars.filter (· != param.name.text)
-    let shadowedScalars := scalarStateVars.filter (· != param.name.text)
-    { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
+    let body' := rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body
+    { expr with val := .Quantifier mode param trigger body' }
   | _ => expr
 
 /-- Process `__old` markers in a parsed spec expression.
@@ -67,22 +77,21 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
     (expr : StmtExprMd) : StmtExprMd :=
   let go := processOldMarkers mappingStateVars arrayStateVars scalarStateVars
   match expr.val with
-  | .StaticCall "__old" args =>
-    match args with
-    | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars (go inner)
-    | _ => expr
+  | .StaticCall callee args =>
+    if callee.text == "__old" then
+      match args with
+      | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars (go inner)
+      | _ => expr
+    else
+      { expr with val := .StaticCall callee (args.map go) }
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map go) }
-  | .StaticCall callee args =>
-    { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (go target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (go target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
-  | .Forall param body =>
-    { expr with val := .Forall param (go body) }
-  | .Exists param body =>
-    { expr with val := .Exists param (go body) }
+  | .Quantifier mode param trigger body =>
+    { expr with val := .Quantifier mode param trigger (go body) }
   | _ => expr
 
 /-- Rewrite bare state variable identifiers in NatSpec-parsed spec expressions.
@@ -93,31 +102,30 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
     (localNames : List String) (expr : StmtExprMd) : StmtExprMd :=
   let go := rewriteStateVarRefs stateVarNames mappingStateVars localNames
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if localNames.contains name.text then expr
     else if mappingStateVars.contains name.text then expr  -- mappings are explicit params
     else if name.text.startsWith "__old_" then
-      let realName : Identifier := (name.text.drop 6).toString
-      if stateVarNames.contains realName.text then
-        mkStmtExprMd (.Old (mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) realName)))
+      let realName := (name.text.drop 6).toString
+      if stateVarNames.contains realName then
+        mkStmtExprMd (.Old (mkStmtExprMd
+          (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) realName)))
       else expr
     else if stateVarNames.contains name.text then
-      mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+      mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name.text)
     else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map go) }
   | .StaticCall callee args =>
     { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (go target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (go target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
-  | .Forall param body =>
+  | .Quantifier mode param trigger body =>
     let locals' := localNames ++ [param.name.text]
-    { expr with val := .Forall param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
-  | .Exists param body =>
-    let locals' := localNames ++ [param.name.text]
-    { expr with val := .Exists param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
+    let body' := rewriteStateVarRefs stateVarNames mappingStateVars locals' body
+    { expr with val := .Quantifier mode param trigger body' }
   | _ => expr
 
 
