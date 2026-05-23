@@ -216,7 +216,7 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
-  let ident := mkStmtExprMd (.Identifier paramName)
+  let ident := mkStmtExprMd (mkIdentifier paramName)
   let zero := mkStmtExprMd (.LiteralInt 0)
   mkStmtExprMd (.PrimitiveOp .Geq [ident, zero])
 
@@ -567,11 +567,11 @@ where
     | "(" :: rest =>
       -- Function call: base(arg1, arg2, ...) or obj.method(arg1, ...)
       let fname := match base.val with
-        | .Identifier name => name.text
-        | .FieldSelect obj field =>
+        | .Var (.Local name) => name.text
+        | .Var (.Field obj field) =>
           -- obj.method → "obj_method" for Strata builtins (abi.encodePacked → abi_encodePacked)
           match obj.val with
-          | .Identifier objName => s!"{objName.text}_{field.text}"
+          | .Var (.Local objName) => s!"{objName.text}_{field.text}"
           | _ => s!"__unknown_{field.text}"
         | _ => "__unknown_call"
       let (args, rest') ← parseArgList rest
@@ -579,7 +579,7 @@ where
       -- Dispatch sum(mapping) → sum_<mapping>(mapping)
       let fname' := if fname == "sum" && args.length == 1 then
         match args.head?.map (·.val) with
-        | some (.Identifier name) => s!"sum_{name.text}"
+        | some (mkIdentifier name) => s!"sum_{name.text}"
         | _ => fname
       else if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
         s!"{fname}2"
@@ -590,10 +590,10 @@ where
       if member == "length" then
         -- x.length → Identifier "x_length" (for arrays)
         match base.val with
-        | .Identifier name => parsePostfixTail (mkStmtExprMd (.Identifier s!"{name}_length")) rest
+        | .Var (.Local name) => parsePostfixTail (mkStmtExprMd (mkIdentifier s!"{name}_length")) rest
         | _ => throw (.typeError "length access on non-identifier")
       else
-        parsePostfixTail (mkStmtExprMd (.FieldSelect base ⟨member, none⟩)) rest
+        parsePostfixTail (mkStmtExprMd (mkFieldSelect base member)) rest
     | _ => return (base, tokens)
 
   parseAtom (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -621,9 +621,9 @@ where
       | ")" :: rest'' => return (inner, rest'')
       | _ => throw (.typeError "Expected ')' after address(")
     | "msg" :: "." :: "sender" :: rest =>
-      return (mkStmtExprMd (.Identifier "msg_sender"), rest)
+      return (mkStmtExprMd (mkIdentifier "msg_sender"), rest)
     | "msg" :: "." :: "value" :: rest =>
-      return (mkStmtExprMd (.Identifier "msg_value"), rest)
+      return (mkStmtExprMd (mkIdentifier "msg_value"), rest)
     | "type" :: "(" :: typeName :: ")" :: "." :: member :: rest =>
       match typeMinMax typeName member with
       | some v => return (mkStmtExprMd (.LiteralInt v), rest)
@@ -632,12 +632,12 @@ where
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
-      return (mkStmtExprMd (.Forall param body), rest')
+      return (mkStmtExprMd (mkForall param body), rest')
     | "exists" :: varName :: ":" :: typeName :: "::" :: rest =>
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
-      return (mkStmtExprMd (.Exists param body), rest')
+      return (mkStmtExprMd (mkExists param body), rest')
     | tok :: rest =>
       if isDigitStr tok then
         match tok.toNat? with
@@ -645,7 +645,7 @@ where
         | none => throw (.typeError s!"Invalid integer literal: {tok}")
       else match parseSciNotation tok with
         | some n => return (mkStmtExprMd (.LiteralInt n), rest)
-        | none => return (mkStmtExprMd (.Identifier tok), rest)
+        | none => return (mkStmtExprMd (mkIdentifier tok), rest)
 
 end SpecParser
 
@@ -661,15 +661,15 @@ def parseSpecExpr (s : String) : Except TranslationError StmtExprMd := do
 partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtExprMd) : StmtExprMd :=
   let go := rewriteMappingIdsToIn mappingStateVars
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
-      { expr with val := .Identifier (name.text ++ "_in") }
+      { expr with val := mkIdentifier (name.text ++ "_in") }
     else expr
   | .PrimitiveOp op args => { expr with val := .PrimitiveOp op (args.map go) }
   | .StaticCall callee args => { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target f => { expr with val := .FieldSelect (go target) f }
-  | .Forall p body => { expr with val := .Forall p (go body) }
-  | .Exists p body => { expr with val := .Exists p (go body) }
+  | .Var (.Field target f) => { expr with val := mkFieldSelect (go target) f }
+  | .Quantifier mkForall p _ body => { expr with val := mkForall p (go body) }
+  | .Quantifier mkExists p _ body => { expr with val := mkExists p (go body) }
   | .Old inner => { expr with val := .Old (go inner) }
   | _ => expr
 
@@ -682,34 +682,34 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
     (expr : StmtExprMd) : StmtExprMd :=
   let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars e
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
-      { expr with val := .Identifier s!"{name.text}_in" }
+      { expr with val := mkIdentifier s!"{name.text}_in" }
     else if scalarStateVars.contains name.text then
-      { expr with val := .Identifier s!"__old_{name.text}" }
+      { expr with val := mkIdentifier s!"__old_{name.text}" }
     else
       let isArrayLength := arrayStateVars.any fun av => name.text == s!"{av}_length"
       if isArrayLength then
-        { expr with val := .Identifier s!"{name.text}_in" }
+        { expr with val := mkIdentifier s!"{name.text}_in" }
       else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map rewrite) }
   | .StaticCall callee args =>
     { expr with val := .StaticCall callee (args.map rewrite) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (rewrite target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (rewrite target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
-  | .Forall param body =>
+  | .Quantifier mkForall param _ body =>
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
     let shadowedScalars := scalarStateVars.filter (· != param.name.text)
-    { expr with val := .Forall param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
-  | .Exists param body =>
+    { expr with val := mkForall param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
+  | .Quantifier mkExists param _ body =>
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
     let shadowedScalars := scalarStateVars.filter (· != param.name.text)
-    { expr with val := .Exists param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
+    { expr with val := mkExists param (rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body) }
   | _ => expr
 
 /-- Process `__old` markers in a parsed spec expression.
@@ -728,14 +728,14 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
     { expr with val := .PrimitiveOp op (args.map go) }
   | .StaticCall callee args =>
     { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (go target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (go target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
-  | .Forall param body =>
-    { expr with val := .Forall param (go body) }
-  | .Exists param body =>
-    { expr with val := .Exists param (go body) }
+  | .Quantifier mkForall param _ body =>
+    { expr with val := mkForall param (go body) }
+  | .Quantifier mkExists param _ body =>
+    { expr with val := mkExists param (go body) }
   | _ => expr
 
 /-- Rewrite bare state variable identifiers in NatSpec-parsed spec expressions.
@@ -746,31 +746,31 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
     (localNames : List String) (expr : StmtExprMd) : StmtExprMd :=
   let go := rewriteStateVarRefs stateVarNames mappingStateVars localNames
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if localNames.contains name.text then expr
     else if mappingStateVars.contains name.text then expr  -- mappings are explicit params
     else if name.text.startsWith "__old_" then
       let realName : Identifier := (name.text.drop 6).toString
       if stateVarNames.contains realName.text then
-        mkStmtExprMd (.Old (mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) realName)))
+        mkStmtExprMd (.Old (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) realName)))
       else expr
     else if stateVarNames.contains name.text then
-      mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+      mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
     else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map go) }
   | .StaticCall callee args =>
     { expr with val := .StaticCall callee (args.map go) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (go target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (go target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
-  | .Forall param body =>
+  | .Quantifier mkForall param _ body =>
     let locals' := localNames ++ [param.name.text]
-    { expr with val := .Forall param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
-  | .Exists param body =>
+    { expr with val := mkForall param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
+  | .Quantifier mkExists param _ body =>
     let locals' := localNames ++ [param.name.text]
-    { expr with val := .Exists param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
+    { expr with val := mkExists param (rewriteStateVarRefs stateVarNames mappingStateVars locals' body) }
   | _ => expr
 
 mutual
@@ -782,17 +782,17 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .Identifier _ nameAnn =>
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if let some valExpr := ctx.constantDefs.lookup nameAnn.val then
       -- Constant state variable: substitute compile-time value
       return valExpr
     else if ctx.mappingStateVars.contains nameAnn.val then
       -- Mapping state vars are explicit parameters, not heap fields
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if ctx.stateVarNames.contains nameAnn.val then
-      return mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) nameAnn.val)
+      return mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) nameAnn.val)
     else
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
 
   | .Literal _ valueAnn kindAnn =>
     match kindAnn.val with
@@ -852,10 +852,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         let rootExpr ← translateExpr ctx rootNode
         let idxExprs ← indices.mapM (translateExpr ctx)
         let updateExpr ← buildNestedUpdate rootExpr idxExprs zero
-        return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+        return mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
       | none =>
         let subExpr ← translateExpr ctx sub
-        return mkStmtExprMd (.Assign [subExpr] zero)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] zero)
     let subExpr ← translateExpr ctx sub
     if prefixAnn.val == "true" then
       match opAnn.val with
@@ -866,12 +866,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- Prefix ++i: desugar to i = i + 1
         let one := mkStmtExprMd (.LiteralInt 1)
         let add := mkStmtExprMd (.PrimitiveOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] add)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
       | "--" =>
         -- Prefix --i: desugar to i = i - 1
         let one := mkStmtExprMd (.LiteralInt 1)
         let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] sub')
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
     else
       -- Postfix operators (e.g., i++).
@@ -884,11 +884,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "++" =>
         let one := mkStmtExprMd (.LiteralInt 1)
         let add := mkStmtExprMd (.PrimitiveOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] add)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
       | "--" =>
         let one := mkStmtExprMd (.LiteralInt 1)
         let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] sub')
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
@@ -950,17 +950,17 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- and are ignored for verification purposes.
         -- No source metadata: assume nodes don't generate VCs
         match args with
-        | cond :: _ => return mkStmtExprMd (.Assume cond)
+        | cond :: _ => return mkStmtExprMd (mkAssume cond)
         | [] => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
-        | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
+        | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (.StaticCall nameAnn.val args)
       | "gasleft" =>
         -- gasleft() → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier "gasleft")
+        return mkStmtExprMd (mkIdentifier "gasleft")
       | "selfdestruct" =>
         -- selfdestruct(addr) → deprecated, model as no-op
         return mkStmtExprMd .Hole
@@ -971,12 +971,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           let mut implicitArgs : List StmtExprMd := []
           let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
           if !nonMappingStateVars.isEmpty then
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "self")]
-          implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "msg_sender")]
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "self")]
+          implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_sender")]
           for name in ctx.mappingStateVars do
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier name)]
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier name)]
             if ctx.arrayStateVars.contains name then
-              implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier s!"{name}_length")]
+              implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier s!"{name}_length")]
           return mkStmtExprMd (.StaticCall qualifiedName (implicitArgs ++ args))
         else
           return mkStmtExprMd (.StaticCall qualifiedName args)
@@ -995,12 +995,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           -- Desugar: arr.push(v) → { arr := update(arr, arr_length, v); arr_length := arr_length + 1 }
           match args with
           | [val] =>
-            let arrId := mkStmtExprMd (.Identifier name)
-            let lenId := mkStmtExprMd (.Identifier s!"{name}_length")
-            let store := mkStmtExprMd (.Assign [arrId]
+            let arrId := mkStmtExprMd (mkIdentifier name)
+            let lenId := mkStmtExprMd (mkIdentifier s!"{name}_length")
+            let store := mkStmtExprMd (.Assign [toAssignTarget arrId]
               (mkStmtExprMd (.StaticCall "update" [arrId, lenId, val])))
             let one := mkStmtExprMd (.LiteralInt 1)
-            let incr := mkStmtExprMd (.Assign [lenId]
+            let incr := mkStmtExprMd (.Assign [toAssignTarget lenId]
               (mkStmtExprMd (.PrimitiveOp .Add [lenId, one])))
             return mkStmtExprMd (.Block [store, incr] none)
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
@@ -1019,7 +1019,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       else if memberAnn.val == "send" then do
         -- payable(addr).send(amount) → nondeterministic bool
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (.Identifier "send_result")
+        return mkStmtExprMd (mkIdentifier "send_result")
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
@@ -1054,23 +1054,23 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     | .Identifier _ baseNameAnn =>
       if baseNameAnn.val == "msg" then
         if memberAnn.val == "sender" then
-          return mkStmtExprMd (.Identifier "msg_sender")
+          return mkStmtExprMd (mkIdentifier "msg_sender")
         else if memberAnn.val == "value" then
-          return mkStmtExprMd (.Identifier "msg_value")
+          return mkStmtExprMd (mkIdentifier "msg_value")
         else if memberAnn.val == "data" then
           -- msg.data → nondeterministic value (opaque calldata bytes)
-          return mkStmtExprMd (.Identifier "msg_data")
+          return mkStmtExprMd (mkIdentifier "msg_data")
         else if memberAnn.val == "sig" then
           -- msg.sig → nondeterministic value (first 4 bytes of calldata)
-          return mkStmtExprMd (.Identifier "msg_sig")
+          return mkStmtExprMd (mkIdentifier "msg_sig")
         else
           throw (.unsupported s!"msg.{memberAnn.val}")
       else if baseNameAnn.val == "block" then
         -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier s!"block_{memberAnn.val}")
+        return mkStmtExprMd (mkIdentifier s!"block_{memberAnn.val}")
       else if baseNameAnn.val == "tx" then
         -- tx.origin → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier s!"tx_{memberAnn.val}")
+        return mkStmtExprMd (mkIdentifier s!"tx_{memberAnn.val}")
       else pure ()
       -- Enum member access: Status.Active → integer literal for position
       match ctx.enumDefs.lookup baseNameAnn.val with
@@ -1081,14 +1081,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | none => pure ()
       -- Storage alias field access: sender.field → Identifier "sender__field"
       match ctx.storageAliases.lookup baseNameAnn.val with
-      | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
+      | some _ => return mkStmtExprMd (mkIdentifier s!"{baseNameAnn.val}__{memberAnn.val}")
       | none => pure ()
       -- Array .length on state vars or memory array params → Identifier "name_length"
       if memberAnn.val == "length" then
         let name := baseNameAnn.val
         if ctx.arrayStateVars.contains name ||
            ctx.memoryArrayParams.contains name then
-          return mkStmtExprMd (.Identifier s!"{name}_length")
+          return mkStmtExprMd (mkIdentifier s!"{name}_length")
     | .FunctionCall _ (.Identifier _ typeIdAnn) argsSeq _ _ =>
       -- type(T).min / type(T).max → integer literal constant
       if typeIdAnn.val == "type" then
@@ -1109,7 +1109,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           match argsSeq.val.toList with
           | [.Identifier _ argAnn] =>
             if argAnn.val == "this" then
-              return mkStmtExprMd (.Identifier "this_balance")
+              return mkStmtExprMd (mkIdentifier "this_balance")
             else do
               let addrExpr ← translateExpr ctx (.Identifier default argAnn)
               return mkStmtExprMd (.StaticCall "address_balance" [addrExpr])
@@ -1131,7 +1131,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     else if memberAnn.val == "code" || memberAnn.val == "codehash" then
       return mkStmtExprMd (.StaticCall s!"address_{memberAnn.val}" [obj])
     else
-      return mkStmtExprMd (.FieldSelect obj memberAnn.val)
+      return mkStmtExprMd (mkFieldSelect obj memberAnn.val)
 
   | .IndexAccess _sr baseNode indexOpt => do
     let base ← translateExpr ctx baseNode
@@ -1163,7 +1163,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [inner] => translateExpr ctx inner
     | _ =>
       -- Multi-component tuples (e.g., (a, b)) — model as nondeterministic
-      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
@@ -1192,7 +1192,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- Build nested update: for m[k1][k2] = v, produce
       --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
       let updateExpr ← buildNestedUpdate rootExpr idxExprs rhs'
-      return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+      return mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
     | none =>
     let lhsExpr ← translateExpr ctx lhs
     let rhs' ← match opAnn.val with
@@ -1208,7 +1208,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<<=" => pure (mkStmtExprMd (.StaticCall "bit_shl" [lhsExpr, rhsExpr]))
       | ">>=" => pure (mkStmtExprMd (.StaticCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
-    return mkStmtExprMd (.Assign [lhsExpr] rhs')
+    return mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
 
   | _ => throw (.unsupported s!"Expression node type")
 
@@ -1258,8 +1258,8 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       -- Each field is initialized with FieldSelect on the mapping select result,
       -- e.g., sender__weight := select(voters, msg_sender)#weight
       let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
-        let fieldInit := mkStmtExprMd (.FieldSelect initExpr fieldName)
-        mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
+        let fieldInit := mkStmtExprMd (mkFieldSelect initExpr fieldName)
+        mkStmtExprMd (mkLocalVar s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
       let alias : StorageAlias := { structTypeName, fields := fieldInfo }
       let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
       let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
@@ -1312,16 +1312,16 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       for name in ctx.stateVarNames do
         if !ctx.mappingStateVars.contains name then
           havocs := havocs ++ [mkStmtExprMd (.Assign
-            [mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)]
+            [mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)]
             (mkStmtExprMd .Hole))]
       -- Havoc mapping/array state vars to fresh nondeterministic values
       for name in ctx.mappingStateVars do
         havocs := havocs ++ [mkStmtExprMd (.Assign
-          [mkStmtExprMd (.Identifier (name : Identifier))]
+          [mkStmtExprMd (mkIdentifier (name : Identifier))]
           (mkStmtExprMd .Hole))]
         if ctx.arrayStateVars.contains name then
           havocs := havocs ++ [mkStmtExprMd (.Assign
-            [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
+            [mkStmtExprMd (mkIdentifier ((s!"{name}_length" : String) : Identifier))]
             (mkStmtExprMd .Hole))]
       return mkStmtExprMd (.Block havocs none)
     else
@@ -1399,14 +1399,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         if storageLocAnn.val == "storage" then
           throw (.internalError "storage ref should be handled by translateBlockStmts")
         else
-          return mkStmtExprMd (.LocalVariable nameAnn.val solTy.highType initVal)
+          return mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal)
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
       -- Tuple/multi-variable declarations: sound over-approximation
-      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
@@ -1417,7 +1417,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | _ =>
     match translateExpr ctx n with
     | .ok e => return e
-    | .error _ => return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+    | .error _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
 end
 
@@ -1429,9 +1429,9 @@ end
 partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : StmtExprMd :=
   let rewrite (e : StmtExprMd) := rewriteParamRefs paramNames e
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if paramNames.contains name.text then
-      { expr with val := .Identifier s!"{name.text}_param" }
+      { expr with val := mkIdentifier s!"{name.text}_param" }
     else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map rewrite) }
@@ -1439,17 +1439,17 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
     { expr with val := .StaticCall callee (args.map rewrite) }
   | .Old value =>
     { expr with val := .Old (rewrite value) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (rewrite target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (rewrite target) fieldName }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
-  | .Forall param body =>
+  | .Quantifier mkForall param _ body =>
     -- Don't rewrite the bound variable if it shadows a parameter name
     let shadowed := paramNames.filter (· != param.name.text)
-    { expr with val := .Forall param (rewriteParamRefs shadowed body) }
-  | .Exists param body =>
+    { expr with val := mkForall param (rewriteParamRefs shadowed body) }
+  | .Quantifier mkExists param _ body =>
     let shadowed := paramNames.filter (· != param.name.text)
-    { expr with val := .Exists param (rewriteParamRefs shadowed body) }
+    { expr with val := mkExists param (rewriteParamRefs shadowed body) }
   | _ => expr
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
@@ -1640,30 +1640,30 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let mut preamble : List StmtExprMd := []
         -- 1. Local copies of user-provided parameters (Solidity params are mutable)
         for (name, ty) in userParamInfo do
-          preamble := preamble ++ [mkStmtExprMd (.LocalVariable name ty
-            (some (mkStmtExprMd (.Identifier ((s!"{name}_param" : String) : Identifier)))))]
+          preamble := preamble ++ [mkStmtExprMd (mkLocalVar name ty
+            (some (mkStmtExprMd (mkIdentifier ((s!"{name}_param" : String) : Identifier)))))]
         -- 2. Constructor default storage initialization (Solidity zero-inits all state)
         if isConstructor then
           for field in ctx.contractFields do
             let defaultVal := defaultValueForType field.type
             preamble := preamble ++ [mkStmtExprMd (.Assign
-              [mkStmtExprMd (.Identifier (field.name.text : Identifier))]
+              [mkStmtExprMd (mkIdentifier (field.name.text : Identifier))]
               defaultVal)]
             -- For array state vars, also initialize length to 0
             if ctx.arrayStateVars.contains field.name.text then
               preamble := preamble ++ [mkStmtExprMd (.Assign
-                [mkStmtExprMd (.Identifier ((s!"{field.name.text}_length" : String) : Identifier))]
+                [mkStmtExprMd (mkIdentifier ((s!"{field.name.text}_length" : String) : Identifier))]
                 (mkStmtExprMd (.LiteralInt 0)))]
         -- 3. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           for name in ctx.mappingStateVars do
             preamble := preamble ++ [mkStmtExprMd (.Assign
-              [mkStmtExprMd (.Identifier (name : Identifier))]
-              (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))]
+              [mkStmtExprMd (mkIdentifier (name : Identifier))]
+              (mkStmtExprMd (mkIdentifier ((s!"{name}_in" : String) : Identifier))))]
             if ctx.arrayStateVars.contains name then
               preamble := preamble ++ [mkStmtExprMd (.Assign
-                [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
-                (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
+                [mkStmtExprMd (mkIdentifier ((s!"{name}_length" : String) : Identifier))]
+                (mkStmtExprMd (mkIdentifier ((s!"{name}_length_in" : String) : Identifier))))]
         let bodyExpr := if preamble.isEmpty then b
           else mkStmtExprMd (.Block (preamble ++ [b]) none)
         -- Translate contract invariant nodes once in this function's body context,
@@ -1702,8 +1702,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               if entries.isEmpty then
                 -- Not in modifies list: full frame (var == var_in)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
-                  mkStmtExprMd (.Identifier name),
-                  mkStmtExprMd (.Identifier (name ++ "_in"))]))
+                  mkStmtExprMd (mkIdentifier name),
+                  mkStmtExprMd (mkIdentifier (name ++ "_in"))]))
               else if entries.any fun (_, k) => k.isNone then
                 none  -- Whole-mapping modified (at least one entry has no key), no frame
               else
@@ -1715,7 +1715,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                   | .error _ => none
                 if parsedKeys.isEmpty then none
                 else
-                  let kVar := mkStmtExprMd (.Identifier "__k")
+                  let kVar := mkStmtExprMd (mkIdentifier "__k")
                   let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }
                   -- __k != key1 && __k != key2 && ...
                   let neqs := parsedKeys.map fun keyExpr =>
@@ -1726,11 +1726,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                         if acc.val matches .LiteralBool true then neq
                         else mkStmtExprMd (.PrimitiveOp .And [acc, neq]))
                       (mkStmtExprMd (.LiteralBool true))
-                  let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier name), kVar])
-                  let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier (name ++ "_in")), kVar])
+                  let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (mkIdentifier name), kVar])
+                  let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (mkIdentifier (name ++ "_in")), kVar])
                   let eq := mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs])
                   let body := mkStmtExprMd (.PrimitiveOp .Implies [guard, eq])
-                  some (mkStmtExprMd (.Forall kParam body))
+                  some (mkStmtExprMd (mkForall kParam body))
             -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
             -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
             -- not other fields of self. We need explicit field-level framing.
@@ -1740,8 +1740,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               else
                 -- scalar not modified: self#name == old(self#name)
                 -- Generate in already-rewritten form (post rewriteStateVarRefs)
-                let selfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
-                let oldSelfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+                let selfField := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
+                let oldSelfField := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
                 let oldWrapped := mkStmtExprMd (.Old oldSelfField)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, oldWrapped]))
             framePosts ++ scalarFramePosts
@@ -1755,7 +1755,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         else
           -- Only include self in modifies list when contract has scalar (non-mapping) state vars
           let modifiesList := if hasNonMappingState then
-            [mkStmtExprMd (.Identifier "self")]
+            [mkStmtExprMd (mkIdentifier "self")]
           else []
           pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr)
             modifiesList, contractInvariants)
@@ -1793,9 +1793,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
     let sumAxioms := if isPure || isView then [] else ctx.mappingStateVars.map fun name =>
       let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
-      let mVar := mkStmtExprMd (.Identifier "m")
-      let kVar := mkStmtExprMd (.Identifier "k")
-      let vVar := mkStmtExprMd (.Identifier "v")
+      let mVar := mkStmtExprMd (mkIdentifier "m")
+      let kVar := mkStmtExprMd (mkIdentifier "k")
+      let vVar := mkStmtExprMd (mkIdentifier "v")
       let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
       let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])
       let sumM := mkStmtExprMd (.StaticCall s!"sum_{name}" [mVar])
@@ -1892,9 +1892,9 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         let ctorOutput : Parameter :=
           { name := "__ctor_result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
         let postconds := sFields.map fun f =>
-          let resultField := mkStmtExprMd (.FieldSelect
-            (mkStmtExprMd (.Identifier "__ctor_result")) f.name)
-          let paramRef := mkStmtExprMd (.Identifier f.name)
+          let resultField := mkStmtExprMd (mkFieldSelect
+            (mkStmtExprMd (mkIdentifier "__ctor_result")) f.name)
+          let paramRef := mkStmtExprMd (mkIdentifier f.name)
           mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
         procedures := procedures ++ [{
           name := s!"{sNameAnn.val}_constructor"
@@ -2108,9 +2108,9 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     let sumFunctions := allMappingNames.filterMap fun name =>
       if true then  -- declare sum for all mappings; unused ones don't affect z3
         let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
-        let mVar := mkStmtExprMd (.Identifier "m")
-        let kVar := mkStmtExprMd (.Identifier "k")
-        let vVar := mkStmtExprMd (.Identifier "v")
+        let mVar := mkStmtExprMd (mkIdentifier "m")
+        let kVar := mkStmtExprMd (mkIdentifier "k")
+        let vVar := mkStmtExprMd (mkIdentifier "v")
         -- sum(update(m, k, v)) == sum(m) - select(m, k) + v
         let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
         let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])

@@ -163,6 +163,47 @@ def mkForall (p : Parameter) (body : StmtExprMd) : StmtExpr :=
 def mkExists (p : Parameter) (body : StmtExprMd) : StmtExpr :=
   .Quantifier .Exists p none body
 
+/-- Build a local variable declaration, optionally with an initializer.
+
+    Replaces the legacy `StmtExpr.LocalVariable name type init` constructor.
+    With `init = none`, produces `Var (Declare param)`. With an initializer,
+    produces `Assign [Declare param] init` (the new shape used by upstream). -/
+def mkLocalVar (name : String) (type : HighTypeMd) (init : Option StmtExprMd) : StmtExpr :=
+  let param : Parameter := { name := name, type := type }
+  match init with
+  | none => .Var (.Declare param)
+  | some initVal =>
+    let target : AstNode Variable := { val := .Declare param, source := none }
+    .Assign [target] initVal
+
+/-- Convert a StmtExprMd into an AstNode Variable suitable for use as an
+    `Assign` target. Only valid when the underlying StmtExpr is a `.Var`
+    (a Local or Field reference), which is exactly the shape produced by
+    `mkIdentifier` and `mkFieldSelect`.
+
+    For unsupported targets (literals, calls, etc.) this falls back to an
+    `__invalid_target` Local identifier so verification will obviously fail
+    rather than silently accepting nonsense. The legacy translator could
+    pass arbitrary expressions as `Assign` targets; the new Laurel AST
+    constrains targets to variables. -/
+def toAssignTarget (e : StmtExprMd) : AstNode Variable :=
+  match e.val with
+  | .Var v => { val := v, source := e.source }
+  | _ => { val := .Local (mkIdent "__invalid_target"), source := e.source }
+
+/-- Build an `Assert` StmtExpr from a boolean condition expression.
+    The new shape wraps the condition in a `Condition` record (with optional
+    summary); we leave the summary unset by default. -/
+def mkAssert (cond : StmtExprMd) (summary? : Option String := none) : StmtExpr :=
+  .Assert ({ condition := cond, summary := summary? } : Condition)
+
+/-- Build an `Assume` StmtExpr. The new Assume shape takes a StmtExprMd
+    directly (unlike Assert, which wraps in a Condition record). The
+    `summary?` argument is accepted for API parity with `mkAssert` but
+    discarded. -/
+def mkAssume (cond : StmtExprMd) (_summary? : Option String := none) : StmtExpr :=
+  .Assume cond
+
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
   match ctx.uri with

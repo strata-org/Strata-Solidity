@@ -77,9 +77,9 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         let ctorOutput : Parameter :=
           { name := "__ctor_result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
         let postconds := sFields.map fun f =>
-          let resultField := mkStmtExprMd (.FieldSelect
-            (mkStmtExprMd (.Identifier "__ctor_result")) f.name)
-          let paramRef := mkStmtExprMd (.Identifier f.name)
+          let resultField := mkStmtExprMd (mkFieldSelect
+            (mkStmtExprMd (mkIdentifier "__ctor_result")) f.name)
+          let paramRef := mkStmtExprMd (mkIdentifier f.name)
           mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
         procedures := procedures ++ [{
           name := s!"{sNameAnn.val}_constructor"
@@ -315,9 +315,9 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     let sumFunctions := allMappingNames.filterMap fun name =>
       if true then  -- declare sum for all mappings; unused ones don't affect z3
         let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
-        let mVar := mkStmtExprMd (.Identifier "m")
-        let kVar := mkStmtExprMd (.Identifier "k")
-        let vVar := mkStmtExprMd (.Identifier "v")
+        let mVar := mkStmtExprMd (mkIdentifier "m")
+        let kVar := mkStmtExprMd (mkIdentifier "k")
+        let vVar := mkStmtExprMd (mkIdentifier "v")
         -- sum(update(m, k, v)) == sum(m) - select(m, k) + v
         let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
         let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])

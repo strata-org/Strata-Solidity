@@ -124,17 +124,17 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .Identifier _ nameAnn =>
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if let some valExpr := ctx.constantDefs.lookup nameAnn.val then
       -- Constant state variable: substitute compile-time value
       return valExpr
     else if ctx.mappingStateVars.contains nameAnn.val then
       -- Mapping state vars are explicit parameters, not heap fields
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if ctx.stateVarNames.contains nameAnn.val then
-      return mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) nameAnn.val)
+      return mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) nameAnn.val)
     else
-      return mkStmtExprMd (.Identifier nameAnn.val)
+      return mkStmtExprMd (mkIdentifier nameAnn.val)
 
   | .Literal _ valueAnn kindAnn =>
     match kindAnn.val with
@@ -194,10 +194,10 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         let rootExpr ← translateExpr ctx rootNode
         let idxExprs ← indices.mapM (translateExpr ctx)
         let updateExpr ← buildNestedUpdate rootExpr idxExprs zero
-        return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+        return mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
       | none =>
         let subExpr ← translateExpr ctx sub
-        return mkStmtExprMd (.Assign [subExpr] zero)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] zero)
     let subExpr ← translateExpr ctx sub
     if prefixAnn.val == "true" then
       match opAnn.val with
@@ -208,12 +208,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- Prefix ++i: desugar to i = i + 1
         let one := mkStmtExprMd (.LiteralInt 1)
         let add := mkStmtExprMd (.PrimitiveOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] add)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
       | "--" =>
         -- Prefix --i: desugar to i = i - 1
         let one := mkStmtExprMd (.LiteralInt 1)
         let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] sub')
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
     else
       -- Postfix operators (e.g., i++).
@@ -226,11 +226,11 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "++" =>
         let one := mkStmtExprMd (.LiteralInt 1)
         let add := mkStmtExprMd (.PrimitiveOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] add)
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
       | "--" =>
         let one := mkStmtExprMd (.LiteralInt 1)
         let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [subExpr] sub')
+        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
@@ -292,17 +292,17 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- and are ignored for verification purposes.
         -- No source metadata: assume nodes don't generate VCs
         match args with
-        | cond :: _ => return mkStmtExprMd (.Assume cond)
+        | cond :: _ => return mkStmtExprMd (mkAssume cond)
         | [] => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
-        | [cond] => return mkStmtExprMdAnn ctx sr (.Assert cond)
+        | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (.StaticCall nameAnn.val args)
       | "gasleft" =>
         -- gasleft() → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier "gasleft")
+        return mkStmtExprMd (mkIdentifier "gasleft")
       | "selfdestruct" =>
         -- selfdestruct(addr) → deprecated, model as no-op
         return mkStmtExprMd .Hole
@@ -313,12 +313,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           let mut implicitArgs : List StmtExprMd := []
           let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
           if !nonMappingStateVars.isEmpty then
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "self")]
-          implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier "msg_sender")]
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "self")]
+          implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_sender")]
           for name in ctx.mappingStateVars do
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier name)]
+            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier name)]
             if ctx.arrayStateVars.contains name then
-              implicitArgs := implicitArgs ++ [mkStmtExprMd (.Identifier s!"{name}_length")]
+              implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier s!"{name}_length")]
           return mkStmtExprMd (.StaticCall qualifiedName (implicitArgs ++ args))
         else
           return mkStmtExprMd (.StaticCall qualifiedName args)
@@ -337,12 +337,12 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           -- Desugar: arr.push(v) → { arr := update(arr, arr_length, v); arr_length := arr_length + 1 }
           match args with
           | [val] =>
-            let arrId := mkStmtExprMd (.Identifier name)
-            let lenId := mkStmtExprMd (.Identifier s!"{name}_length")
-            let store := mkStmtExprMd (.Assign [arrId]
+            let arrId := mkStmtExprMd (mkIdentifier name)
+            let lenId := mkStmtExprMd (mkIdentifier s!"{name}_length")
+            let store := mkStmtExprMd (.Assign [toAssignTarget arrId]
               (mkStmtExprMd (.StaticCall "update" [arrId, lenId, val])))
             let one := mkStmtExprMd (.LiteralInt 1)
-            let incr := mkStmtExprMd (.Assign [lenId]
+            let incr := mkStmtExprMd (.Assign [toAssignTarget lenId]
               (mkStmtExprMd (.PrimitiveOp .Add [lenId, one])))
             return mkStmtExprMd (.Block [store, incr] none)
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
@@ -361,7 +361,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       else if memberAnn.val == "send" then do
         -- payable(addr).send(amount) → nondeterministic bool
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (.Identifier "send_result")
+        return mkStmtExprMd (mkIdentifier "send_result")
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
@@ -396,23 +396,23 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     | .Identifier _ baseNameAnn =>
       if baseNameAnn.val == "msg" then
         if memberAnn.val == "sender" then
-          return mkStmtExprMd (.Identifier "msg_sender")
+          return mkStmtExprMd (mkIdentifier "msg_sender")
         else if memberAnn.val == "value" then
-          return mkStmtExprMd (.Identifier "msg_value")
+          return mkStmtExprMd (mkIdentifier "msg_value")
         else if memberAnn.val == "data" then
           -- msg.data → nondeterministic value (opaque calldata bytes)
-          return mkStmtExprMd (.Identifier "msg_data")
+          return mkStmtExprMd (mkIdentifier "msg_data")
         else if memberAnn.val == "sig" then
           -- msg.sig → nondeterministic value (first 4 bytes of calldata)
-          return mkStmtExprMd (.Identifier "msg_sig")
+          return mkStmtExprMd (mkIdentifier "msg_sig")
         else
           throw (.unsupported s!"msg.{memberAnn.val}")
       else if baseNameAnn.val == "block" then
         -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier s!"block_{memberAnn.val}")
+        return mkStmtExprMd (mkIdentifier s!"block_{memberAnn.val}")
       else if baseNameAnn.val == "tx" then
         -- tx.origin → fresh unconstrained TInt
-        return mkStmtExprMd (.Identifier s!"tx_{memberAnn.val}")
+        return mkStmtExprMd (mkIdentifier s!"tx_{memberAnn.val}")
       else pure ()
       -- Enum member access: Status.Active → integer literal for position
       match ctx.enumDefs.lookup baseNameAnn.val with
@@ -423,14 +423,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | none => pure ()
       -- Storage alias field access: sender.field → Identifier "sender__field"
       match ctx.storageAliases.lookup baseNameAnn.val with
-      | some _ => return mkStmtExprMd (.Identifier s!"{baseNameAnn.val}__{memberAnn.val}")
+      | some _ => return mkStmtExprMd (mkIdentifier s!"{baseNameAnn.val}__{memberAnn.val}")
       | none => pure ()
       -- Array .length on state vars or memory array params → Identifier "name_length"
       if memberAnn.val == "length" then
         let name := baseNameAnn.val
         if ctx.arrayStateVars.contains name ||
            ctx.memoryArrayParams.contains name then
-          return mkStmtExprMd (.Identifier s!"{name}_length")
+          return mkStmtExprMd (mkIdentifier s!"{name}_length")
     | .FunctionCall _ (.Identifier _ typeIdAnn) argsSeq _ _ =>
       -- type(T).min / type(T).max → integer literal constant
       if typeIdAnn.val == "type" then
@@ -451,7 +451,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           match argsSeq.val.toList with
           | [.Identifier _ argAnn] =>
             if argAnn.val == "this" then
-              return mkStmtExprMd (.Identifier "this_balance")
+              return mkStmtExprMd (mkIdentifier "this_balance")
             else do
               let addrExpr ← translateExpr ctx (.Identifier default argAnn)
               return mkStmtExprMd (.StaticCall "address_balance" [addrExpr])
@@ -473,7 +473,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     else if memberAnn.val == "code" || memberAnn.val == "codehash" then
       return mkStmtExprMd (.StaticCall s!"address_{memberAnn.val}" [obj])
     else
-      return mkStmtExprMd (.FieldSelect obj memberAnn.val)
+      return mkStmtExprMd (mkFieldSelect obj memberAnn.val)
 
   | .IndexAccess _sr baseNode indexOpt => do
     let base ← translateExpr ctx baseNode
@@ -505,7 +505,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [inner] => translateExpr ctx inner
     | _ =>
       -- Multi-component tuples (e.g., (a, b)) — model as nondeterministic
-      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
@@ -534,7 +534,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- Build nested update: for m[k1][k2] = v, produce
       --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
       let updateExpr ← buildNestedUpdate rootExpr idxExprs rhs'
-      return mkStmtExprMd (.Assign [rootExpr] updateExpr)
+      return mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
     | none =>
     let lhsExpr ← translateExpr ctx lhs
     let rhs' ← match opAnn.val with
@@ -550,7 +550,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<<=" => pure (mkStmtExprMd (.StaticCall "bit_shl" [lhsExpr, rhsExpr]))
       | ">>=" => pure (mkStmtExprMd (.StaticCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
-    return mkStmtExprMd (.Assign [lhsExpr] rhs')
+    return mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
 
   | _ => throw (.unsupported s!"Expression node type")
 
@@ -600,8 +600,8 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       -- Each field is initialized with FieldSelect on the mapping select result,
       -- e.g., sender__weight := select(voters, msg_sender)#weight
       let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
-        let fieldInit := mkStmtExprMd (.FieldSelect initExpr fieldName)
-        mkStmtExprMd (.LocalVariable s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
+        let fieldInit := mkStmtExprMd (mkFieldSelect initExpr fieldName)
+        mkStmtExprMd (mkLocalVar s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
       let alias : StorageAlias := { structTypeName, fields := fieldInfo }
       let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
       let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
@@ -654,16 +654,16 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       for name in ctx.stateVarNames do
         if !ctx.mappingStateVars.contains name then
           havocs := havocs ++ [mkStmtExprMd (.Assign
-            [mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)]
+            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
             (mkStmtExprMd .Hole))]
       -- Havoc mapping/array state vars to fresh nondeterministic values
       for name in ctx.mappingStateVars do
         havocs := havocs ++ [mkStmtExprMd (.Assign
-          [mkStmtExprMd (.Identifier (name : Identifier))]
+          [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
           (mkStmtExprMd .Hole))]
         if ctx.arrayStateVars.contains name then
           havocs := havocs ++ [mkStmtExprMd (.Assign
-            [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
+            [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
             (mkStmtExprMd .Hole))]
       return mkStmtExprMd (.Block havocs none)
     else
@@ -741,14 +741,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         if storageLocAnn.val == "storage" then
           throw (.internalError "storage ref should be handled by translateBlockStmts")
         else
-          return mkStmtExprMd (.LocalVariable nameAnn.val solTy.highType initVal)
+          return mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal)
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
       -- Tuple/multi-variable declarations: sound over-approximation
-      return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
@@ -759,7 +759,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | _ =>
     match translateExpr ctx n with
     | .ok e => return e
-    | .error _ => return mkStmtExprMd (.Assume (mkStmtExprMd (.LiteralBool false)))
+    | .error _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
 end
 
