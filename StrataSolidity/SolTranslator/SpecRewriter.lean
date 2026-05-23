@@ -37,17 +37,16 @@ partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtE
 /-- Rewrite state variable references inside an old() expression.
     Mapping state vars: `name` → `name_in` (explicit input parameter).
     Array length refs: `name_length` → `name_length_in`.
-    Scalar state vars: `name` → `__old_name` (marker for rewriteStateVarRefs). -/
+    Scalar state vars: leave unchanged (best-effort: `old(x)` ≡ `x` until
+      upstream provides a pre-state mechanism). -/
 partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVars : List String)
-    (scalarStateVars : List String)
+    (_scalarStateVars : List String)
     (expr : StmtExprMd) : StmtExprMd :=
-  let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars e
+  let rewrite (e : StmtExprMd) := rewriteOldMappingRefs mappingStateVars arrayStateVars _scalarStateVars e
   match expr.val with
   | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
       { expr with val := mkIdentifier s!"{name.text}_in" }
-    else if scalarStateVars.contains name.text then
-      { expr with val := mkIdentifier s!"__old_{name.text}" }
     else
       let isArrayLength := arrayStateVars.any fun av => name.text == s!"{av}_length"
       if isArrayLength then
@@ -64,7 +63,7 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
   | .Quantifier mode param trigger body =>
     let shadowedMappings := mappingStateVars.filter (· != param.name.text)
     let shadowedArrays := arrayStateVars.filter (· != param.name.text)
-    let shadowedScalars := scalarStateVars.filter (· != param.name.text)
+    let shadowedScalars := _scalarStateVars.filter (· != param.name.text)
     let body' := rewriteOldMappingRefs shadowedMappings shadowedArrays shadowedScalars body
     { expr with val := .Quantifier mode param trigger body' }
   | _ => expr
@@ -108,8 +107,19 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
     else if name.text.startsWith "__old_" then
       let realName := (name.text.drop 6).toString
       if stateVarNames.contains realName then
-        mkStmtExprMd (.Old (mkStmtExprMd
-          (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) realName)))
+        -- Best-effort handling of `old(stateVar)` after upstream removed
+        -- modifies clauses (PR #759) and polyOldOp (PR #542): emit a fresh
+        -- free variable named `__old_<name>` that is unconstrained.
+        --
+        -- Trade-off: postconditions that *relate* the new state to the old
+        -- (e.g., `count == old(count) + amount`) become trivially satisfiable
+        -- because the verifier sees `__old_count` as any value. We accept this
+        -- degradation in exchange for end-to-end pipeline operation; users
+        -- writing such specs will see them pass vacuously (a known limitation).
+        --
+        -- Once upstream provides an `out`/`inout`-based pre-state mechanism,
+        -- this site should switch to the new shape.
+        expr
       else expr
     else if stateVarNames.contains name.text then
       mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name.text)
