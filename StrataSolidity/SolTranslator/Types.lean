@@ -133,6 +133,36 @@ def mkHighTypeMd (ty : HighType) : HighTypeMd :=
 def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
   { val := expr, source := none }
 
+/-! ### AST shape adapters
+
+The Laurel AST changed shape across multiple upstream PRs:
+- `StmtExpr.Identifier name` → `StmtExpr.Var (Variable.Local id)` (#1077)
+- `StmtExpr.FieldSelect t f` → `StmtExpr.Var (Variable.Field t f)` (#1077)
+- `StmtExpr.Forall/.Exists` → `StmtExpr.Quantifier mode param trigger body` (#1024)
+- `Identifier` gained `uniqueId` and `source` fields (#1028)
+
+These helpers preserve the old call sites so the translator code reads
+naturally without churn at every construction site. -/
+
+/-- Construct a bare-name `Identifier` (no resolution-pass uniqueId, no source). -/
+def mkIdent (name : String) : Identifier := { text := name }
+
+/-- Build the new-style identifier reference: `StmtExpr.Var (Variable.Local …)`. -/
+def mkIdentifier (name : String) : StmtExpr :=
+  .Var (.Local (mkIdent name))
+
+/-- Build the new-style field access: `StmtExpr.Var (Variable.Field target field)`. -/
+def mkFieldSelect (target : StmtExprMd) (fieldName : String) : StmtExpr :=
+  .Var (.Field target (mkIdent fieldName))
+
+/-- Build a universal quantifier (no trigger). -/
+def mkForall (p : Parameter) (body : StmtExprMd) : StmtExpr :=
+  .Quantifier .Forall p none body
+
+/-- Build an existential quantifier (no trigger). -/
+def mkExists (p : Parameter) (body : StmtExprMd) : StmtExpr :=
+  .Quantifier .Exists p none body
+
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
   match ctx.uri with
@@ -196,7 +226,7 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     if ctx.enumDefs.any (·.1 == nameAnn.val) then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
     else
-      { highType := mkHighTypeMd (.UserDefined ⟨nameAnn.val, none⟩), solName := nameAnn.val }
+      { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
   | .MappingType _ keyTn valTn =>
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
@@ -230,7 +260,7 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
-  let ident := mkStmtExprMd (.Identifier paramName)
+  let ident := mkStmtExprMd (mkIdentifier paramName)
   let zero := mkStmtExprMd (.LiteralInt 0)
   mkStmtExprMd (.PrimitiveOp .Geq [ident, zero])
 
