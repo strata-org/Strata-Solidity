@@ -43,18 +43,16 @@ open Laurel
 
 /-! ## Helpers -/
 
-def defaultMetadata : Imperative.MetaData Core.Expression := #[]
-
 /-- Find the index of the first element satisfying a predicate. -/
 private def List.findIndex? (p : α → Bool) : List α → Option Nat
   | [] => none
   | x :: xs => if p x then some 0 else (List.findIndex? p xs).map (· + 1)
 
-/-- Convert a SourceRange and file URI to Laurel metadata with file range info.
-    Reuses the existing `SourceRange.toMetaData` from the Laurel grammar translator. -/
-def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Expression :=
-  if sr.isNone then #[]
-  else Laurel.SourceRange.toMetaData uri sr
+/-- Convert a SourceRange and file URI to a Laurel `FileRange`
+    for use as the `source` field on AstNode. Returns none if empty. -/
+def sourceRangeToFileRange (uri : Uri) (sr : SourceRange) : Option FileRange :=
+  if sr.isNone then none
+  else some { file := uri, range := sr }
 
 /-- A storage reference alias: records the struct type and field info so that
     field accesses through the alias can be desugared to per-field scalar
@@ -130,16 +128,16 @@ structure TransCtx where
   constantDefs : List (String × StmtExprMd) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
-  { val := ty, md := defaultMetadata }
+  { val := ty, source := none }
 
 def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
-  { val := expr, md := defaultMetadata }
+  { val := expr, source := none }
 
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
   match ctx.uri with
-  | some uri => { val := expr, md := sourceRangeToMd uri sr }
-  | none => { val := expr, md := defaultMetadata }
+  | some uri => { val := expr, source := sourceRangeToFileRange uri sr }
+  | none => { val := expr, source := none }
 
 /-! ## Translation Error -/
 
