@@ -7,11 +7,12 @@
 -- Standalone CLI for Solidity verification via the Laurel pipeline.
 import StrataSolidity
 import Strata.Languages.Laurel.LaurelToCoreTranslator
+import Strata.Languages.Laurel.LaurelCompilationPipeline
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Core.Options
 import Strata.DL.Imperative.MetaData
 
-open Core (VerifyOptions VerboseMode VCResult Outcome LExprModel)
+open Core (VerifyOptions VerboseMode VCResult VCOutcome VCError LExprModel)
 open Lean (Json toJson)
 
 private def exitFailure {α} (message : String) : IO α := do
@@ -52,12 +53,11 @@ private def resolvePosition (vcr : VCResult) (sourceOpt : Option (String × Stri
     if fr.range.isNone then none
     else match sourceOpt with
       | some (srcPath, srcText) =>
-        match fr.file with
-        | .file path =>
-          if path == srcPath then
-            let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
-            some (pos.line, pos.column)
-          else none
+        let path := match fr.file with | .file p => p
+        if path == srcPath then
+          let pos := (Lean.FileMap.ofString srcText).toPosition fr.range.start
+          some (pos.line, pos.column)
+        else none
       | none => none
   | none => none
 
@@ -72,24 +72,23 @@ private def formatPlainCounterexample (cex : LExprModel) : String :=
     "\n" ++ "\n".intercalate entries
 
 /-- Classify a VCResult into 0=fail, 1=unknown, 2=pass. -/
-private def statusOrder (o : Outcome) : Nat :=
-  match o with
-  | .fail | .implementationError _ => 0
-  | .unknown => 1
-  | .pass => 2
+private def statusOrder (vcr : VCResult) : Nat :=
+  if vcr.isFailure then 0
+  else if vcr.isSuccess then 2
+  else 1
 
-private def statusEmoji (o : Outcome) : String :=
-  match o with
-  | .fail | .implementationError _ => "❌"
-  | .unknown => "❓"
-  | .pass => "✅"
+private def statusEmoji (vcr : VCResult) : String :=
+  if vcr.isFailure then "❌"
+  else if vcr.isSuccess then "✅"
+  else "❓"
 
-private def statusLabel (o : Outcome) : String :=
-  match o with
-  | .fail => "fail"
-  | .implementationError _ => "implementation_error"
-  | .unknown => "unknown"
-  | .pass => "pass"
+private def statusLabel (vcr : VCResult) : String :=
+  match vcr.outcome with
+  | .error _ => "implementation_error"
+  | .ok _ =>
+    if vcr.isFailure then "fail"
+    else if vcr.isSuccess then "pass"
+    else "unknown"
 
 /-- Format verification results grouped by status with summary. -/
 private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
@@ -98,22 +97,21 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
   let mut nFail := 0
   let mut nUnknown := 0
   for vcr in vcResults do
-    match vcr.result with
-    | .pass => nPass := nPass + 1
-    | .fail | .implementationError _ => nFail := nFail + 1
-    | .unknown => nUnknown := nUnknown + 1
+    if vcr.isSuccess then nPass := nPass + 1
+    else if vcr.isFailure then nFail := nFail + 1
+    else nUnknown := nUnknown + 1
   let sorted := vcResults.toList.toArray |>.qsort
-    (fun a b => statusOrder a.result < statusOrder b.result)
+    (fun a b => statusOrder a < statusOrder b)
   let mut s := ""
   let mut curSection := 3  -- sentinel
   for vcr in sorted do
-    let sec := statusOrder vcr.result
+    let sec := statusOrder vcr
     if sec != curSection then
       curSection := sec
-      let (emoji, header, count) := match vcr.result with
-        | .fail | .implementationError _ => ("❌", "Failures", nFail)
-        | .unknown => ("❓", "Unknown", nUnknown)
-        | .pass => ("✅", "Passed", nPass)
+      let (emoji, header, count) :=
+        if vcr.isFailure then ("❌", "Failures", nFail)
+        else if vcr.isSuccess then ("✅", "Passed", nPass)
+        else ("❓", "Unknown", nUnknown)
       if !s.isEmpty then s := s ++ "\n"
       s := s ++ s!"{emoji} {header} ({count}):\n"
     let locStr := match resolvePosition vcr sourceOpt with
@@ -121,11 +119,9 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
       | none => ""
     s := s ++ s!"  {vcr.obligation.label}{locStr}\n"
     -- Counterexample for failures
-    match vcr.result with
-    | .fail | .implementationError _ =>
+    if vcr.isFailure then
       let cex := formatPlainCounterexample vcr.lexprModel
       if !cex.isEmpty then s := s ++ cex ++ "\n"
-    | _ => pure ()
   s := s ++ s!"\n{nPass} passed, {nFail} failed, {nUnknown} unknown out of {vcResults.size} total"
   (s, nFail > 0)
 
@@ -135,7 +131,7 @@ private def formatJsonResults (vcResults : Array Core.VCResult)
   let arr := vcResults.map fun vcr =>
     let baseFields : Array (String × Json) := #[
       ("name", Json.str vcr.obligation.label),
-      ("status", Json.str (statusLabel vcr.result))
+      ("status", Json.str (statusLabel vcr))
     ]
     let fields := match resolvePosition vcr sourceOpt with
     | some (line, col) =>
@@ -196,10 +192,11 @@ def main (args : List String) : IO Unit := do
         IO.println laurelStr
 
       -- Translate Laurel → Core
-      match Strata.Laurel.translate laurelProgram with
-      | .error diagnostics =>
-        exitFailure s!"Laurel to Core translation failed: {diagnostics}"
-      | .ok (coreProgram, _modifiesDiags) =>
+      let (coreOpt, translateDiags) ← Strata.Laurel.translate {} laurelProgram
+      match coreOpt with
+      | none =>
+        exitFailure s!"Laurel to Core translation failed: {translateDiags}"
+      | some coreProgram =>
         let coreStr := toString (f!"{coreProgram}")
         if verbose then
           IO.println "\n==== Core Program ===="
@@ -258,7 +255,7 @@ def main (args : List String) : IO Unit := do
 
         -- Print results
         if pipelineJson then
-          let obligations ← vcResults.toList.mapM fun r => do
+          let obligations ← vcResults.toList.mapM fun (r : VCResult) => do
             let status := if r.isSuccess then "pass"
               else if r.isFailure then "fail"
               else "unknown"
