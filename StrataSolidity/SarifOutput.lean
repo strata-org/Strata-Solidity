@@ -9,7 +9,7 @@ import Strata.Languages.Core.Verifier
 import Strata.DL.Imperative.MetaData
 
 open Lean (Json toJson)
-open Core (VCResult Outcome)
+open Core (VCResult VCOutcome VCError)
 
 namespace StrataSolidity.Sarif
 
@@ -48,31 +48,50 @@ private def simpleHash (s : String) : String :=
   let h := s.foldl (fun acc c => acc * 31 + c.toNat) 7
   toString h
 
-private def resultLevel (o : Outcome) : String :=
-  match o with
-  | .fail | .implementationError _ => "error"
+/-- Classify a VC outcome into pass | fail | unknown for SARIF reporting.
+    See Core.Verifier predicates for the full pass/fail classification. -/
+private inductive Verdict where
+  | pass
+  | fail
+  | unknown
+
+private def classifyOutcome (out : Except VCError VCOutcome) : Verdict :=
+  match out with
+  | .error _ => .fail  -- encoder/solver errors reported as failures
+  | .ok o =>
+    if VCOutcome.passAndReachable o then .pass
+    else if VCOutcome.alwaysFalseAndReachable o
+         || VCOutcome.canBeTrueOrFalseAndIsReachable o
+         || VCOutcome.canBeFalseAndIsReachable o then .fail
+    else .unknown
+
+private def resultLevel (out : Except VCError VCOutcome) : String :=
+  match classifyOutcome out with
+  | .fail => "error"
   | .pass => "none"
   | .unknown => "warning"
 
-private def resultKind (o : Outcome) : String :=
-  match o with
-  | .fail | .implementationError _ => "fail"
+private def resultKind (out : Except VCError VCOutcome) : String :=
+  match classifyOutcome out with
+  | .fail => "fail"
   | .pass => "pass"
   | .unknown => "open"
 
-private def resultMessage (label : String) (o : Outcome) : String :=
-  match o with
-  | .pass => s!"{label}: pass"
-  | .fail => s!"{label}: fail"
-  | .unknown => s!"{label}: unknown"
-  | .implementationError e => s!"{label}: implementation error: {e}"
+private def resultMessage (label : String) (out : Except VCError VCOutcome) : String :=
+  match out with
+  | .error e => s!"{label}: implementation error: {toString e}"
+  | .ok _ =>
+    match classifyOutcome out with
+    | .pass => s!"{label}: pass"
+    | .fail => s!"{label}: fail"
+    | .unknown => s!"{label}: unknown"
 
 private def vcResultToJson (vcr : VCResult) (sourceOpt : Option (String × String)) : Json :=
   let label := vcr.obligation.label
   let (ruleId, ruleIdx) := classifyRule label
-  let level := resultLevel vcr.result
-  let kind := resultKind vcr.result
-  let msg := resultMessage label vcr.result
+  let level := resultLevel vcr.outcome
+  let kind := resultKind vcr.outcome
+  let msg := resultMessage label vcr.outcome
   let base : Array (String × Json) := #[
     ("ruleId", Json.str ruleId),
     ("ruleIndex", toJson ruleIdx),
