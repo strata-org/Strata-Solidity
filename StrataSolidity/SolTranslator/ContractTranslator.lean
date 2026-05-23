@@ -75,22 +75,22 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         let ctorInputs := sFields.map fun f =>
           ({ name := f.name, type := f.type } : Parameter)
         let ctorOutput : Parameter :=
-          { name := "__ctor_result", type := mkHighTypeMd (.UserDefined ⟨sNameAnn.val, none⟩) }
+          { name := "__ctor_result", type := mkHighTypeMd (.UserDefined (mkIdent sNameAnn.val)) }
         let postconds := sFields.map fun f =>
           let resultField := mkStmtExprMd (mkFieldSelect
-            (mkStmtExprMd (mkIdentifier "__ctor_result")) f.name)
-          let paramRef := mkStmtExprMd (mkIdentifier f.name)
+            (mkStmtExprMd (mkIdentifier "__ctor_result")) f.name.text)
+          let paramRef := mkStmtExprMd (mkIdentifier f.name.text)
           mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
+        let postcondsAsConds : List Condition :=
+          postconds.map fun p => { condition := p, summary := none }
         procedures := procedures ++ [{
           name := s!"{sNameAnn.val}_constructor"
           inputs := ctorInputs
           outputs := [ctorOutput]
           preconditions := []
-          determinism := .deterministic none
           decreases := none
           isFunctional := true
-          body := .Abstract postconds
-          md := default
+          body := .Abstract postcondsAsConds
         }]
       | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
@@ -276,22 +276,18 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
                  { name := "b", type := mkHighTypeMd .TInt }]
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
-      determinism := .deterministic none
       decreases := none
       isFunctional := true
       body := .Abstract []
-      md := default
     }
     let mkUninterpUnary (name : String) : Procedure := {
       name := name
       inputs := [{ name := "a", type := mkHighTypeMd .TInt }]
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
-      determinism := .deterministic none
       decreases := none
       isFunctional := true
       body := .Abstract []
-      md := default
     }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
@@ -325,11 +321,11 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
         let selMK := mkStmtExprMd (.StaticCall "select" [mVar, kVar])
         let rhs := mkStmtExprMd (.PrimitiveOp .Add [
           mkStmtExprMd (.PrimitiveOp .Sub [sumM, selMK]), vVar])
-        let updateAxiom := mkStmtExprMd (.Forall
+        let updateAxiom := mkStmtExprMd (mkForall
           { name := "m", type := mapType }
-          (mkStmtExprMd (.Forall
+          (mkStmtExprMd (mkForall
             { name := "k", type := mkHighTypeMd .TInt }
-            (mkStmtExprMd (.Forall
+            (mkStmtExprMd (mkForall
               { name := "v", type := mkHighTypeMd .TInt }
               (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
         -- sum(const(0)) == 0
@@ -341,11 +337,12 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
           inputs := [{ name := "m", type := mapType }]
           outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
           preconditions := []
-          determinism := .deterministic none
           decreases := none
           isFunctional := true
-          body := .Abstract [updateAxiom, emptyAxiom]
-          md := default
+          body := .Abstract [
+            { condition := updateAxiom, summary := none },
+            { condition := emptyAxiom, summary := none }
+          ]
         }
       else none
 
