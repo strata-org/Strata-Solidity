@@ -69,6 +69,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       for name in nonMappingStateVars do
         let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
         preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
+      -- Synthetic pre-state input parameters for scalar state vars.
+      -- For each scalar field, add `<name>_in : <type>` and a precondition
+      -- `self.<name> == <name>_in` so that `<name>_in` carries the pre-state
+      -- value of the field. Spec rewriter resolves `old(<name>)` to
+      -- `<name>_in` (see SpecRewriter.rewriteStateVarRefs).
+      for field in ctx.contractFields do
+        if !ctx.mappingStateVars.contains field.name.text then
+          let inName := s!"{field.name.text}_in"
+          inputs := inputs ++ [{ name := inName, type := field.type }]
+          let selfField := mkStmtExprMd
+            (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) field.name.text)
+          let inRef := mkStmtExprMd (mkIdentifier inName)
+          preconditions := preconditions ++
+            [mkStmtExprMd (.PrimitiveOp .Eq [selfField, inRef])]
 
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
@@ -327,12 +341,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               if ctx.mappingStateVars.contains name then none  -- handled above
               else if modifiedBaseNames.contains name then none  -- declared as modified
               else
-                -- scalar not modified: self#name == old(self#name)
-                -- Generate in already-rewritten form (post rewriteStateVarRefs)
-                let selfField := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
-                let oldSelfField := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
-                let oldWrapped := mkStmtExprMd (.Old oldSelfField)
-                some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, oldWrapped]))
+                -- scalar not modified: self#name == <name>_in
+                -- The pre-state value lives in the synthetic <name>_in input
+                -- parameter (added by this same function above), pinned to
+                -- self.<name> at entry. This avoids emitting a .Old AST node
+                -- which the upstream Laurel→Core translator does not handle.
+                let selfField := mkStmtExprMd
+                  (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
+                let inRef := mkStmtExprMd (mkIdentifier s!"{name}_in")
+                some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, inRef]))
             framePosts ++ scalarFramePosts
         -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
         -- Tag invariant postconditions with __strata_invariant wrapper for label generation

@@ -315,6 +315,15 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           if !nonMappingStateVars.isEmpty then
             implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "self")]
           implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_sender")]
+          implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_value")]
+          -- Pass current self.<name> as the callee's `<name>_in` pre-state
+          -- for each scalar state var. This matches the synthetic `_in`
+          -- inputs added by StmtTranslator for non-pure, non-constructor
+          -- functions and lets `old(<name>)` resolve correctly inside the
+          -- callee's specs.
+          for name in nonMappingStateVars do
+            implicitArgs := implicitArgs ++
+              [mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)]
           for name in ctx.mappingStateVars do
             implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier name)]
             if ctx.arrayStateVars.contains name then
