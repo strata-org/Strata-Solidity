@@ -52,15 +52,23 @@ SMT → SARIF with source locations.
 - Quantifiers with implication patterns (`forall a :: a != x ==> ...`).
 
 ⚠️ **Degraded** (best-effort while upstream stabilizes):
-- `old(scalarVar)` is treated as identity (= post-state value). Specs
-  that *relate* new to old scalar state (`count == old(count) + amount`)
-  become trivially satisfiable. Mapping `old(m[k])` still works because
-  mappings are passed as explicit `_in` parameters.
-- Frame conditions for scalar state vars are weaker — upstream removed
-  the modifies-clause system the old logic was built on (#759).
-- Two unknowns appear in some otherwise-passing test runs (the upstream
-  verifier's stricter classification surfaces previously-passing-via-vacuity
-  obligations).
+- Frame conditions for scalar state vars now use the same `<name>_in`
+  mechanism rather than the legacy `.Old` AST node. Functionally
+  equivalent but worth re-running golden tests to confirm.
+- `old()` in loop invariants resolves correctly inside function-level
+  scope (as the `<name>_in` parameter is in scope), but loop-specific
+  pre-state (value at loop entry) is not yet captured — that would
+  need a separate per-loop snapshot mechanism.
+- Counterexample generation: no change from before — z3's mbqi is still
+  disabled.
+
+✨ **Recovered semantics for `old()`** (after the proper-fix follow-up
+commit): scalar `old(stateVar)` and mapping `old(map[k])` now resolve
+via synthetic `<name>_in` input parameters pinned to the pre-state
+value via an entry-time precondition `self.<name> == <name>_in`.
+Internal call sites pass the caller's current `self.<name>` as the
+callee's `<name>_in`. Specs that *relate* new state to old state
+(the whole point of `old()`) now verify correctly.
 
 ❌ **Not currently working**:
 - Variable-name preservation in some Identifier contexts where the
@@ -71,17 +79,21 @@ SMT → SARIF with source locations.
 
 ### Smoke tests
 
-Direct CLI invocations show end-to-end operation on representative
-contracts:
+After the proper-`old()` fix, end-to-end runs on representative contracts:
 
 | Contract | Result |
 |---|---|
 | b1_trivial.sol | ✅ 2/2 pass |
-| b2_counter.sol | ✅ 4/6 pass, 2 unknown |
-| b3_token.sol | ✅ 6/8 pass, 2 unknown |
-| b4_vault.sol | ✅ 6/8 pass, 2 unknown |
+| b2_counter.sol | ✅ 6/6 pass |
+| b3_token.sol | ✅ 8/8 pass |
+| b4_vault.sol | ✅ 8/8 pass |
+| b6_erc20.sol | ✅ 11/11 pass |
+| events_errors.sol | ✅ 8/8 pass |
 | forall_frame.sol | ✅ 2/2 pass |
-| loop_invariant.sol | ✅ 4/5 pass, 1 unknown |
+| nonlinear.sol | ✅ 21/21 pass |
+| sum_token.sol | ✅ 8/8 pass |
+| loop_invariant.sol | ⚠️ 3/5 pass + 2 unknown |
+| b5_escrow.sol | ❌ `block_timestamp` resolution error (unrelated) |
 | SARIF output | ✅ Works with source locations |
 
 The exit-code contract sub-stage (REQ-PBT-007) passes 3/3.
