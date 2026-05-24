@@ -12,94 +12,254 @@ import Strata.DDM.BuiltinDialects.BuiltinM
 /-!
 # Solidity DDM dialect — Lean source of truth (Group A)
 
-This file is the **target** for Group A of the pipeline-language-rationalization
-spec (`.kiro/specs/pipeline-language-rationalization/`). When complete, it will
-replace `Tools/Solidity/src/base_dialect.py` as the canonical definition of the
-Solidity DDM dialect; the existing `Solidity.dialect.st.ion` artifact will be
-generated from this Lean value via a `lake gen-dialect` script (REQ-LCD-002).
+Lean equivalent of `Tools/Solidity/src/base_dialect.py`'s `gen_dialect()`.
+This file defines the Solidity DDM dialect as a Lean value, eliminating the
+need to read it from a precompiled Ion artifact at compile time.
 
-## Status: SCAFFOLD
+## Why
 
-The current `StrataSolidity/SolidityDialect.lean` still loads the Python-built
-Ion file via `#load_dialect`. This file lives next to it and will eventually
-take over. To complete the migration:
+Per `.kiro/specs/pipeline-language-rationalization/` (Group A, REQ-LCD-*):
+- The dialect's *consumer* is Lean. Defining it in Lean removes a Python
+  dependency and a serialization round-trip on the verification path.
+- Adding a new AST node becomes a single edit here, not a Python edit + an
+  Ion regeneration step.
+- Lean's type system makes the schema readable top-to-bottom.
 
-1. Mirror every `Sol.add_op(...)` call in `Tools/Solidity/src/base_dialect.py`
-   via `declareOp { name, argDecls, ..., category }` here. There are about 30
-   operations across these categories: top-level, modifiers, functions,
-   statements, expressions, structs/enums, type names.
+## Structure
 
-2. Add `lake gen-dialect` to `lakefile.lean` that runs `IO.main` here and
-   writes `Tools/Solidity/dialects/Solidity.dialect.st.ion` via Strata's Ion
-   encoder.
+Mirrors `base_dialect.py` line-for-line:
+  1. Four syntax categories: `node`, `opt_node`, `type_name`, `opt_type_name`.
+  2. Four optional-wrapper ops: `some_node`, `missing_node`,
+     `some_type_name`, `missing_type_name`.
+  3. ~30 AST node ops grouped by area: top-level, modifiers, functions,
+     statements, expressions, structs/enums, type names.
 
-3. Verify byte-equality between the Ion file regenerated from this Lean source
-   and the Python-built one. Add this as a CI check (REQ-LCD-005).
+## Compatibility check
 
-4. Switch `SolidityDialect.lean` to import this file (or move the contents
-   here) and stop using `#load_dialect`.
-
-5. Decide the fate of `Tools/Solidity/src/base_dialect.py`:
-   - Delete it (REQ-LCD-014): no consumer needs Python-side dialect.
-   - Or auto-generate it from this Lean source if Python tooling still wants
-     a programmatic API (currently nothing reads from it after Ion is built).
-
-## Why a separate file during transition
-
-Keeping this scaffold parallel to the existing `#load_dialect`-based file lets
-us land an equivalence check (Lean-built dialect == Ion-loaded dialect) before
-flipping the default. That lines up with REQ-MIGR-002 (parallel-run window
-before any non-reversible step).
+A future commit will add a `lake gen-dialect` script that serializes
+`soliditydialectLean` to binary Ion via Strata's encoder, then a CI check
+that the result is byte-identical to the existing
+`Tools/Solidity/dialects/Solidity.dialect.st.ion` (per REQ-LCD-005).
+Once parity is established, `SolidityDialect.lean` can drop `#load_dialect`
+and import this file directly (REQ-LCD-014).
 -/
 
-open Strata.Elab
+open Strata Strata.Elab
 
 public section
 namespace Strata.Solidity
 
-/-- Imperative dialect builder mirroring `Tools/Solidity/src/base_dialect.py`'s
-    `gen_dialect()`. Each `Sol.add_op(...)` line in Python becomes a
-    `declareOp { ... }` call here. Each `Sol.add_syncat(...)` becomes
-    `declareCat`.
+/-! ## Helper builders for terse op declarations.
 
-    TODO(group-a): fill in all ~30 operations. Currently a stub that establishes
-    the structure and proves the build path works.
+We use the BuiltinM API (mirroring `Strata/DDM/BuiltinDialects/Init.lean`).
+The original Python uses an `Sol.add_op(name, args..., return_cat)` shape
+where each arg is `ArgDecl(name, type)`. Below, `mkOp` reproduces that
+ergonomically: it takes a return category, an op name, and an array of
+`(arg_name, arg_kind)` pairs.
 -/
+
+private def mkArg (name : String) (k : ArgDeclKind) : ArgDecl :=
+  { ident := name, kind := k }
+
+/-- Local syntactic-category atoms (mirrors Python's `Sol.<cat>()`). -/
+private def Node     : SyntaxCat := .atom .none q`SolidityLean.node
+private def OptNode  : SyntaxCat := .atom .none q`SolidityLean.opt_node
+private def TypeName : SyntaxCat := .atom .none q`SolidityLean.type_name
+private def OptType  : SyntaxCat := .atom .none q`SolidityLean.opt_type_name
+
+/-- `Init.Str()` from Python — atomic string. -/
+private def Str : SyntaxCat := .atom .none q`Init.Str
+
+/-- `Init.Seq(c)` — a sequence of category `c`. -/
+private def Seq (c : SyntaxCat) : SyntaxCat := SyntaxCat.mkSeq c
+
+/-- `Init.Command()` — top-level command return category. -/
+private def Command : SyntaxCat := .atom .none q`Init.Command
+
+/-- Convenience: `mkOp returnCat name args` is the Lean equivalent of
+    `Sol.add_op(name, ArgDecl(...), ..., returnCat)` from `base_dialect.py`. -/
+private def mkOp (returnCat : QualifiedIdent) (name : String) (args : Array ArgDecl)
+    : BuiltinM Unit := do
+  declareOp {
+    name      := name,
+    argDecls  := { toArray := args },
+    category  := returnCat,
+    syntaxDef := default
+  }
+
+/-- The Lean-canonical Solidity DDM dialect. Mirrors
+    `Tools/Solidity/src/base_dialect.py:gen_dialect()` line-for-line. -/
 def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[initDialect] do
-  -- Syntax categories (REQ-LCD-001 / base_dialect.py:31-34)
+  -- Syntax categories
   declareCat q`SolidityLean.node
   declareCat q`SolidityLean.opt_node
   declareCat q`SolidityLean.type_name
   declareCat q`SolidityLean.opt_type_name
 
-  -- TODO(group-a): the ~30 operations. Pattern for each:
-  --
-  --   declareOp {
-  --     name := "ContractDefinition",
-  --     argDecls := ArgDecls.ofArray #[
-  --       { ident := ⟨"name", default⟩, kind := .cat (.atom .none q`Init.Str) },
-  --       { ident := ⟨"contractKind", default⟩, kind := .cat (.atom .none q`Init.Str) },
-  --       ... ],
-  --     category := q`SolidityLean.node,
-  --     syntaxDef := <minimal — Solidity is never parsed from text in Lean>
-  --   }
-  --
-  -- The full list lives in base_dialect.py, which is the byte-for-byte
-  -- migration target. Use that file as the spec for this loop.
+  -- Optional-node wrappers
+  mkOp q`SolidityLean.opt_node "some_node"
+    #[mkArg "x" (.cat Node)]
+  mkOp q`SolidityLean.opt_node "missing_node" #[]
+  mkOp q`SolidityLean.opt_type_name "some_type_name"
+    #[mkArg "x" (.cat TypeName)]
+  mkOp q`SolidityLean.opt_type_name "missing_type_name" #[]
 
-  -- For now: just declare the optional-node wrappers as a sanity check.
-  declareOp {
-    name := "missing_node",
-    argDecls := .empty,
-    category := q`SolidityLean.opt_node,
-    syntaxDef := default
-  }
-  declareOp {
-    name := "missing_type_name",
-    argDecls := .empty,
-    category := q`SolidityLean.opt_type_name,
-    syntaxDef := default
-  }
+  -- Top-level
+  mkOp q`Init.Command "SourceUnit"
+    #[mkArg "nodes" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "PragmaDirective"
+    #[mkArg "literals" (.cat (Seq Str))]
+
+  mkOp q`SolidityLean.node "ContractDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "contractKind" (.cat Str),
+      mkArg "nodes" (.cat (Seq Node)),
+      mkArg "documentation" (.cat Str),
+      mkArg "baseContracts" (.cat (Seq Str))]
+
+  -- Modifiers
+  mkOp q`SolidityLean.node "ModifierDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "parameters" (.cat Node),
+      mkArg "body" (.cat OptNode)]
+
+  mkOp q`SolidityLean.node "ModifierInvocation"
+    #[mkArg "modifierName" (.cat Str),
+      mkArg "arguments" (.cat (Seq Node))]
+
+  -- Functions
+  mkOp q`SolidityLean.node "FunctionDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "kind" (.cat Str),
+      mkArg "stateMutability" (.cat Str),
+      mkArg "visibility" (.cat Str),
+      mkArg "parameters" (.cat Node),
+      mkArg "returnParameters" (.cat Node),
+      mkArg "body" (.cat OptNode),
+      mkArg "documentation" (.cat Str),
+      mkArg "modifiers" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "ParameterList"
+    #[mkArg "parameters" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "VariableDeclaration"
+    #[mkArg "name" (.cat Str),
+      mkArg "typeName" (.cat OptType),
+      mkArg "stateVariable" (.cat Str),
+      mkArg "constant" (.cat Str),
+      mkArg "storageLocation" (.cat Str),
+      mkArg "value" (.cat OptNode),
+      mkArg "documentation" (.cat Str)]
+
+  -- Statements
+  mkOp q`SolidityLean.node "Block"
+    #[mkArg "statements" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "UncheckedBlock"
+    #[mkArg "statements" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "ExpressionStatement"
+    #[mkArg "expression" (.cat Node)]
+
+  mkOp q`SolidityLean.node "Return"
+    #[mkArg "expression" (.cat OptNode)]
+
+  mkOp q`SolidityLean.node "IfStatement"
+    #[mkArg "condition" (.cat Node),
+      mkArg "trueBody" (.cat Node),
+      mkArg "falseBody" (.cat OptNode)]
+
+  mkOp q`SolidityLean.node "WhileStatement"
+    #[mkArg "condition" (.cat Node),
+      mkArg "body" (.cat Node)]
+
+  mkOp q`SolidityLean.node "ForStatement"
+    #[mkArg "initializationExpression" (.cat OptNode),
+      mkArg "condition" (.cat OptNode),
+      mkArg "loopExpression" (.cat OptNode),
+      mkArg "body" (.cat Node)]
+
+  mkOp q`SolidityLean.node "VariableDeclarationStatement"
+    #[mkArg "declarations" (.cat (Seq OptNode)),
+      mkArg "initialValue" (.cat OptNode)]
+
+  -- Expressions
+  mkOp q`SolidityLean.node "Assignment"
+    #[mkArg "leftHandSide" (.cat Node),
+      mkArg "rightHandSide" (.cat Node),
+      mkArg "operator" (.cat Str)]
+
+  mkOp q`SolidityLean.node "BinaryOperation"
+    #[mkArg "leftExpression" (.cat Node),
+      mkArg "rightExpression" (.cat Node),
+      mkArg "operator" (.cat Str)]
+
+  mkOp q`SolidityLean.node "UnaryOperation"
+    #[mkArg "subExpression" (.cat Node),
+      mkArg "operator" (.cat Str),
+      mkArg "prefix" (.cat Str)]
+
+  mkOp q`SolidityLean.node "FunctionCall"
+    #[mkArg "expression" (.cat Node),
+      mkArg "arguments" (.cat (Seq Node)),
+      mkArg "kind" (.cat Str),
+      mkArg "names" (.cat (Seq Str))]
+
+  mkOp q`SolidityLean.node "Identifier"
+    #[mkArg "name" (.cat Str)]
+
+  mkOp q`SolidityLean.node "Literal"
+    #[mkArg "value" (.cat Str),
+      mkArg "kind" (.cat Str)]
+
+  mkOp q`SolidityLean.node "MemberAccess"
+    #[mkArg "expression" (.cat Node),
+      mkArg "memberName" (.cat Str)]
+
+  mkOp q`SolidityLean.node "IndexAccess"
+    #[mkArg "baseExpression" (.cat Node),
+      mkArg "indexExpression" (.cat OptNode)]
+
+  -- Ternary / tuple expressions
+  mkOp q`SolidityLean.node "Conditional"
+    #[mkArg "condition" (.cat Node),
+      mkArg "trueExpression" (.cat Node),
+      mkArg "falseExpression" (.cat Node)]
+
+  mkOp q`SolidityLean.node "TupleExpression"
+    #[mkArg "components" (.cat (Seq Node))]
+
+  -- Type conversion expressions
+  mkOp q`SolidityLean.node "ElementaryTypeNameExpression"
+    #[mkArg "typeName" (.cat Str)]
+
+  -- Structs
+  mkOp q`SolidityLean.node "StructDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "members" (.cat (Seq Node))]
+
+  -- Enums
+  mkOp q`SolidityLean.node "EnumDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "members" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "EnumValue"
+    #[mkArg "name" (.cat Str)]
+
+  -- Type names
+  mkOp q`SolidityLean.type_name "ElementaryTypeName"
+    #[mkArg "name" (.cat Str)]
+
+  mkOp q`SolidityLean.type_name "UserDefinedTypeName"
+    #[mkArg "name" (.cat Str)]
+
+  mkOp q`SolidityLean.type_name "MappingType"
+    #[mkArg "keyType" (.cat TypeName),
+      mkArg "valueType" (.cat TypeName)]
+
+  mkOp q`SolidityLean.type_name "ArrayTypeName"
+    #[mkArg "baseType" (.cat TypeName)]
 
 end Strata.Solidity
 end
