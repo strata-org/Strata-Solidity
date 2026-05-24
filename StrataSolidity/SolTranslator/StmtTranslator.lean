@@ -351,24 +351,27 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 let inRef := mkStmtExprMd (mkIdentifier s!"{name}_in")
                 some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, inRef]))
             framePosts ++ scalarFramePosts
-        -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
+        -- Always emit Body.Opaque. Upstream PR #1076 (Various Laurel resolver
+        -- improvements) disallows Body.Transparent procedures with the error
+        -- "transparent procedures are not yet supported. Add 'opaque' to make
+        -- the procedure opaque". When there are no postconditions, we still
+        -- use Body.Opaque with an empty postconds list — semantically a
+        -- procedure with no observable effect, which is what spec-less
+        -- functions deserve.
         -- Tag invariant postconditions with __strata_invariant wrapper for label generation
         let taggedInvariants := contractInvariants.map fun inv =>
           mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
         let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
-        if allPosts.isEmpty then
-          pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
-        else
-          -- Only include self in modifies list when contract has scalar (non-mapping) state vars
-          let modifiesList := if hasNonMappingState && !isConstructor then
-            [mkStmtExprMd (mkIdentifier "self")]
-          else []
-          let allPostsConds : List Condition :=
-            allPosts.map fun p => { condition := p, summary := none }
-          pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
-            modifiesList, contractInvariants)
+        -- Only include self in modifies list when contract has scalar (non-mapping) state vars
+        let modifiesList := if hasNonMappingState && !isConstructor then
+          [mkStmtExprMd (mkIdentifier "self")]
+        else []
+        let allPostsConds : List Condition :=
+          allPosts.map fun p => { condition := p, summary := none }
+        pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
+          modifiesList, contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++

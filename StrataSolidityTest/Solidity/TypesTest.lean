@@ -50,7 +50,7 @@ private def isGeqZero (e : StmtExprMd) (name : String) : Bool :=
   match e.val with
   | .PrimitiveOp .Geq [lhs, rhs] =>
     match lhs.val, rhs.val with
-    | .Identifier n, .LiteralInt 0 => n.text == name
+    | .Var (.Local n), .LiteralInt 0 => n.text == name
     | _, _ => false
   | _ => false
 
