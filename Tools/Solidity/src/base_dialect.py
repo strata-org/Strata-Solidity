@@ -130,6 +130,28 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("body", Sol.node()),
         Sol.node())
 
+    Sol.add_op("DoWhileStatement",
+        ArgDecl("condition", Sol.node()),
+        ArgDecl("body", Sol.node()),
+        Sol.node())
+
+    Sol.add_op("BreakStatement",
+        Sol.node())
+
+    Sol.add_op("ContinueStatement",
+        Sol.node())
+
+    Sol.add_op("TryStatement",
+        ArgDecl("externalCall", Sol.node()),
+        ArgDecl("clauses", Init.Seq(Sol.node())),
+        Sol.node())
+
+    Sol.add_op("TryCatchClause",
+        ArgDecl("errorName", Init.Str()),
+        ArgDecl("parameters", Sol.opt_node()),
+        ArgDecl("block", Sol.node()),
+        Sol.node())
+
     Sol.add_op("VariableDeclarationStatement",
         ArgDecl("declarations", Init.Seq(Sol.opt_node())),
         ArgDecl("initialValue", Sol.opt_node()),

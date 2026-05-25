@@ -142,7 +142,6 @@ class Converter:
         "StructuredDocumentation",
         "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
         "UsingForDirective",               # resolved by solc, no verification semantics
-        "TryStatement",      # try/catch is error handling — sound to skip (external call already nondeterministic)
     })
 
     def _seq_nodes(self, nodes) -> Seq:
@@ -175,6 +174,17 @@ class Converter:
         if isinstance(doc, dict):
             return doc.get("text", "")
         return ""
+
+    def _convert_catch_clause(self, clause: dict) -> strata.Operation:
+        """Convert a TryStatement catch clause to a TryCatchClause op."""
+        ann = self._source_range(clause)
+        error_name = clause.get("errorName", "")
+        params = clause.get("parameters")
+        block = clause.get("block")
+        return self.d.TryCatchClause(
+            self._str(error_name),
+            self._opt_node(params) if params else self.d.missing_node(),
+            self.convert_node(block), ann=ann)
 
     def convert_type_name(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
@@ -315,6 +325,23 @@ class Converter:
                 self._opt_node(node.get("condition")),
                 self._opt_node(node.get("loopExpression")),
                 self.convert_node(node["body"]), ann=ann)
+
+        if nt == "DoWhileStatement":
+            return self.d.DoWhileStatement(
+                self.convert_node(node["condition"]),
+                self.convert_node(node["body"]), ann=ann)
+
+        if nt == "Break":
+            return self.d.BreakStatement(ann=ann)
+
+        if nt == "Continue":
+            return self.d.ContinueStatement(ann=ann)
+
+        if nt == "TryStatement":
+            return self.d.TryStatement(
+                self.convert_node(node["externalCall"]),
+                Seq(tuple(self._convert_catch_clause(c) for c in node.get("clauses", []))),
+                ann=ann)
 
         if nt == "VariableDeclarationStatement":
             return self.d.VariableDeclarationStatement(
