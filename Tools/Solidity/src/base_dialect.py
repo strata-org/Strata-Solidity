@@ -58,6 +58,7 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("ContractDefinition",
         ArgDecl("name", Init.Str()),
         ArgDecl("contractKind", Init.Str()),
+        ArgDecl("abstract", Init.Str()),
         ArgDecl("nodes", Init.Seq(Sol.node())),
         ArgDecl("documentation", Init.Str()),
         ArgDecl("baseContracts", Init.Seq(Init.Str())),
@@ -86,6 +87,7 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("kind", Init.Str()),
         ArgDecl("stateMutability", Init.Str()),
         ArgDecl("visibility", Init.Str()),
+        ArgDecl("virtual", Init.Str()),
         ArgDecl("parameters", Sol.node()),
         ArgDecl("returnParameters", Sol.node()),
         ArgDecl("body", Sol.opt_node()),
@@ -102,6 +104,9 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("typeName", Sol.opt_type_name()),
         ArgDecl("stateVariable", Init.Str()),
         ArgDecl("constant", Init.Str()),
+        ArgDecl("mutability", Init.Str()),
+        ArgDecl("visibility", Init.Str()),
+        ArgDecl("indexed", Init.Str()),
         ArgDecl("storageLocation", Init.Str()),
         ArgDecl("value", Sol.opt_node()),
         ArgDecl("documentation", Init.Str()),
@@ -289,6 +294,12 @@ def gen_dialect() -> strata.Dialect:
 
     Sol.add_op("EnumValue",
         ArgDecl("name", Init.Str()),
+        Sol.node())
+
+    Sol.add_op("UsingForDirective",
+        ArgDecl("libraryName", Init.Str()),
+        ArgDecl("typeName", Sol.opt_type_name()),
+        ArgDecl("global", Init.Str()),
         Sol.node())
 
     # -- Type names --

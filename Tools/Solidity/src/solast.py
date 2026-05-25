@@ -155,7 +155,6 @@ class Converter:
     # silently dropped from sequences (e.g. NatSpec documentation).
     _SKIP_NODE_TYPES = frozenset({
         "StructuredDocumentation",
-        "UsingForDirective",               # resolved by solc, no verification semantics
     })
 
     def _seq_nodes(self, nodes) -> Seq:
@@ -279,6 +278,7 @@ class Converter:
             return self.d.ContractDefinition(
                 self._str(node.get("name")),
                 self._str(node.get("contractKind", "contract")),
+                self._bool_str(node.get("abstract", False)),
                 self._seq_nodes(node.get("nodes")),
                 self._str(self._doc_text(node)),
                 self._seq_strings(base_names), ann=ann)
@@ -309,6 +309,7 @@ class Converter:
                 self._str(node.get("kind", "function")),
                 self._str(node.get("stateMutability", "")),
                 self._str(node.get("visibility", "")),
+                self._bool_str(node.get("virtual", False)),
                 self.convert_node(node["parameters"]),
                 self.convert_node(node["returnParameters"]),
                 self._opt_node(node.get("body")),
@@ -325,6 +326,9 @@ class Converter:
                 self._opt_type_name(node.get("typeName")),
                 self._bool_str(node.get("stateVariable", False)),
                 self._bool_str(node.get("constant", False)),
+                self._str(node.get("mutability", "mutable")),
+                self._str(node.get("visibility", "")),
+                self._bool_str(node.get("indexed", False)),
                 self._str(node.get("storageLocation", "")),
                 self._opt_node(node.get("value")),
                 self._str(self._doc_text(node)), ann=ann)
@@ -503,6 +507,16 @@ class Converter:
         if nt == "EnumValue":
             return self.d.EnumValue(
                 self._str(node.get("name")), ann=ann)
+
+        if nt == "UsingForDirective":
+            lib_name = ""
+            lib_node = node.get("libraryName")
+            if lib_node and isinstance(lib_node, dict):
+                lib_name = lib_node.get("name", "")
+            return self.d.UsingForDirective(
+                self._str(lib_name),
+                self._opt_type_name(node.get("typeName")),
+                self._bool_str(node.get("global", False)), ann=ann)
 
         if nt == "InlineAssembly":
             # Serialize the Yul AST as a JSON string payload.
