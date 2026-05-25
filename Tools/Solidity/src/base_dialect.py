@@ -48,6 +48,13 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("literals", Init.Seq(Init.Str())),
         Sol.node())
 
+    Sol.add_op("ImportDirective",
+        ArgDecl("file", Init.Str()),
+        ArgDecl("absolutePath", Init.Str()),
+        ArgDecl("unitAlias", Init.Str()),
+        ArgDecl("symbolAliases", Init.Seq(Init.Str())),
+        Sol.node())
+
     Sol.add_op("ContractDefinition",
         ArgDecl("name", Init.Str()),
         ArgDecl("contractKind", Init.Str()),

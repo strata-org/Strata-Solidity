@@ -138,7 +138,6 @@ class Converter:
     # Node types that carry no verification semantics and should be
     # silently dropped from sequences (e.g. NatSpec documentation).
     _SKIP_NODE_TYPES = frozenset({
-        "ImportDirective",   # Imports resolved by solc, no verification semantics
         "StructuredDocumentation",
         "UsingForDirective",               # resolved by solc, no verification semantics
     })
@@ -242,6 +241,19 @@ class Converter:
         if nt == "PragmaDirective":
             return self.d.PragmaDirective(
                 self._seq_strings(node.get("literals")), ann=ann)
+
+        if nt == "ImportDirective":
+            # Encode symbolAliases as "foreign:local" strings
+            aliases = []
+            for sa in node.get("symbolAliases", []):
+                foreign = sa.get("foreign", {}).get("name", "")
+                local = sa.get("local") or ""
+                aliases.append(f"{foreign}:{local}" if local else foreign)
+            return self.d.ImportDirective(
+                self._str(node.get("file", "")),
+                self._str(node.get("absolutePath", "")),
+                self._str(node.get("unitAlias", "")),
+                self._seq_strings(aliases), ann=ann)
 
         if nt == "ContractDefinition":
             base_names = [
