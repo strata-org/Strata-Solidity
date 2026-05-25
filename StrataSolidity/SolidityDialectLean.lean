@@ -111,6 +111,12 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
   mkOp q`SolidityLean.node "PragmaDirective"
     #[mkArg "literals" (.cat (Seq Str))]
 
+  mkOp q`SolidityLean.node "ImportDirective"
+    #[mkArg "file" (.cat Str),
+      mkArg "absolutePath" (.cat Str),
+      mkArg "unitAlias" (.cat Str),
+      mkArg "symbolAliases" (.cat (Seq Str))]
+
   mkOp q`SolidityLean.node "ContractDefinition"
     #[mkArg "name" (.cat Str),
       mkArg "contractKind" (.cat Str),
