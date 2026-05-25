@@ -15,6 +15,22 @@ lean_lib StrataSolidityTest where globs := #[`StrataSolidityTest.+]
 @[default_target] lean_exe strataSolidity where root := `StrataSolidityMain
 
 /--
+Group A step 2: print a structural summary of the Lean-built Solidity DDM
+dialect (`StrataSolidity/SolidityDialectLean.lean`). One line per
+declaration, sorted by name, deterministic.
+
+Usage:
+  lake exe gen-dialect-summary
+  lake exe gen-dialect-summary > snapshots/lean-dialect.txt
+
+Diff two versions of the Lean dialect across a PR with:
+  diff -u snapshots/lean-dialect.txt <(lake exe gen-dialect-summary)
+
+See `StrataSolidity/DialectSummary.lean` for full rationale.
+-/
+lean_exe «gen-dialect-summary» where root := `StrataSolidity.DialectSummary
+
+/--
 Property 2: Pipeline determinism (REQ-PBT-002).
 
 Runs `StrataSolidityTest/Solidity/run_pbt_determinism.sh`, which invokes
