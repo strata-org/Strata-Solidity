@@ -237,6 +237,22 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
   mkOp q`SolidityLean.node "ElementaryTypeNameExpression"
     #[mkArg "typeName" (.cat Str)]
 
+  -- Events and errors
+  mkOp q`SolidityLean.node "EventDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "parameters" (.cat Node),
+      mkArg "anonymous" (.cat Str)]
+
+  mkOp q`SolidityLean.node "ErrorDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "parameters" (.cat Node)]
+
+  mkOp q`SolidityLean.node "EmitStatement"
+    #[mkArg "eventCall" (.cat Node)]
+
+  mkOp q`SolidityLean.node "RevertStatement"
+    #[mkArg "errorCall" (.cat Node)]
+
   -- Structs
   mkOp q`SolidityLean.node "StructDefinition"
     #[mkArg "name" (.cat Str),
