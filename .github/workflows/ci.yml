@@ -162,6 +162,24 @@ jobs:
       - name: test/run_tests.sh (golden + REQ-PBT-007)
         run: bash test/run_tests.sh
 
+      # ---- Group A step 3: Solidity dialect parity (Python ↔ Lean) ----
+      # Catches drift between Tools/Solidity/src/base_dialect.py (the Python
+      # source of truth, which generates the Ion artifact) and
+      # StrataSolidity/SolidityDialectLean.lean (the parallel Lean dialect
+      # introduced in PR #5).
+      #
+      # The two summaries must be byte-equal (after dropping the per-source
+      # provenance comment). Any drift — added/removed/renamed op, changed
+      # arg order — produces a non-empty diff and fails the build.
+      - name: dialect parity (Python ↔ Lean)
+        run: |
+          set -euo pipefail
+          python3 Tools/Solidity/src/print_dialect_summary.py \
+            | grep -v '^# Generated from' > /tmp/python-dialect.txt
+          lake exe gen-dialect-summary \
+            | grep -v '^# Generated from' > /tmp/lean-dialect.txt
+          diff -u /tmp/python-dialect.txt /tmp/lean-dialect.txt
+
       # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
       # bench/bench.sh itself is intentionally NOT run in CI: b6_erc20
       # routinely takes 10+ minutes locally, which is too slow for the
