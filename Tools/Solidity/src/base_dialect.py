@@ -204,6 +204,7 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("Literal",
         ArgDecl("value", Init.Str()),
         ArgDecl("kind", Init.Str()),
+        ArgDecl("subdenomination", Init.Str()),
         Sol.node())
 
     Sol.add_op("MemberAccess",
@@ -214,6 +215,16 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("IndexAccess",
         ArgDecl("baseExpression", Sol.node()),
         ArgDecl("indexExpression", Sol.opt_node()),
+        Sol.node())
+
+    Sol.add_op("IndexRangeAccess",
+        ArgDecl("baseExpression", Sol.node()),
+        ArgDecl("startExpression", Sol.opt_node()),
+        ArgDecl("endExpression", Sol.opt_node()),
+        Sol.node())
+
+    Sol.add_op("InlineArrayExpression",
+        ArgDecl("components", Init.Seq(Sol.node())),
         Sol.node())
 
     # -- Ternary / tuple expressions --

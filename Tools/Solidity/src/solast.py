@@ -262,7 +262,7 @@ class Converter:
         if nt == "PlaceholderStatement":
             # The `_;` in modifier bodies — skip it (handled structurally)
             return self.d.ExpressionStatement(
-                self.d.Literal(self._str("_"), self._str("string"), ann=ann), ann=ann)
+                self.d.Literal(self._str("_"), self._str("string"), self._str(""), ann=ann), ann=ann)
 
         if nt == "FunctionDefinition":
             modifiers = node.get("modifiers", [])
@@ -386,7 +386,8 @@ class Converter:
         if nt == "Literal":
             return self.d.Literal(
                 self._str(node.get("value", "")),
-                self._str(node.get("kind", "number")), ann=ann)
+                self._str(node.get("kind", "number")),
+                self._str(node.get("subdenomination", "")), ann=ann)
 
         if nt == "MemberAccess":
             return self.d.MemberAccess(
@@ -399,8 +400,14 @@ class Converter:
                 self._opt_node(node.get("indexExpression")), ann=ann)
 
         if nt == "IndexRangeAccess":
-            # Array slices x[start:end] — rare, model as nondeterministic
-            return self.d.Literal(self._str("0"), self._str("number"), ann=ann)
+            return self.d.IndexRangeAccess(
+                self.convert_node(node["baseExpression"]),
+                self._opt_node(node.get("startExpression")),
+                self._opt_node(node.get("endExpression")), ann=ann)
+
+        if nt == "InlineArrayExpression":
+            return self.d.InlineArrayExpression(
+                self._seq_nodes(node.get("components", [])), ann=ann)
 
         if nt == "ElementaryTypeNameExpression":
             # Type conversion expression, e.g. address(0).
