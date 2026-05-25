@@ -252,11 +252,11 @@ where
     | "(" :: rest =>
       -- Function call: base(arg1, arg2, ...) or obj.method(arg1, ...)
       let fname := match base.val with
-        | .Identifier name => name.text
-        | .FieldSelect obj field =>
+        | .Var (.Local name) => name.text
+        | .Var (.Field obj field) =>
           -- obj.method → "obj_method" for Strata builtins (abi.encodePacked → abi_encodePacked)
           match obj.val with
-          | .Identifier objName => s!"{objName.text}_{field.text}"
+          | .Var (.Local objName) => s!"{objName.text}_{field.text}"
           | _ => s!"__unknown_{field.text}"
         | _ => "__unknown_call"
       let (args, rest') ← parseArgList rest
@@ -264,7 +264,7 @@ where
       -- Dispatch sum(mapping) → sum_<mapping>(mapping)
       let fname' := if fname == "sum" && args.length == 1 then
         match args.head?.map (·.val) with
-        | some (.Identifier name) => s!"sum_{name.text}"
+        | some (.Var (.Local name)) => s!"sum_{name.text}"
         | _ => fname
       else if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
         s!"{fname}2"
@@ -275,10 +275,11 @@ where
       if member == "length" then
         -- x.length → Identifier "x_length" (for arrays)
         match base.val with
-        | .Identifier name => parsePostfixTail (mkStmtExprMd (.Identifier s!"{name}_length")) rest
+        | .Var (.Local name) =>
+          parsePostfixTail (mkStmtExprMd (mkIdentifier s!"{name.text}_length")) rest
         | _ => throw (.typeError "length access on non-identifier")
       else
-        parsePostfixTail (mkStmtExprMd (.FieldSelect base ⟨member, none⟩)) rest
+        parsePostfixTail (mkStmtExprMd (mkFieldSelect base member)) rest
     | _ => return (base, tokens)
 
   parseAtom (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -306,9 +307,9 @@ where
       | ")" :: rest'' => return (inner, rest'')
       | _ => throw (.typeError "Expected ')' after address(")
     | "msg" :: "." :: "sender" :: rest =>
-      return (mkStmtExprMd (.Identifier "msg_sender"), rest)
+      return (mkStmtExprMd (mkIdentifier "msg_sender"), rest)
     | "msg" :: "." :: "value" :: rest =>
-      return (mkStmtExprMd (.Identifier "msg_value"), rest)
+      return (mkStmtExprMd (mkIdentifier "msg_value"), rest)
     | "type" :: "(" :: typeName :: ")" :: "." :: member :: rest =>
       match typeMinMax typeName member with
       | some v => return (mkStmtExprMd (.LiteralInt v), rest)
@@ -317,12 +318,12 @@ where
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
-      return (mkStmtExprMd (.Forall param body), rest')
+      return (mkStmtExprMd (mkForall param body), rest')
     | "exists" :: varName :: ":" :: typeName :: "::" :: rest =>
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
-      return (mkStmtExprMd (.Exists param body), rest')
+      return (mkStmtExprMd (mkExists param body), rest')
     | tok :: rest =>
       if isDigitStr tok then
         match tok.toNat? with
@@ -330,7 +331,7 @@ where
         | none => throw (.typeError s!"Invalid integer literal: {tok}")
       else match parseSciNotation tok with
         | some n => return (mkStmtExprMd (.LiteralInt n), rest)
-        | none => return (mkStmtExprMd (.Identifier tok), rest)
+        | none => return (mkStmtExprMd (mkIdentifier tok), rest)
 
 end SpecParser
 

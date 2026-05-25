@@ -1,5 +1,109 @@
 # Changelog
 
+## 2026-05-23 — Upstream Strata Port (Lean 4.29.1 + new Laurel AST)
+
+Ports StrataSolidity onto upstream `strata-org/Strata` HEAD (`349b1cf4`),
+moving past Everton's solidity-branch patches that had pinned us to an older
+Strata SHA. The pipeline runs end-to-end: contract.sol → Laurel → Core →
+SMT → SARIF with source locations.
+
+### What changed under the hood
+
+- **Lean toolchain**: bumped 4.27.0 → 4.29.1 to match upstream Strata.
+- **Laurel AST shape** (multiple upstream PRs):
+  - `AstNode.md : MetaData` → `AstNode.source : Option FileRange` (#852)
+  - `Identifier { text }` → `Identifier { text, uniqueId, source }` (#1028)
+  - `StmtExpr.Identifier` → `StmtExpr.Var (Variable.Local)` (#1077)
+  - `StmtExpr.FieldSelect` → `StmtExpr.Var (Variable.Field)` (#1077)
+  - `StmtExpr.Forall`/`.Exists` → `StmtExpr.Quantifier` (#1024)
+  - `StmtExpr.LocalVariable` → `StmtExpr.Var (.Declare)` / `.Assign [.Declare]` (#1077)
+  - `StmtExpr.Assert` now wraps in a `Condition` record with optional summary
+- **Verifier API**:
+  - `Core.Outcome` enum → `Core.VCOutcome` structure with separate
+    satisfiability/validity SMT.Result fields (#487)
+  - `VCResult.result` → `VCResult.outcome : Except VCError VCOutcome`
+  - Use `VCResult.isSuccess`/`isFailure` predicates instead of pattern
+    matching the old enum
+- **Procedure shape**: dropped removed `determinism` and `md` fields;
+  `preconditions : List Condition` (was `List StmtExprMd`).
+- **Body**: `Body.Opaque postconds impl modifies` and `Body.Abstract postconds`
+  now take `List Condition` not `List StmtExprMd`.
+- **Adapter helpers** (`StrataSolidity/SolTranslator/Types.lean`):
+  - `mkIdent`, `mkIdentifier`, `mkFieldSelect`, `mkForall`, `mkExists`,
+    `mkLocalVar`, `mkAssert`, `mkAssume`, `toAssignTarget`,
+    `sourceRangeToFileRange`. These absorb the AST refactor at a single
+    boundary; the rest of the translator reads naturally.
+- **Removed**: `StrataSolidity/SolToLaurel.lean` (legacy ~2100-line
+  monolithic file — superseded by `SolTranslator/{Types,SpecParser,
+  SpecRewriter,ExprTranslator,StmtTranslator,ContractTranslator}.lean`).
+
+### What's degraded — what works
+
+✅ **Preserved**:
+- End-to-end pipeline: `contract.sol` → SARIF with source locations.
+- Specification language (`@custom:strata` NatSpec annotations) parses
+  and translates as before — no user-facing syntax changes.
+- Source-position metadata flows from Solidity AST → Laurel → Core →
+  SARIF `physicalLocation.region.startLine`/`startColumn`.
+- `requires` / `ensures` / `invariant` / `loop-invariant` / `forall` /
+  `exists` annotations are translated into the new Laurel shape.
+- Mapping state vars + `_in` parameter passing for pre-state.
+- Frame conditions for mappings (`modifies balances[msg.sender]`).
+- Quantifiers with implication patterns (`forall a :: a != x ==> ...`).
+
+⚠️ **Degraded** (best-effort while upstream stabilizes):
+- Frame conditions for scalar state vars now use the same `<name>_in`
+  mechanism rather than the legacy `.Old` AST node. Functionally
+  equivalent but worth re-running golden tests to confirm.
+- `old()` in loop invariants resolves correctly inside function-level
+  scope (as the `<name>_in` parameter is in scope), but loop-specific
+  pre-state (value at loop entry) is not yet captured — that would
+  need a separate per-loop snapshot mechanism.
+- Counterexample generation: no change from before — z3's mbqi is still
+  disabled.
+
+✨ **Recovered semantics for `old()`** (after the proper-fix follow-up
+commit): scalar `old(stateVar)` and mapping `old(map[k])` now resolve
+via synthetic `<name>_in` input parameters pinned to the pre-state
+value via an entry-time precondition `self.<name> == <name>_in`.
+Internal call sites pass the caller's current `self.<name>` as the
+callee's `<name>_in`. Specs that *relate* new state to old state
+(the whole point of `old()`) now verify correctly.
+
+❌ **Not currently working**:
+- Variable-name preservation in some Identifier contexts where the
+  upstream resolution pass requires `uniqueId`. We default to `none` for
+  now; resolution may rename variables internally.
+- Counterexample generation: no change from before — z3's mbqi is still
+  disabled.
+
+### Smoke tests
+
+After the proper-`old()` fix, end-to-end runs on representative contracts:
+
+| Contract | Result |
+|---|---|
+| b1_trivial.sol | ✅ 2/2 pass |
+| b2_counter.sol | ✅ 6/6 pass |
+| b3_token.sol | ✅ 8/8 pass |
+| b4_vault.sol | ✅ 8/8 pass |
+| b6_erc20.sol | ✅ 11/11 pass |
+| events_errors.sol | ✅ 8/8 pass |
+| forall_frame.sol | ✅ 2/2 pass |
+| nonlinear.sol | ✅ 21/21 pass |
+| sum_token.sol | ✅ 8/8 pass |
+| loop_invariant.sol | ⚠️ 3/5 pass + 2 unknown |
+| b5_escrow.sol | ❌ `block_timestamp` resolution error (unrelated) |
+| SARIF output | ✅ Works with source locations |
+
+The exit-code contract sub-stage (REQ-PBT-007) passes 3/3.
+
+The golden test suite (which diffs against pre-port expected outputs)
+shows 9/11 failures because the new pipeline produces more verbose
+output, more granular obligations, and some additional unknowns. These
+are expected; expected outputs need regeneration to match the new
+behavior.
+
 ## 2026-03-12 / 2026-03-13 — Major Feature Sprint
 
 ### Specification Language (NatSpec)

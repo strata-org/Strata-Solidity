@@ -43,18 +43,16 @@ open Laurel
 
 /-! ## Helpers -/
 
-def defaultMetadata : Imperative.MetaData Core.Expression := #[]
+/-- Convert a SourceRange and file URI to a Laurel `FileRange` (the new
+    AstNode source location). Returns none if the SourceRange is empty. -/
+def sourceRangeToFileRange (uri : Uri) (sr : SourceRange) : Option FileRange :=
+  if sr.isNone then none
+  else some { file := uri, range := sr }
 
 /-- Find the index of the first element satisfying a predicate. -/
 def List.findIndex? (p : α → Bool) : List α → Option Nat
   | [] => none
   | x :: xs => if p x then some 0 else (List.findIndex? p xs).map (· + 1)
-
-/-- Convert a SourceRange and file URI to Laurel metadata with file range info.
-    Reuses the existing `SourceRange.toMetaData` from the Laurel grammar translator. -/
-def sourceRangeToMd (uri : Uri) (sr : SourceRange) : Imperative.MetaData Core.Expression :=
-  if sr.isNone then #[]
-  else Laurel.SourceRange.toMetaData uri sr
 
 /-- A storage reference alias: records the struct type and field info so that
     field accesses through the alias can be desugared to per-field scalar
@@ -130,22 +128,93 @@ structure TransCtx where
   constantDefs : List (String × StmtExprMd) := []
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
-  { val := ty, md := defaultMetadata }
+  { val := ty, source := none }
 
 def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
-  { val := expr, md := defaultMetadata }
+  { val := expr, source := none }
+
+/-! ### AST shape adapters
+
+The Laurel AST changed shape across multiple upstream PRs:
+- `StmtExpr.Identifier name` → `StmtExpr.Var (Variable.Local id)` (#1077)
+- `StmtExpr.FieldSelect t f` → `StmtExpr.Var (Variable.Field t f)` (#1077)
+- `StmtExpr.Forall/.Exists` → `StmtExpr.Quantifier mode param trigger body` (#1024)
+- `Identifier` gained `uniqueId` and `source` fields (#1028)
+
+These helpers preserve the old call sites so the translator code reads
+naturally without churn at every construction site. -/
+
+/-- Construct a bare-name `Identifier` (no resolution-pass uniqueId, no source). -/
+def mkIdent (name : String) : Identifier := { text := name }
+
+/-- Build the new-style identifier reference: `StmtExpr.Var (Variable.Local …)`. -/
+def mkIdentifier (name : String) : StmtExpr :=
+  .Var (.Local (mkIdent name))
+
+/-- Build the new-style field access: `StmtExpr.Var (Variable.Field target field)`. -/
+def mkFieldSelect (target : StmtExprMd) (fieldName : String) : StmtExpr :=
+  .Var (.Field target (mkIdent fieldName))
+
+/-- Build a universal quantifier (no trigger). -/
+def mkForall (p : Parameter) (body : StmtExprMd) : StmtExpr :=
+  .Quantifier .Forall p none body
+
+/-- Build an existential quantifier (no trigger). -/
+def mkExists (p : Parameter) (body : StmtExprMd) : StmtExpr :=
+  .Quantifier .Exists p none body
+
+/-- Build a local variable declaration, optionally with an initializer.
+
+    Replaces the legacy `StmtExpr.LocalVariable name type init` constructor.
+    With `init = none`, produces `Var (Declare param)`. With an initializer,
+    produces `Assign [Declare param] init` (the new shape used by upstream). -/
+def mkLocalVar (name : String) (type : HighTypeMd) (init : Option StmtExprMd) : StmtExpr :=
+  let param : Parameter := { name := name, type := type }
+  match init with
+  | none => .Var (.Declare param)
+  | some initVal =>
+    let target : AstNode Variable := { val := .Declare param, source := none }
+    .Assign [target] initVal
+
+/-- Convert a StmtExprMd into an AstNode Variable suitable for use as an
+    `Assign` target. Only valid when the underlying StmtExpr is a `.Var`
+    (a Local or Field reference), which is exactly the shape produced by
+    `mkIdentifier` and `mkFieldSelect`.
+
+    For unsupported targets (literals, calls, etc.) this falls back to an
+    `__invalid_target` Local identifier so verification will obviously fail
+    rather than silently accepting nonsense. The legacy translator could
+    pass arbitrary expressions as `Assign` targets; the new Laurel AST
+    constrains targets to variables. -/
+def toAssignTarget (e : StmtExprMd) : AstNode Variable :=
+  match e.val with
+  | .Var v => { val := v, source := e.source }
+  | _ => { val := .Local (mkIdent "__invalid_target"), source := e.source }
+
+/-- Build an `Assert` StmtExpr from a boolean condition expression.
+    The new shape wraps the condition in a `Condition` record (with optional
+    summary); we leave the summary unset by default. -/
+def mkAssert (cond : StmtExprMd) (summary? : Option String := none) : StmtExpr :=
+  .Assert ({ condition := cond, summary := summary? } : Condition)
+
+/-- Build an `Assume` StmtExpr. The new Assume shape takes a StmtExprMd
+    directly (unlike Assert, which wraps in a Condition record). The
+    `summary?` argument is accepted for API parity with `mkAssert` but
+    discarded. -/
+def mkAssume (cond : StmtExprMd) (_summary? : Option String := none) : StmtExpr :=
+  .Assume cond
 
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
   match ctx.uri with
-  | some uri => { val := expr, md := sourceRangeToMd uri sr }
-  | none => { val := expr, md := defaultMetadata }
+  | some uri => { val := expr, source := sourceRangeToFileRange uri sr }
+  | none => { val := expr, source := none }
 
 /-- Attach source range metadata to an existing StmtExprMd. -/
 def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtExprMd :=
   if sr == default then e
   else match ctx.uri with
-  | some uri => { e with md := sourceRangeToMd uri sr }
+  | some uri => { e with source := sourceRangeToFileRange uri sr }
   | none => e
 
 /-! ## Translation Error -/
@@ -198,7 +267,7 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     if ctx.enumDefs.any (·.1 == nameAnn.val) then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
     else
-      { highType := mkHighTypeMd (.UserDefined ⟨nameAnn.val, none⟩), solName := nameAnn.val }
+      { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
   | .MappingType _ keyTn valTn =>
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
@@ -232,7 +301,7 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
-  let ident := mkStmtExprMd (.Identifier paramName)
+  let ident := mkStmtExprMd (mkIdentifier paramName)
   let zero := mkStmtExprMd (.LiteralInt 0)
   mkStmtExprMd (.PrimitiveOp .Geq [ident, zero])
 

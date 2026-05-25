@@ -271,7 +271,7 @@ private partial def stmtExprStructEq (a b : StmtExprMd) : Bool :=
   match a.val, b.val with
   | .LiteralInt x, .LiteralInt y => x == y
   | .LiteralBool x, .LiteralBool y => x == y
-  | .Identifier x, .Identifier y => x.text == y.text
+  | .Var (.Local x), .Var (.Local y) => x.text == y.text
   | .PrimitiveOp op1 args1, .PrimitiveOp op2 args2 =>
       opEq op1 op2 &&
       args1.length == args2.length &&
@@ -280,13 +280,13 @@ private partial def stmtExprStructEq (a b : StmtExprMd) : Bool :=
       c1.text == c2.text &&
       args1.length == args2.length &&
       (args1.zip args2).all (fun (x, y) => stmtExprStructEq x y)
-  | .FieldSelect b1 f1, .FieldSelect b2 f2 =>
+  | .Var (.Field b1 f1), .Var (.Field b2 f2) =>
       f1.text == f2.text && stmtExprStructEq b1 b2
-  | .Forall p1 body1, .Forall p2 body2 =>
+  | .Quantifier .Forall p1 _ body1, .Quantifier .Forall p2 _ body2 =>
       p1.name.text == p2.name.text &&
       highTypeStructEq p1.type.val p2.type.val &&
       stmtExprStructEq body1 body2
-  | .Exists p1 body1, .Exists p2 body2 =>
+  | .Quantifier .Exists p1 _ body1, .Quantifier .Exists p2 _ body2 =>
       p1.name.text == p2.name.text &&
       highTypeStructEq p1.type.val p2.type.val &&
       stmtExprStructEq body1 body2
@@ -338,7 +338,7 @@ private partial def canonicalSerialize (e : StmtExprMd) : String :=
       if n ≥ 0 then toString n else s!"(0 - {toString (-n)})"
   | .LiteralBool true => "true"
   | .LiteralBool false => "false"
-  | .Identifier name => name.text
+  | .Var (.Local name) => name.text
   | .PrimitiveOp op [lhs, rhs] =>
       match opToken op with
       | some t => s!"({canonicalSerialize lhs} {t} {canonicalSerialize rhs})"
@@ -355,10 +355,10 @@ private partial def canonicalSerialize (e : StmtExprMd) : String :=
       else
         let argStr := String.intercalate ", " (args.map canonicalSerialize)
         s!"{callee.text}({argStr})"
-  | .FieldSelect base field => s!"({canonicalSerialize base}.{field.text})"
-  | .Forall param body =>
+  | .Var (.Field base field) => s!"({canonicalSerialize base}.{field.text})"
+  | .Quantifier .Forall param _ body =>
       s!"(forall {param.name.text} : {canonicalTypeName param.type.val} :: {canonicalSerialize body})"
-  | .Exists param body =>
+  | .Quantifier .Exists param _ body =>
       s!"(exists {param.name.text} : {canonicalTypeName param.type.val} :: {canonicalSerialize body})"
   | _ => "__unsupported_node"
 

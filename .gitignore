@@ -8,5 +8,6 @@ build.log
 __pycache__/
 *.solidity.st.ion
 .DS_Store
-
 notes/
+.kiro/settings/
+.kiro/specs/pipeline-language-rationalization/

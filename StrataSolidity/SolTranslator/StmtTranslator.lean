@@ -15,9 +15,9 @@ open Laurel
 partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : StmtExprMd :=
   let rewrite (e : StmtExprMd) := rewriteParamRefs paramNames e
   match expr.val with
-  | .Identifier name =>
+  | .Var (.Local name) =>
     if paramNames.contains name.text then
-      { expr with val := .Identifier s!"{name.text}_param" }
+      { expr with val := mkIdentifier s!"{name.text}_param" }
     else expr
   | .PrimitiveOp op args =>
     { expr with val := .PrimitiveOp op (args.map rewrite) }
@@ -25,17 +25,17 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
     { expr with val := .StaticCall callee (args.map rewrite) }
   | .Old value =>
     { expr with val := .Old (rewrite value) }
-  | .FieldSelect target fieldName =>
-    { expr with val := .FieldSelect (rewrite target) fieldName }
+  | .Var (.Field target fieldName) =>
+    { expr with val := mkFieldSelect (rewrite target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
     { expr with val := .IfThenElse (rewrite cond) (rewrite thenBr) (elseBr.map rewrite) }
-  | .Forall param body =>
+  | .Quantifier .Forall param _ body =>
     -- Don't rewrite the bound variable if it shadows a parameter name
     let shadowed := paramNames.filter (· != param.name.text)
-    { expr with val := .Forall param (rewriteParamRefs shadowed body) }
-  | .Exists param body =>
+    { expr with val := mkForall param (rewriteParamRefs shadowed body) }
+  | .Quantifier .Exists param _ body =>
     let shadowed := paramNames.filter (· != param.name.text)
-    { expr with val := .Exists param (rewriteParamRefs shadowed body) }
+    { expr with val := mkExists param (rewriteParamRefs shadowed body) }
   | _ => expr
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
@@ -64,11 +64,25 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let hasNonMappingState := !nonMappingStateVars.isEmpty
     if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
-                              type := mkHighTypeMd (.UserDefined ⟨ctx.contractName, none⟩) }]
+                              type := mkHighTypeMd (.UserDefined (mkIdent ctx.contractName)) }]
       -- Assert non-negativity for uint scalar state vars (Solidity uints are always >= 0)
       for name in nonMappingStateVars do
-        let fieldExpr := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
+        let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
         preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
+      -- Synthetic pre-state input parameters for scalar state vars.
+      -- For each scalar field, add `<name>_in : <type>` and a precondition
+      -- `self.<name> == <name>_in` so that `<name>_in` carries the pre-state
+      -- value of the field. Spec rewriter resolves `old(<name>)` to
+      -- `<name>_in` (see SpecRewriter.rewriteStateVarRefs).
+      for field in ctx.contractFields do
+        if !ctx.mappingStateVars.contains field.name.text then
+          let inName := s!"{field.name.text}_in"
+          inputs := inputs ++ [{ name := inName, type := field.type }]
+          let selfField := mkStmtExprMd
+            (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) field.name.text)
+          let inRef := mkStmtExprMd (mkIdentifier inName)
+          preconditions := preconditions ++
+            [mkStmtExprMd (.PrimitiveOp .Eq [selfField, inRef])]
 
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
@@ -76,7 +90,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
       -- msg.sender is always > 0 (zero address cannot send transactions)
       preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Gt [
-        mkStmtExprMd (.Identifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
+        mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
       inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
       preconditions := preconditions ++ [mkNonNegPrecond "msg_value"]
 
@@ -233,30 +247,26 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let mut preamble : List StmtExprMd := []
         -- 1. Local copies of user-provided parameters (Solidity params are mutable)
         for (name, ty) in userParamInfo do
-          preamble := preamble ++ [mkStmtExprMd (.LocalVariable name ty
-            (some (mkStmtExprMd (.Identifier ((s!"{name}_param" : String) : Identifier)))))]
+          preamble := preamble ++ [mkStmtExprMd (mkLocalVar name ty
+            (some (mkStmtExprMd (mkIdentifier s!"{name}_param"))))]
         -- 2. Constructor default storage initialization (Solidity zero-inits all state)
         if isConstructor then
           for field in ctx.contractFields do
             let defaultVal := defaultValueForType field.type
-            preamble := preamble ++ [mkStmtExprMd (.Assign
-              [mkStmtExprMd (.Identifier (field.name.text : Identifier))]
+            preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier field.name.text))]
               defaultVal)]
             -- For array state vars, also initialize length to 0
             if ctx.arrayStateVars.contains field.name.text then
-              preamble := preamble ++ [mkStmtExprMd (.Assign
-                [mkStmtExprMd (.Identifier ((s!"{field.name.text}_length" : String) : Identifier))]
+              preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{field.name.text}_length"))]
                 (mkStmtExprMd (.LiteralInt 0)))]
         -- 3. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           for name in ctx.mappingStateVars do
-            preamble := preamble ++ [mkStmtExprMd (.Assign
-              [mkStmtExprMd (.Identifier (name : Identifier))]
-              (mkStmtExprMd (.Identifier ((s!"{name}_in" : String) : Identifier))))]
+            preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
+              (mkStmtExprMd (mkIdentifier s!"{name}_in")))]
             if ctx.arrayStateVars.contains name then
-              preamble := preamble ++ [mkStmtExprMd (.Assign
-                [mkStmtExprMd (.Identifier ((s!"{name}_length" : String) : Identifier))]
-                (mkStmtExprMd (.Identifier ((s!"{name}_length_in" : String) : Identifier))))]
+              preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
+                (mkStmtExprMd (mkIdentifier s!"{name}_length_in")))]
         let bodyExpr := if preamble.isEmpty then b
           else mkStmtExprMd (.Block (preamble ++ [b]) none)
         -- Translate contract invariant nodes once in this function's body context,
@@ -295,8 +305,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               if entries.isEmpty then
                 -- Not in modifies list: full frame (var == var_in)
                 some (mkStmtExprMd (.PrimitiveOp .Eq [
-                  mkStmtExprMd (.Identifier name),
-                  mkStmtExprMd (.Identifier (name ++ "_in"))]))
+                  mkStmtExprMd (mkIdentifier name),
+                  mkStmtExprMd (mkIdentifier (name ++ "_in"))]))
               else if entries.any fun (_, k) => k.isNone then
                 none  -- Whole-mapping modified (at least one entry has no key), no frame
               else
@@ -308,7 +318,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                   | .error _ => none
                 if parsedKeys.isEmpty then none
                 else
-                  let kVar := mkStmtExprMd (.Identifier "__k")
+                  let kVar := mkStmtExprMd (mkIdentifier "__k")
                   let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }
                   -- __k != key1 && __k != key2 && ...
                   let neqs := parsedKeys.map fun keyExpr =>
@@ -319,11 +329,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                         if acc.val matches .LiteralBool true then neq
                         else mkStmtExprMd (.PrimitiveOp .And [acc, neq]))
                       (mkStmtExprMd (.LiteralBool true))
-                  let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier name), kVar])
-                  let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (.Identifier (name ++ "_in")), kVar])
+                  let lhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (mkIdentifier name), kVar])
+                  let rhs := mkStmtExprMd (.StaticCall "select" [mkStmtExprMd (mkIdentifier (name ++ "_in")), kVar])
                   let eq := mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs])
                   let body := mkStmtExprMd (.PrimitiveOp .Implies [guard, eq])
-                  some (mkStmtExprMd (.Forall kParam body))
+                  some (mkStmtExprMd (mkForall kParam body))
             -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
             -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
             -- not other fields of self. We need explicit field-level framing.
@@ -331,29 +341,37 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               if ctx.mappingStateVars.contains name then none  -- handled above
               else if modifiedBaseNames.contains name then none  -- declared as modified
               else
-                -- scalar not modified: self#name == old(self#name)
-                -- Generate in already-rewritten form (post rewriteStateVarRefs)
-                let selfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
-                let oldSelfField := mkStmtExprMd (.FieldSelect (mkStmtExprMd (.Identifier "self")) name)
-                let oldWrapped := mkStmtExprMd (.Old oldSelfField)
-                some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, oldWrapped]))
+                -- scalar not modified: self#name == <name>_in
+                -- The pre-state value lives in the synthetic <name>_in input
+                -- parameter (added by this same function above), pinned to
+                -- self.<name> at entry. This avoids emitting a .Old AST node
+                -- which the upstream Laurel→Core translator does not handle.
+                let selfField := mkStmtExprMd
+                  (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
+                let inRef := mkStmtExprMd (mkIdentifier s!"{name}_in")
+                some (mkStmtExprMd (.PrimitiveOp .Eq [selfField, inRef]))
             framePosts ++ scalarFramePosts
-        -- If postconditions are present, use Body.Opaque; otherwise Body.Transparent
+        -- Always emit Body.Opaque. Upstream PR #1076 (Various Laurel resolver
+        -- improvements) disallows Body.Transparent procedures with the error
+        -- "transparent procedures are not yet supported. Add 'opaque' to make
+        -- the procedure opaque". When there are no postconditions, we still
+        -- use Body.Opaque with an empty postconds list — semantically a
+        -- procedure with no observable effect, which is what spec-less
+        -- functions deserve.
         -- Tag invariant postconditions with __strata_invariant wrapper for label generation
         let taggedInvariants := contractInvariants.map fun inv =>
           mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
         let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
-        if allPosts.isEmpty then
-          pure (specPreExprs, [], Body.Transparent bodyExpr, contractInvariants)
-        else
-          -- Only include self in modifies list when contract has scalar (non-mapping) state vars
-          let modifiesList := if hasNonMappingState && !isConstructor then
-            [mkStmtExprMd (.Identifier "self")]
-          else []
-          pure (specPreExprs, allPosts, Body.Opaque allPosts (some bodyExpr)
-            modifiesList, contractInvariants)
+        -- Only include self in modifies list when contract has scalar (non-mapping) state vars
+        let modifiesList := if hasNonMappingState && !isConstructor then
+          [mkStmtExprMd (mkIdentifier "self")]
+        else []
+        let allPostsConds : List Condition :=
+          allPosts.map fun p => { condition := p, summary := none }
+        pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
+          modifiesList, contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++
@@ -361,8 +379,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
         let contractInvariants := if isPure || isView then []
           else ctx.contractInvariantNatspec.map rewriteSV
+        let invariantsAsConds : List Condition :=
+          contractInvariants.map fun p => { condition := p, summary := none }
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
-          else .Abstract contractInvariants, contractInvariants)
+          else .Abstract invariantsAsConds, contractInvariants)
 
     -- Reuse the already-translated contract invariants for preconditions.
     -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
@@ -388,18 +408,18 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
     let sumAxioms := if isPure || isView then [] else ctx.mappingStateVars.map fun name =>
       let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
-      let mVar := mkStmtExprMd (.Identifier "m")
-      let kVar := mkStmtExprMd (.Identifier "k")
-      let vVar := mkStmtExprMd (.Identifier "v")
+      let mVar := mkStmtExprMd (mkIdentifier "m")
+      let kVar := mkStmtExprMd (mkIdentifier "k")
+      let vVar := mkStmtExprMd (mkIdentifier "v")
       let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
       let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])
       let sumM := mkStmtExprMd (.StaticCall s!"sum_{name}" [mVar])
       let selMK := mkStmtExprMd (.StaticCall "select" [mVar, kVar])
       let rhs := mkStmtExprMd (.PrimitiveOp .Add [
         mkStmtExprMd (.PrimitiveOp .Sub [sumM, selMK]), vVar])
-      mkStmtExprMd (.Forall { name := "m", type := mapType }
-        (mkStmtExprMd (.Forall { name := "k", type := mkHighTypeMd .TInt }
-          (mkStmtExprMd (.Forall { name := "v", type := mkHighTypeMd .TInt }
+      mkStmtExprMd (mkForall { name := "m", type := mapType }
+        (mkStmtExprMd (mkForall { name := "k", type := mkHighTypeMd .TInt }
+          (mkStmtExprMd (mkForall { name := "v", type := mkHighTypeMd .TInt }
             (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
 
     let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres ++ sumAxioms
@@ -407,16 +427,18 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let allPreconditions := allPreconditions.foldl (fun acc p =>
       if acc.any (fun q => toString (repr p.val) == toString (repr q.val)) then acc else acc ++ [p]) []
 
+    -- Wrap preconditions in Condition records (new Laurel shape requires this).
+    let allPreconditionConds : List Condition :=
+      allPreconditions.map fun p => { condition := p, summary := none }
+
     return {
       name := funcName
       inputs := inputs
       outputs := outputs
-      preconditions := allPreconditions
-      determinism := .deterministic none
+      preconditions := allPreconditionConds
       decreases := none
       isFunctional := false
       body := body
-      md := default
     }
   | _ => throw (.internalError "Expected FunctionDefinition")
 
