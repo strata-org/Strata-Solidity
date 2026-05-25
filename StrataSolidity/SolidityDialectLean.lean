@@ -226,6 +226,14 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
       mkArg "kind" (.cat Str),
       mkArg "names" (.cat (Seq Str))]
 
+  mkOp q`SolidityLean.node "FunctionCallOptions"
+    #[mkArg "expression" (.cat Node),
+      mkArg "names" (.cat (Seq Str)),
+      mkArg "options" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "NewExpression"
+    #[mkArg "typeName" (.cat TypeName)]
+
   mkOp q`SolidityLean.node "Identifier"
     #[mkArg "name" (.cat Str)]
 
