@@ -239,7 +239,8 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
 
   mkOp q`SolidityLean.node "Literal"
     #[mkArg "value" (.cat Str),
-      mkArg "kind" (.cat Str)]
+      mkArg "kind" (.cat Str),
+      mkArg "subdenomination" (.cat Str)]
 
   mkOp q`SolidityLean.node "MemberAccess"
     #[mkArg "expression" (.cat Node),
@@ -248,6 +249,14 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
   mkOp q`SolidityLean.node "IndexAccess"
     #[mkArg "baseExpression" (.cat Node),
       mkArg "indexExpression" (.cat OptNode)]
+
+  mkOp q`SolidityLean.node "IndexRangeAccess"
+    #[mkArg "baseExpression" (.cat Node),
+      mkArg "startExpression" (.cat OptNode),
+      mkArg "endExpression" (.cat OptNode)]
+
+  mkOp q`SolidityLean.node "InlineArrayExpression"
+    #[mkArg "components" (.cat (Seq Node))]
 
   -- Ternary / tuple expressions
   mkOp q`SolidityLean.node "Conditional"
