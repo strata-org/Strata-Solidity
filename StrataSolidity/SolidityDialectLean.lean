@@ -180,6 +180,23 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
       mkArg "loopExpression" (.cat OptNode),
       mkArg "body" (.cat Node)]
 
+  mkOp q`SolidityLean.node "DoWhileStatement"
+    #[mkArg "condition" (.cat Node),
+      mkArg "body" (.cat Node)]
+
+  mkOp q`SolidityLean.node "BreakStatement" #[]
+
+  mkOp q`SolidityLean.node "ContinueStatement" #[]
+
+  mkOp q`SolidityLean.node "TryStatement"
+    #[mkArg "externalCall" (.cat Node),
+      mkArg "clauses" (.cat (Seq Node))]
+
+  mkOp q`SolidityLean.node "TryCatchClause"
+    #[mkArg "errorName" (.cat Str),
+      mkArg "parameters" (.cat OptNode),
+      mkArg "block" (.cat Node)]
+
   mkOp q`SolidityLean.node "VariableDeclarationStatement"
     #[mkArg "declarations" (.cat (Seq OptNode)),
       mkArg "initialValue" (.cat OptNode)]
