@@ -56,6 +56,11 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("baseContracts", Init.Seq(Init.Str())),
         Sol.node())
 
+    Sol.add_op("UserDefinedValueTypeDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("underlyingType", Sol.type_name()),
+        Sol.node())
+
     # -- Modifiers --
     Sol.add_op("ModifierDefinition",
         ArgDecl("name", Init.Str()),
@@ -282,6 +287,7 @@ def gen_dialect() -> strata.Dialect:
     # -- Type names --
     Sol.add_op("ElementaryTypeName",
         ArgDecl("name", Init.Str()),
+        ArgDecl("stateMutability", Init.Str()),
         Sol.type_name())
 
     Sol.add_op("UserDefinedTypeName",
@@ -291,10 +297,19 @@ def gen_dialect() -> strata.Dialect:
     Sol.add_op("MappingType",
         ArgDecl("keyType", Sol.type_name()),
         ArgDecl("valueType", Sol.type_name()),
+        ArgDecl("keyName", Init.Str()),
+        ArgDecl("valueName", Init.Str()),
         Sol.type_name())
 
     Sol.add_op("ArrayTypeName",
         ArgDecl("baseType", Sol.type_name()),
+        Sol.type_name())
+
+    Sol.add_op("FunctionTypeName",
+        ArgDecl("parameterTypes", Sol.node()),
+        ArgDecl("returnParameterTypes", Sol.node()),
+        ArgDecl("visibility", Init.Str()),
+        ArgDecl("stateMutability", Init.Str()),
         Sol.type_name())
 
     return Sol

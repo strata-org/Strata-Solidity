@@ -140,7 +140,6 @@ class Converter:
     _SKIP_NODE_TYPES = frozenset({
         "ImportDirective",   # Imports resolved by solc, no verification semantics
         "StructuredDocumentation",
-        "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
         "UsingForDirective",               # resolved by solc, no verification semantics
     })
 
@@ -190,7 +189,9 @@ class Converter:
         nt = node.get("nodeType", "")
         ann = self._source_range(node)
         if nt == "ElementaryTypeName":
-            return self.d.ElementaryTypeName(self._str(node.get("name")), ann=ann)
+            return self.d.ElementaryTypeName(
+                self._str(node.get("name")),
+                self._str(node.get("stateMutability", "")), ann=ann)
         if nt == "UserDefinedTypeName":
             # Extract name from nested IdentifierPath (pathNode.name)
             path_node = node.get("pathNode")
@@ -210,7 +211,9 @@ class Converter:
                 sys.exit(1)
             return self.d.MappingType(
                 self.convert_type_name(key_node),
-                self.convert_type_name(val_node), ann=ann)
+                self.convert_type_name(val_node),
+                self._str(node.get("keyName", "")),
+                self._str(node.get("valueName", "")), ann=ann)
         if nt == "ArrayTypeName":
             base_node = node.get("baseType")
             if base_node is None:
@@ -218,9 +221,15 @@ class Converter:
                 sys.exit(1)
             return self.d.ArrayTypeName(
                 self.convert_type_name(base_node), ann=ann)
+        if nt == "FunctionTypeName":
+            return self.d.FunctionTypeName(
+                self.convert_node(node["parameterTypes"]),
+                self.convert_node(node["returnParameterTypes"]),
+                self._str(node.get("visibility", "")),
+                self._str(node.get("stateMutability", "")), ann=ann)
         # Fallback: wrap as ElementaryTypeName with the typeString
         ts = node.get("typeDescriptions", {}).get("typeString", "unknown")
-        return self.d.ElementaryTypeName(self._str(ts), ann=ann)
+        return self.d.ElementaryTypeName(self._str(ts), self._str(""), ann=ann)
 
     def convert_node(self, node: dict) -> strata.Operation:
         nt = node.get("nodeType", "")
@@ -447,6 +456,11 @@ class Converter:
         if nt == "RevertStatement":
             return self.d.RevertStatement(
                 self.convert_node(node["errorCall"]), ann=ann)
+
+        if nt == "UserDefinedValueTypeDefinition":
+            return self.d.UserDefinedValueTypeDefinition(
+                self._str(node.get("name")),
+                self.convert_type_name(node["underlyingType"]), ann=ann)
 
         if nt == "StructDefinition":
             return self.d.StructDefinition(
