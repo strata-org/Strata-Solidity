@@ -118,6 +118,10 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
       mkArg "documentation" (.cat Str),
       mkArg "baseContracts" (.cat (Seq Str))]
 
+  mkOp q`SolidityLean.node "UserDefinedValueTypeDefinition"
+    #[mkArg "name" (.cat Str),
+      mkArg "underlyingType" (.cat TypeName)]
+
   -- Modifiers
   mkOp q`SolidityLean.node "ModifierDefinition"
     #[mkArg "name" (.cat Str),
@@ -302,17 +306,26 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
 
   -- Type names
   mkOp q`SolidityLean.type_name "ElementaryTypeName"
-    #[mkArg "name" (.cat Str)]
+    #[mkArg "name" (.cat Str),
+      mkArg "stateMutability" (.cat Str)]
 
   mkOp q`SolidityLean.type_name "UserDefinedTypeName"
     #[mkArg "name" (.cat Str)]
 
   mkOp q`SolidityLean.type_name "MappingType"
     #[mkArg "keyType" (.cat TypeName),
-      mkArg "valueType" (.cat TypeName)]
+      mkArg "valueType" (.cat TypeName),
+      mkArg "keyName" (.cat Str),
+      mkArg "valueName" (.cat Str)]
 
   mkOp q`SolidityLean.type_name "ArrayTypeName"
     #[mkArg "baseType" (.cat TypeName)]
+
+  mkOp q`SolidityLean.type_name "FunctionTypeName"
+    #[mkArg "parameterTypes" (.cat Node),
+      mkArg "returnParameterTypes" (.cat Node),
+      mkArg "visibility" (.cat Str),
+      mkArg "stateMutability" (.cat Str)]
 
 end Strata.Solidity
 end
