@@ -787,10 +787,15 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
+  -- Events: emit is a no-op for verification (no state change).
+  | .EmitStatement _ _ => return mkStmtExprMd (.Block [] none)
+
+  -- Revert: unconditional abort — assume(false) makes the path unreachable,
+  -- which is sound (postconditions assume non-reverting execution).
+  | .RevertStatement _ _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops).
-  -- Unrecognized statement nodes (e.g., RevertStatement for custom errors) are
-  -- treated as unconditional aborts: assume(false). This is sound because revert
-  -- is an unconditional abort — no subsequent code is reachable.
+  -- Unrecognized statement nodes are treated as unconditional aborts: assume(false).
   | _ =>
     match translateExpr ctx n with
     | .ok e => return e
