@@ -200,6 +200,26 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("typeName", Init.Str()),
         Sol.node())
 
+    # -- Events and errors --
+    Sol.add_op("EventDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("parameters", Sol.node()),
+        ArgDecl("anonymous", Init.Str()),
+        Sol.node())
+
+    Sol.add_op("ErrorDefinition",
+        ArgDecl("name", Init.Str()),
+        ArgDecl("parameters", Sol.node()),
+        Sol.node())
+
+    Sol.add_op("EmitStatement",
+        ArgDecl("eventCall", Sol.node()),
+        Sol.node())
+
+    Sol.add_op("RevertStatement",
+        ArgDecl("errorCall", Sol.node()),
+        Sol.node())
+
     # -- Structs --
     Sol.add_op("StructDefinition",
         ArgDecl("name", Init.Str()),

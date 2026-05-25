@@ -140,10 +140,6 @@ class Converter:
     _SKIP_NODE_TYPES = frozenset({
         "ImportDirective",   # Imports resolved by solc, no verification semantics
         "StructuredDocumentation",
-        "EventDefinition",   # Events carry no verification semantics
-        "EmitStatement",     # emit is a no-op for verification
-        "ErrorDefinition",   # Custom error declarations carry no verification semantics
-        "RevertStatement",   # revert aborts execution — sound to skip (postconditions assume non-reverting path)
         "UserDefinedValueTypeDefinition",  # type aliases — identity for verification
         "UsingForDirective",               # resolved by solc, no verification semantics
         "TryStatement",      # try/catch is error handling — sound to skip (external call already nondeterministic)
@@ -396,6 +392,25 @@ class Converter:
             components = [c for c in node.get("components", []) if c is not None]
             return self.d.TupleExpression(
                 self._seq_nodes(components), ann=ann)
+
+        if nt == "EventDefinition":
+            return self.d.EventDefinition(
+                self._str(node.get("name")),
+                self.convert_node(node["parameters"]),
+                self._bool_str(node.get("anonymous", False)), ann=ann)
+
+        if nt == "ErrorDefinition":
+            return self.d.ErrorDefinition(
+                self._str(node.get("name")),
+                self.convert_node(node["parameters"]), ann=ann)
+
+        if nt == "EmitStatement":
+            return self.d.EmitStatement(
+                self.convert_node(node["eventCall"]), ann=ann)
+
+        if nt == "RevertStatement":
+            return self.d.RevertStatement(
+                self.convert_node(node["errorCall"]), ann=ann)
 
         if nt == "StructDefinition":
             return self.d.StructDefinition(
