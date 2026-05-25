@@ -367,8 +367,10 @@ class Converter:
                 self._bool_str(node.get("prefix", True)), ann=ann)
 
         if nt == "FunctionCallOptions":
-            # addr.call{value: amount}("") — strip options, keep inner expression
-            return self.convert_node(node["expression"])
+            return self.d.FunctionCallOptions(
+                self.convert_node(node["expression"]),
+                self._seq_strings(node.get("names")),
+                self._seq_nodes(node.get("options", [])), ann=ann)
 
         if nt == "FunctionCall":
             return self.d.FunctionCall(
@@ -463,10 +465,8 @@ class Converter:
             return self.d.InlineAssembly(self._str(yul_payload), ann=ann)
 
         if nt == "NewExpression":
-            # new Token(...) — convert to Identifier so FunctionCall treats it as a call
-            tn = node.get("typeName", {})
-            name = tn.get("name", "") or tn.get("pathNode", {}).get("name", "new")
-            return self.d.Identifier(self._str(name), ann=ann)
+            return self.d.NewExpression(
+                self.convert_type_name(node["typeName"]), ann=ann)
 
         # Unsupported node type — fail explicitly so downstream stages
         # don't silently produce incorrect verification results.

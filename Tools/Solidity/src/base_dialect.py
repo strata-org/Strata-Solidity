@@ -187,6 +187,16 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("names", Init.Seq(Init.Str())),
         Sol.node())
 
+    Sol.add_op("FunctionCallOptions",
+        ArgDecl("expression", Sol.node()),
+        ArgDecl("names", Init.Seq(Init.Str())),
+        ArgDecl("options", Init.Seq(Sol.node())),
+        Sol.node())
+
+    Sol.add_op("NewExpression",
+        ArgDecl("typeName", Sol.type_name()),
+        Sol.node())
+
     Sol.add_op("Identifier",
         ArgDecl("name", Init.Str()),
         Sol.node())
