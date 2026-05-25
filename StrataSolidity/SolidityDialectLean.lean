@@ -120,6 +120,7 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
   mkOp q`SolidityLean.node "ContractDefinition"
     #[mkArg "name" (.cat Str),
       mkArg "contractKind" (.cat Str),
+      mkArg "abstract" (.cat Str),
       mkArg "nodes" (.cat (Seq Node)),
       mkArg "documentation" (.cat Str),
       mkArg "baseContracts" (.cat (Seq Str))]
@@ -144,6 +145,7 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
       mkArg "kind" (.cat Str),
       mkArg "stateMutability" (.cat Str),
       mkArg "visibility" (.cat Str),
+      mkArg "virtual" (.cat Str),
       mkArg "parameters" (.cat Node),
       mkArg "returnParameters" (.cat Node),
       mkArg "body" (.cat OptNode),
@@ -158,6 +160,9 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
       mkArg "typeName" (.cat OptType),
       mkArg "stateVariable" (.cat Str),
       mkArg "constant" (.cat Str),
+      mkArg "mutability" (.cat Str),
+      mkArg "visibility" (.cat Str),
+      mkArg "indexed" (.cat Str),
       mkArg "storageLocation" (.cat Str),
       mkArg "value" (.cat OptNode),
       mkArg "documentation" (.cat Str)]
@@ -309,6 +314,11 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
 
   mkOp q`SolidityLean.node "EnumValue"
     #[mkArg "name" (.cat Str)]
+
+  mkOp q`SolidityLean.node "UsingForDirective"
+    #[mkArg "libraryName" (.cat Str),
+      mkArg "typeName" (.cat OptType),
+      mkArg "global" (.cat Str)]
 
   -- Type names
   mkOp q`SolidityLean.type_name "ElementaryTypeName"
