@@ -172,6 +172,48 @@ private def getBoolStr (j : Json) (field : String) (default : Bool := true) : St
   | some (Json.bool b) => if b then "true" else "false"
   | _                  => if default then "true" else "false"
 
+/-- Read a string-array field, returning an empty array when missing.
+    Mirrors `solast.py:_seq_strings(node.get(field))`. -/
+private def getStrArr (j : Json) (field : String) : Array String :=
+  match (j.getObjVal? field).toOption with
+  | some (Json.arr a) =>
+    a.filterMap (fun
+      | Json.str s => some s
+      | _          => none)
+  | _ => #[]
+
+/-- Extract NatSpec documentation text. Mirrors `solast.py:_doc_text` —
+    handles both old (string) and new (object with `text` field) formats. -/
+private def getDocText (j : Json) : String :=
+  match (j.getObjVal? "documentation").toOption with
+  | some (Json.str s) => s
+  | some (Json.obj _) =>
+    match j.getObjVal? "documentation" with
+    | .ok doc => getStrOr doc "text"
+    | _ => ""
+  | _ => ""
+
+/-- Extract base-contract names from a `ContractDefinition.baseContracts`
+    array. Each entry has shape `{baseName: {name: <string>, ...}, ...}`.
+    Mirrors the inline list-comp in `solast.py:ContractDefinition`. -/
+private def getBaseContractNames (j : Json) : Array String :=
+  match (j.getObjVal? "baseContracts").toOption with
+  | some (Json.arr a) =>
+    a.filterMap (fun bc =>
+      match bc.getObjVal? "baseName" with
+      | .ok bn =>
+        match (bn.getObjVal? "name").toOption with
+        | some (Json.str s) => some s
+        | _                 => none
+      | .error _ => none)
+  | _ => #[]
+
+/-- Node types whose presence in a sequence is structurally noise for
+    verification (NatSpec, events, emits, imports). Mirrors
+    `solast.py:_SKIP_NODE_TYPES`. -/
+private def skipNodeTypes : List String :=
+  ["StructuredDocumentation", "ImportDirective", "EventDefinition", "EmitStatement"]
+
 mutual
 
 /-- Helper: read field `f` and recursively translate it as a `node`.
@@ -218,6 +260,34 @@ partial def convertOptSeqChildren (sr : SourceRange) (parentNt : String) (f : St
   | .ok Json.null => pure #[]
   | .error _      => pure #[]
   | .ok other     => throw (.wrongType parentNt f s!"expected array, got {other}")
+
+/-- Helper: like `convertSeqChildren` but skips elements whose `nodeType`
+    is in `skipNodeTypes` (NatSpec, events, emits, imports — noise for
+    verification). Mirrors `solast.py:_seq_nodes`'s skip logic. -/
+partial def convertSeqChildrenSkipping (parentNt : String) (f : String) (j : Json) :
+    ConvertM (Array (node SourceRange)) := do
+  match j.getObjVal? f with
+  | .ok (Json.arr a) =>
+    let kept := a.filter (fun child =>
+      match (child.getObjVal? "nodeType").toOption with
+      | some (Json.str nt) => !(skipNodeTypes.contains nt)
+      | _                  => true)
+    kept.mapM convertNode
+  | .ok Json.null => pure #[]
+  | .error _      => pure #[]
+  | .ok other     => throw (.wrongType parentNt f s!"expected array, got {other}")
+
+/-- Helper: read a type-name field as `opt_type_name`. Missing or null →
+    `missing_type_name sr`; present → `some_type_name sr <converted>`.
+    Mirrors `solast.py:_opt_type_name`. -/
+partial def convertOptTypeName (sr : SourceRange) (j : Json) (f : String) :
+    ConvertM (Strata.Solidity.opt_type_name SourceRange) := do
+  match j.getObjVal? f with
+  | .ok Json.null => return Strata.Solidity.opt_type_name.missing_type_name sr
+  | .ok child =>
+    let tn ← convertTypeName child
+    return Strata.Solidity.opt_type_name.some_type_name sr tn
+  | .error _ => return Strata.Solidity.opt_type_name.missing_type_name sr
 
 /-- Translate a top-level `SourceUnit` JSON node to a list of `Solidity.node`s.
     The `Command` arm of the dialect produces a `Solidity.Command`; that
@@ -399,12 +469,103 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     return node.ExpressionStatement sr
       (node.Literal sr (annStr sr "_") (annStr sr "string") (annStr sr ""))
 
-  | "PragmaDirective"
-  | "ContractDefinition"
-  | "ModifierDefinition" | "ModifierInvocation"
-  | "FunctionDefinition" | "ParameterList" | "VariableDeclaration"
-  | "StructDefinition" | "EnumDefinition" | "EnumValue" =>
-    throw (.unimplemented nt)
+  | "PragmaDirective" =>
+    -- solc: { nodeType: "PragmaDirective", literals: [<string>, ...], src: ... }
+    -- E.g. `pragma solidity ^0.8.0;` → literals = ["solidity", "^", "0.8", ".0"]
+    let lits := getStrArr j "literals"
+    return node.PragmaDirective sr (annStrs sr (lits.map (annStr sr)))
+
+  | "ContractDefinition" =>
+    -- solc: { nodeType: "ContractDefinition", name, contractKind: "contract"|"interface"|"library",
+    --        nodes: [<node>, ...] (members), baseContracts: [{baseName: {name: <string>}, ...}],
+    --        documentation?, src: ... }
+    let name        := getStrOr j "name"
+    let kind        := getStrOr j "contractKind" "contract"
+    let members     ← convertSeqChildrenSkipping "ContractDefinition" "nodes" j
+    let doc         := getDocText j
+    let baseStrs    := getBaseContractNames j
+    return node.ContractDefinition sr (annStr sr name) (annStr sr kind)
+      (annNodes sr members) (annStr sr doc)
+      (annStrs sr (baseStrs.map (annStr sr)))
+
+  | "ModifierDefinition" =>
+    -- solc: { nodeType: "ModifierDefinition", name, parameters: <ParameterList>, body?, src: ... }
+    let name   := getStrOr j "name"
+    let params ← convertChild "ModifierDefinition" "parameters" j
+    let body   ← convertOptChild sr j "body"
+    return node.ModifierDefinition sr (annStr sr name) params body
+
+  | "ModifierInvocation" =>
+    -- solc: { nodeType: "ModifierInvocation",
+    --        modifierName: { name: <string> } | <string>,
+    --        arguments?: [<node>, ...], src: ... }
+    let modName := match (j.getObjVal? "modifierName").toOption with
+      | some (Json.obj _) =>
+        match j.getObjVal? "modifierName" with
+        | .ok mn => getStrOr mn "name"
+        | _ => ""
+      | some (Json.str s) => s
+      | _ => ""
+    let args ← convertSeqChildrenSkipping "ModifierInvocation" "arguments" j
+    return node.ModifierInvocation sr (annStr sr modName) (annNodes sr args)
+
+  | "FunctionDefinition" =>
+    -- solc: { nodeType: "FunctionDefinition", name, kind: "function"|"constructor"|...,
+    --        stateMutability: "pure"|"view"|"nonpayable"|"payable",
+    --        visibility: "public"|"internal"|"external"|"private",
+    --        parameters: <ParameterList>, returnParameters: <ParameterList>,
+    --        body?, modifiers: [<ModifierInvocation>, ...], documentation?, src: ... }
+    let name          := getStrOr j "name"
+    let kind          := getStrOr j "kind" "function"
+    let mut'          := getStrOr j "stateMutability"
+    let vis           := getStrOr j "visibility"
+    let params       ← convertChild "FunctionDefinition" "parameters" j
+    let returnParams ← convertChild "FunctionDefinition" "returnParameters" j
+    let body         ← convertOptChild sr j "body"
+    let doc           := getDocText j
+    let modifiers    ← convertSeqChildrenSkipping "FunctionDefinition" "modifiers" j
+    return node.FunctionDefinition sr (annStr sr name) (annStr sr kind)
+      (annStr sr mut') (annStr sr vis) params returnParams body
+      (annStr sr doc) (annNodes sr modifiers)
+
+  | "ParameterList" =>
+    -- solc: { nodeType: "ParameterList", parameters: [<VariableDeclaration>, ...], src: ... }
+    let params ← convertSeqChildrenSkipping "ParameterList" "parameters" j
+    return node.ParameterList sr (annNodes sr params)
+
+  | "VariableDeclaration" =>
+    -- solc: { nodeType: "VariableDeclaration", name, typeName?: <type-name>,
+    --        stateVariable: bool, constant: bool,
+    --        storageLocation: "default"|"storage"|"memory"|"calldata",
+    --        value?: <expr>, documentation?, src: ... }
+    let name      := getStrOr j "name"
+    let typeName ← convertOptTypeName sr j "typeName"
+    let stateVar  := getBoolStr j "stateVariable" false
+    let const?    := getBoolStr j "constant"      false
+    let storLoc   := getStrOr   j "storageLocation"
+    let value    ← convertOptChild sr j "value"
+    let doc       := getDocText j
+    return node.VariableDeclaration sr (annStr sr name) typeName
+      (annStr sr stateVar) (annStr sr const?) (annStr sr storLoc)
+      value (annStr sr doc)
+
+  | "StructDefinition" =>
+    -- solc: { nodeType: "StructDefinition", name, members: [<VariableDeclaration>, ...], src: ... }
+    let name    := getStrOr j "name"
+    let members ← convertSeqChildrenSkipping "StructDefinition" "members" j
+    return node.StructDefinition sr (annStr sr name) (annNodes sr members)
+
+  | "EnumDefinition" =>
+    -- solc: { nodeType: "EnumDefinition", name, members: [<EnumValue>, ...], src: ... }
+    let name    := getStrOr j "name"
+    let members ← convertSeqChildrenSkipping "EnumDefinition" "members" j
+    return node.EnumDefinition sr (annStr sr name) (annNodes sr members)
+
+  | "EnumValue" =>
+    -- solc: { nodeType: "EnumValue", name, src: ... }
+    let name := getStrOr j "name"
+    return node.EnumValue sr (annStr sr name)
+
   | other => throw (.unknownNodeType other)
 
 /-- Dispatch on `nodeType` for type-name positions. -/

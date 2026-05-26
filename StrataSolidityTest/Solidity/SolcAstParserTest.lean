@@ -538,6 +538,229 @@ private def isPlaceholderLit (j : Json) : Bool :=
 
 #guard isPlaceholderLit (jsonOf placeholderJ)
 
+/-! ### Declarations (B2.5) -/
+
+/-- JSON builders for declaration fixtures. -/
+private def pragmaJ (literals : String) : String :=
+  "{\"nodeType\":\"PragmaDirective\",\"literals\":" ++ literals ++ ",\"src\":\"0:0:0\"}"
+
+private def contractJ (name kind nodes baseContracts : String) : String :=
+  "{\"nodeType\":\"ContractDefinition\",\"name\":\"" ++ name ++
+  "\",\"contractKind\":\"" ++ kind ++
+  "\",\"nodes\":" ++ nodes ++
+  ",\"baseContracts\":" ++ baseContracts ++
+  ",\"src\":\"0:0:0\"}"
+
+private def baseContractJ (name : String) : String :=
+  "{\"baseName\":{\"name\":\"" ++ name ++ "\"}}"
+
+private def parameterListJ (params : String) : String :=
+  "{\"nodeType\":\"ParameterList\",\"parameters\":" ++ params ++ ",\"src\":\"0:0:0\"}"
+
+private def varDeclJ (name typeName : String) : String :=
+  "{\"nodeType\":\"VariableDeclaration\",\"name\":\"" ++ name ++
+  "\",\"typeName\":" ++ typeName ++
+  ",\"stateVariable\":false,\"constant\":false,\"storageLocation\":\"default\"" ++
+  ",\"src\":\"0:0:0\"}"
+
+private def funcDefJ (name kind vis params returnParams body modifiers : String) : String :=
+  "{\"nodeType\":\"FunctionDefinition\",\"name\":\"" ++ name ++
+  "\",\"kind\":\"" ++ kind ++
+  "\",\"stateMutability\":\"nonpayable\",\"visibility\":\"" ++ vis ++
+  "\",\"parameters\":" ++ params ++
+  ",\"returnParameters\":" ++ returnParams ++
+  ",\"body\":" ++ body ++
+  ",\"modifiers\":" ++ modifiers ++
+  ",\"src\":\"0:0:0\"}"
+
+private def modDefJ (name params body : String) : String :=
+  "{\"nodeType\":\"ModifierDefinition\",\"name\":\"" ++ name ++
+  "\",\"parameters\":" ++ params ++
+  ",\"body\":" ++ body ++
+  ",\"src\":\"0:0:0\"}"
+
+private def modInvJ (name args : String) : String :=
+  "{\"nodeType\":\"ModifierInvocation\",\"modifierName\":{\"name\":\"" ++ name ++
+  "\"},\"arguments\":" ++ args ++ ",\"src\":\"0:0:0\"}"
+
+private def structDefJ (name members : String) : String :=
+  "{\"nodeType\":\"StructDefinition\",\"name\":\"" ++ name ++
+  "\",\"members\":" ++ members ++ ",\"src\":\"0:0:0\"}"
+
+private def enumDefJ (name members : String) : String :=
+  "{\"nodeType\":\"EnumDefinition\",\"name\":\"" ++ name ++
+  "\",\"members\":" ++ members ++ ",\"src\":\"0:0:0\"}"
+
+private def enumValueJ (name : String) : String :=
+  "{\"nodeType\":\"EnumValue\",\"name\":\"" ++ name ++ "\",\"src\":\"0:0:0\"}"
+
+private def elementaryTNJ (name : String) : String :=
+  "{\"nodeType\":\"ElementaryTypeName\",\"name\":\"" ++ name ++ "\",\"src\":\"0:0:0\"}"
+
+/-! #### PragmaDirective -/
+
+private def pragmaLits (j : Json) : Option (Array String) :=
+  match convertNode j with
+  | .ok (node.PragmaDirective _ lits) => some (lits.val.map (·.val))
+  | _ => none
+
+#guard pragmaLits (jsonOf (pragmaJ "[\"solidity\",\"^\",\"0.8\",\".0\"]"))
+  == some #["solidity", "^", "0.8", ".0"]
+
+#guard pragmaLits (jsonOf (pragmaJ "[]")) == some #[]
+
+/-! #### ContractDefinition -/
+
+private def contractInfo (j : Json) : Option (String × String × Nat × Array String) :=
+  match convertNode j with
+  | .ok (node.ContractDefinition _ name kind members _doc bases) =>
+    some (name.val, kind.val, members.val.size, bases.val.map (·.val))
+  | _ => none
+
+#guard contractInfo (jsonOf (contractJ "Token" "contract" "[]" "[]"))
+  == some ("Token", "contract", 0, #[])
+
+#guard contractInfo (jsonOf (contractJ "IMyInterface" "interface" "[]" "[]"))
+  == some ("IMyInterface", "interface", 0, #[])
+
+#guard contractInfo
+  (jsonOf (contractJ "Child" "contract" "[]"
+    ("[" ++ baseContractJ "Parent1" ++ "," ++ baseContractJ "Parent2" ++ "]")))
+  == some ("Child", "contract", 0, #["Parent1", "Parent2"])
+
+-- Contract members count should drop StructuredDocumentation/Events/Imports.
+-- Use an EnumValue (a real, simple node) plus a noise node to verify skip.
+private def docNoiseJ : String :=
+  "{\"nodeType\":\"StructuredDocumentation\",\"text\":\"docs\",\"src\":\"0:0:0\"}"
+
+#guard contractInfo
+  (jsonOf (contractJ "C" "contract"
+    ("[" ++ enumValueJ "A" ++ "," ++ docNoiseJ ++ "," ++ enumValueJ "B" ++ "]")
+    "[]"))
+  == some ("C", "contract", 2, #[])
+
+/-! #### ParameterList -/
+
+private def paramListSize (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.ParameterList _ params) => params.val.size
+  | _ => 999
+
+#guard paramListSize (jsonOf (parameterListJ "[]")) == 0
+#guard paramListSize
+  (jsonOf (parameterListJ ("[" ++ varDeclJ "x" (elementaryTNJ "uint256") ++ "]")))
+  == 1
+#guard paramListSize
+  (jsonOf (parameterListJ
+    ("[" ++ varDeclJ "x" (elementaryTNJ "uint256") ++
+     "," ++ varDeclJ "y" (elementaryTNJ "bool") ++ "]")))
+  == 2
+
+/-! #### VariableDeclaration -/
+
+private def varDeclInfo (j : Json) : Option (String × String × String × String) :=
+  match convertNode j with
+  | .ok (node.VariableDeclaration _ name typeName stateVar const? _ _ _) =>
+    let typeStr := match typeName with
+      | Strata.Solidity.opt_type_name.some_type_name _
+          (type_name.ElementaryTypeName _ n) => n.val
+      | _ => "<other>"
+    some (name.val, typeStr, stateVar.val, const?.val)
+  | _ => none
+
+#guard varDeclInfo (jsonOf (varDeclJ "x" (elementaryTNJ "uint256")))
+  == some ("x", "uint256", "false", "false")
+
+#guard varDeclInfo (jsonOf (varDeclJ "owner" (elementaryTNJ "address")))
+  == some ("owner", "address", "false", "false")
+
+-- Test missing typeName → opt_type_name.missing_type_name
+private def varDeclMissingType (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.VariableDeclaration _ _ (Strata.Solidity.opt_type_name.missing_type_name _) _ _ _ _ _) => true
+  | _ => false
+
+#guard varDeclMissingType
+  (jsonOf "{\"nodeType\":\"VariableDeclaration\",\"name\":\"x\",\"stateVariable\":false,\"constant\":false,\"storageLocation\":\"default\",\"src\":\"0:0:0\"}")
+
+/-! #### ModifierDefinition + ModifierInvocation -/
+
+private def modDefInfo (j : Json) : Option (String × Bool) :=
+  match convertNode j with
+  | .ok (node.ModifierDefinition _ name _params body) =>
+    let hasBody := match body with
+      | Strata.Solidity.opt_node.some_node _ _ => true
+      | Strata.Solidity.opt_node.missing_node _ => false
+    some (name.val, hasBody)
+  | _ => none
+
+#guard modDefInfo
+  (jsonOf (modDefJ "onlyOwner" (parameterListJ "[]") (blockJ "[]")))
+  == some ("onlyOwner", true)
+
+private def modInvName (j : Json) : Option String :=
+  match convertNode j with
+  | .ok (node.ModifierInvocation _ name _) => some name.val
+  | _ => none
+
+#guard modInvName (jsonOf (modInvJ "onlyOwner" "[]")) == some "onlyOwner"
+
+/-! #### FunctionDefinition -/
+
+private def funcDefSig (j : Json) : Option (String × String × String × Bool × Nat) :=
+  match convertNode j with
+  | .ok (node.FunctionDefinition _ name kind _stateMut vis _params _returnParams body _doc mods) =>
+    let hasBody := match body with
+      | Strata.Solidity.opt_node.some_node _ _ => true
+      | Strata.Solidity.opt_node.missing_node _ => false
+    some (name.val, kind.val, vis.val, hasBody, mods.val.size)
+  | _ => none
+
+#guard funcDefSig
+  (jsonOf (funcDefJ "transfer" "function" "external"
+    (parameterListJ ("[" ++ varDeclJ "to" (elementaryTNJ "address") ++ "]"))
+    (parameterListJ "[]") (blockJ "[]") "[]"))
+  == some ("transfer", "function", "external", true, 0)
+
+-- Constructor with one modifier
+#guard funcDefSig
+  (jsonOf (funcDefJ "" "constructor" "public"
+    (parameterListJ "[]") (parameterListJ "[]")
+    (blockJ "[]")
+    ("[" ++ modInvJ "onlyOwner" "[]" ++ "]")))
+  == some ("", "constructor", "public", true, 1)
+
+/-! #### StructDefinition / EnumDefinition / EnumValue -/
+
+private def structInfo (j : Json) : Option (String × Nat) :=
+  match convertNode j with
+  | .ok (node.StructDefinition _ name members) => some (name.val, members.val.size)
+  | _ => none
+
+#guard structInfo
+  (jsonOf (structDefJ "S"
+    ("[" ++ varDeclJ "a" (elementaryTNJ "uint256") ++ "," ++
+            varDeclJ "b" (elementaryTNJ "bool") ++ "]")))
+  == some ("S", 2)
+
+private def enumInfo (j : Json) : Option (String × Nat) :=
+  match convertNode j with
+  | .ok (node.EnumDefinition _ name members) => some (name.val, members.val.size)
+  | _ => none
+
+#guard enumInfo
+  (jsonOf (enumDefJ "Status"
+    ("[" ++ enumValueJ "Pending" ++ "," ++ enumValueJ "Active" ++ "," ++
+            enumValueJ "Closed" ++ "]")))
+  == some ("Status", 3)
+
+private def enumValueName (j : Json) : Option String :=
+  match convertNode j with
+  | .ok (node.EnumValue _ n) => some n.val
+  | _ => none
+
+#guard enumValueName (jsonOf (enumValueJ "Pending")) == some "Pending"
+
 /-! ### Source range parsing — start and stop offsets -/
 
 private def srcRangeOk (j : Json) (expStart expStop : Nat) : Bool :=
