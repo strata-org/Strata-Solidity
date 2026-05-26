@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-contract AssemblyTest {
-    uint256 public value;
-    mapping(address => uint256) public balances;
+contract InlineAssemblyTest {
+    uint256 public storedValue;
 
-    function useAssembly() public {
-        value = 42;
+    function getBalance(address addr) external view returns (uint256 bal) {
         assembly {
-            sstore(0, 99)
+            bal := balance(addr)
         }
-        // After assembly, value and balances are havoced
-        assert(value == 42); // should be unprovable after havoc
+    }
+
+    function directStore(uint256 slot, uint256 value) external {
+        assembly {
+            sstore(slot, value)
+        }
+    }
+
+    function addAssembly(uint256 a, uint256 b) external pure returns (uint256 result) {
+        assembly {
+            result := add(a, b)
+        }
     }
 }

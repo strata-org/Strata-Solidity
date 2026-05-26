@@ -184,6 +184,9 @@ def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[in
     #[mkArg "declarations" (.cat (Seq OptNode)),
       mkArg "initialValue" (.cat OptNode)]
 
+  mkOp q`SolidityLean.node "InlineAssembly"
+    #[mkArg "yul" (.cat Str)]
+
   -- Expressions
   mkOp q`SolidityLean.node "Assignment"
     #[mkArg "leftHandSide" (.cat Node),

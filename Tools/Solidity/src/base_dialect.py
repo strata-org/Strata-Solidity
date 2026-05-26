@@ -135,6 +135,10 @@ def gen_dialect() -> strata.Dialect:
         ArgDecl("initialValue", Sol.opt_node()),
         Sol.node())
 
+    Sol.add_op("InlineAssembly",
+        ArgDecl("yul", Init.Str()),
+        Sol.node())
+
     # -- Expressions --
     Sol.add_op("Assignment",
         ArgDecl("leftHandSide", Sol.node()),

@@ -412,9 +412,13 @@ class Converter:
                 self._str(node.get("name")), ann=ann)
 
         if nt == "InlineAssembly":
-            # Emit a marker so the Lean translator can havoc all state variables.
-            return self.d.ExpressionStatement(
-                self.d.Literal(self._str("__assembly__"), self._str("string"), ann=ann), ann=ann)
+            # Serialize the Yul AST as a JSON string payload.
+            # The Lean translator uses the havoc strategy (over-approximates
+            # all state touched by assembly as unknown).
+            import json as _json
+            yul_ast = node.get("AST", {})
+            yul_payload = _json.dumps(yul_ast) if yul_ast else ""
+            return self.d.InlineAssembly(self._str(yul_payload), ann=ann)
 
         if nt == "NewExpression":
             # new Token(...) — convert to Identifier so FunctionCall treats it as a call
