@@ -97,6 +97,99 @@ private def isElementaryTypeName (j : Json) (expectedName : String) : Bool :=
   (jsonOf r#"{"nodeType":"ElementaryTypeName","name":"address","src":"30:7:0"}"#)
   "address"
 
+/-! ### UserDefinedTypeName (B2.2) -/
+
+private def isUserDefinedTypeName (j : Json) (expectedName : String) : Bool :=
+  match convertTypeName j with
+  | .ok (type_name.UserDefinedTypeName _ name) => name.val == expectedName
+  | _ => false
+
+#guard isUserDefinedTypeName
+  (jsonOf r#"{"nodeType":"UserDefinedTypeName","pathNode":{"nodeType":"IdentifierPath","name":"MyStruct"},"src":"50:8:0"}"#)
+  "MyStruct"
+
+#guard isUserDefinedTypeName
+  (jsonOf r#"{"nodeType":"UserDefinedTypeName","pathNode":{"nodeType":"IdentifierPath","name":"IERC20"},"src":"50:6:0"}"#)
+  "IERC20"
+
+-- Missing pathNode is a structured error (matches solast.py's fatal exit).
+private def errIsTypeName (j : Json) (pred : ConvertError → Bool) : Bool :=
+  match convertTypeName j with
+  | .error e => pred e
+  | .ok _    => false
+
+#guard errIsTypeName
+  (jsonOf r#"{"nodeType":"UserDefinedTypeName","src":"50:8:0"}"#)
+  (fun | .missingField "UserDefinedTypeName" "pathNode" => true | _ => false)
+
+#guard errIsTypeName
+  (jsonOf r#"{"nodeType":"UserDefinedTypeName","pathNode":{"nodeType":"IdentifierPath","name":""},"src":"50:0:0"}"#)
+  (fun | .missingField "UserDefinedTypeName" "pathNode.name" => true | _ => false)
+
+/-! ### ArrayTypeName (B2.2) -/
+
+private def isArrayOfElementary (j : Json) (expectedBaseName : String) : Bool :=
+  match convertTypeName j with
+  | .ok (type_name.ArrayTypeName _ (type_name.ElementaryTypeName _ name)) =>
+    name.val == expectedBaseName
+  | _ => false
+
+#guard isArrayOfElementary
+  (jsonOf r#"{"nodeType":"ArrayTypeName","baseType":{"nodeType":"ElementaryTypeName","name":"uint256","src":"60:7:0"},"src":"60:9:0"}"#)
+  "uint256"
+
+#guard errIsTypeName
+  (jsonOf r#"{"nodeType":"ArrayTypeName","src":"60:0:0"}"#)
+  (fun | .missingField "ArrayTypeName" "baseType" => true | _ => false)
+
+/-! ### Mapping (B2.2) — note solc emits `nodeType: "Mapping"` -/
+
+private def isAddressToUintMapping (j : Json) : Bool :=
+  match convertTypeName j with
+  | .ok (type_name.MappingType _
+         (type_name.ElementaryTypeName _ k)
+         (type_name.ElementaryTypeName _ v)) =>
+    k.val == "address" && v.val == "uint256"
+  | _ => false
+
+#guard isAddressToUintMapping (jsonOf r#"{
+  "nodeType": "Mapping",
+  "keyType": {"nodeType":"ElementaryTypeName","name":"address","src":"70:7:0"},
+  "valueType": {"nodeType":"ElementaryTypeName","name":"uint256","src":"79:7:0"},
+  "src": "62:25:0"
+}"#)
+
+-- Nested mappings: mapping(address => mapping(address => uint256))
+private def isNestedMapping (j : Json) : Bool :=
+  match convertTypeName j with
+  | .ok (type_name.MappingType _
+         (type_name.ElementaryTypeName _ k1)
+         (type_name.MappingType _
+           (type_name.ElementaryTypeName _ k2)
+           (type_name.ElementaryTypeName _ v))) =>
+    k1.val == "address" && k2.val == "address" && v.val == "uint256"
+  | _ => false
+
+#guard isNestedMapping (jsonOf r#"{
+  "nodeType": "Mapping",
+  "keyType": {"nodeType":"ElementaryTypeName","name":"address","src":"0:0:0"},
+  "valueType": {
+    "nodeType": "Mapping",
+    "keyType": {"nodeType":"ElementaryTypeName","name":"address","src":"0:0:0"},
+    "valueType": {"nodeType":"ElementaryTypeName","name":"uint256","src":"0:0:0"},
+    "src": "0:0:0"
+  },
+  "src": "0:0:0"
+}"#)
+
+#guard errIsTypeName
+  (jsonOf r#"{"nodeType":"Mapping","valueType":{"nodeType":"ElementaryTypeName","name":"uint256","src":"0:0:0"},"src":"0:0:0"}"#)
+  (fun | .missingField "Mapping" "keyType" => true | _ => false)
+
+#guard errIsTypeName
+  (jsonOf r#"{"nodeType":"Mapping","keyType":{"nodeType":"ElementaryTypeName","name":"address","src":"0:0:0"},"src":"0:0:0"}"#)
+  (fun | .missingField "Mapping" "valueType" => true | _ => false)
+
 /-! ### Source range parsing — start and stop offsets -/
 
 private def srcRangeOk (j : Json) (expStart expStop : Nat) : Bool :=

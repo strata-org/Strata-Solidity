@@ -210,8 +210,46 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
     return type_name.ElementaryTypeName sr (annStr sr (getStrOr j "name"))
       (annStr sr (getStrOr j "stateMutability" ""))
 
-  | "UserDefinedTypeName" | "MappingType" | "ArrayTypeName" =>
-    throw (.unimplemented nt)
+  | "UserDefinedTypeName" =>
+    -- solc: { nodeType: "UserDefinedTypeName",
+    --        pathNode: { nodeType: "IdentifierPath", name: <string>, ... },
+    --        src: ... }
+    -- The Solidity 0.8.x AST nests the actual identifier under `pathNode`.
+    -- Python's solast.py treats a missing/empty path-name as fatal; we
+    -- propagate the same as a typed error.
+    match j.getObjVal? "pathNode" with
+    | .ok pathNode =>
+      let name := getStrOr pathNode "name"
+      if name.isEmpty then
+        throw (.missingField "UserDefinedTypeName" "pathNode.name")
+      return type_name.UserDefinedTypeName sr (annStr sr name)
+    | .error _ => throw (.missingField "UserDefinedTypeName" "pathNode")
+
+  | "Mapping" =>
+    -- solc: { nodeType: "Mapping",
+    --        keyType: <type-name node>,
+    --        valueType: <type-name node>,
+    --        src: ... }
+    -- Note solc emits "Mapping" (not "MappingType"); the dialect's op
+    -- constructor is named MappingType.
+    match j.getObjVal? "keyType", j.getObjVal? "valueType" with
+    | .ok keyJ, .ok valJ =>
+      let keyTy ← convertTypeName keyJ
+      let valTy ← convertTypeName valJ
+      return type_name.MappingType sr keyTy valTy
+    | .error _, _ => throw (.missingField "Mapping" "keyType")
+    | _, .error _ => throw (.missingField "Mapping" "valueType")
+
+  | "ArrayTypeName" =>
+    -- solc: { nodeType: "ArrayTypeName", baseType: <type-name node>, src: ... }
+    -- The optional `length` field (for fixed-size arrays) is intentionally
+    -- ignored — matches solast.py.
+    match j.getObjVal? "baseType" with
+    | .ok baseJ =>
+      let baseTy ← convertTypeName baseJ
+      return type_name.ArrayTypeName sr baseTy
+    | .error _ => throw (.missingField "ArrayTypeName" "baseType")
+
   | other => throw (.unknownNodeType other)
 
 end
