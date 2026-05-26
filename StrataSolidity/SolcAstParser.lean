@@ -129,9 +129,29 @@ def parseSrc (j : Json) : SourceRange := Id.run do
 The convert function walks the JSON AST recursively. Each branch
 translates one `nodeType` to its Lean ADT counterpart.
 
-For the scaffold, only `SourceUnit` is implemented (returns an empty
-list of nodes). All other branches throw `unimplemented`. Subsequent
-commits replace each `unimplemented` with the real translation. -/
+Two dispatch families, mirroring the two syntax categories in the dialect:
+
+  * `convertNode`     → `Strata.Solidity.node SourceRange`
+  * `convertTypeName` → `Strata.Solidity.type_name SourceRange`
+
+The split matches `Tools/Solidity/src/solast.py` (`convert_node` /
+`convert_type_name`). Each subsequent B2.* PR fills in more arms; this
+PR (B2.1) implements the three "leaf" nodes (`Identifier`, `Literal`,
+`ElementaryTypeName`) — the ones with no recursive children. -/
+
+open Strata.Solidity (node type_name)
+
+/-- Wrap a `String` field at this node's source range. Mirrors
+    `solast.py:_str` (None → empty string). -/
+private def annStr (sr : SourceRange) (s : String) : Strata.Ann String SourceRange :=
+  ⟨sr, s⟩
+
+/-- Read an optional string field, defaulting to `""` if missing or wrong
+    JSON shape. Matches Python's `_str(node.get(field, ""))` idiom. -/
+private def getStrOr (j : Json) (field : String) (default : String := "") : String :=
+  match (j.getObjVal? field).toOption with
+  | some (Json.str s) => s
+  | _                 => default
 
 mutual
 
@@ -145,10 +165,23 @@ partial def convertSourceUnit (j : Json) : ConvertM Unit := do
   -- TODO(group-b): walk nodes and build typed Solidity.node values.
   return ()
 
-/-- Dispatch on `nodeType` to the appropriate per-node translator. -/
-partial def convertNode (j : Json) : ConvertM Unit := do
+/-- Dispatch on `nodeType` to the appropriate per-node translator.
+    Returns a typed `node SourceRange` value. -/
+partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
   let nt ← getNodeType j
+  let sr := parseSrc j
   match nt with
+  | "Identifier" =>
+    -- solc: { nodeType: "Identifier", name: <string>, src: ..., ... }
+    return node.Identifier sr (annStr sr (getStrOr j "name"))
+
+  | "Literal" =>
+    -- solc: { nodeType: "Literal", value: <string>, kind: "number"|"string"|"bool"|"hexString"|..., src: ... }
+    -- Python defaults: value → "", kind → "number".
+    let val  := getStrOr j "value" ""
+    let kind := getStrOr j "kind" "number"
+    return node.Literal sr (annStr sr val) (annStr sr kind)
+
   | "PragmaDirective"
   | "ContractDefinition"
   | "ModifierDefinition" | "ModifierInvocation"
@@ -157,12 +190,22 @@ partial def convertNode (j : Json) : ConvertM Unit := do
   | "Return" | "IfStatement" | "WhileStatement" | "ForStatement"
   | "VariableDeclarationStatement"
   | "Assignment" | "BinaryOperation" | "UnaryOperation" | "FunctionCall"
-  | "Identifier" | "Literal" | "MemberAccess" | "IndexAccess"
+  | "MemberAccess" | "IndexAccess"
   | "Conditional" | "TupleExpression" | "ElementaryTypeNameExpression"
-  | "StructDefinition" | "EnumDefinition" | "EnumValue"
-  | "ElementaryTypeName" | "UserDefinedTypeName"
-  | "MappingType" | "ArrayTypeName" =>
-    -- TODO(group-b): each nodeType gets its own typed translator here.
+  | "StructDefinition" | "EnumDefinition" | "EnumValue" =>
+    throw (.unimplemented nt)
+  | other => throw (.unknownNodeType other)
+
+/-- Dispatch on `nodeType` for type-name positions. -/
+partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
+  let nt ← getNodeType j
+  let sr := parseSrc j
+  match nt with
+  | "ElementaryTypeName" =>
+    -- solc: { nodeType: "ElementaryTypeName", name: <"uint256"|"bool"|...>, src: ... }
+    return type_name.ElementaryTypeName sr (annStr sr (getStrOr j "name"))
+
+  | "UserDefinedTypeName" | "MappingType" | "ArrayTypeName" =>
     throw (.unimplemented nt)
   | other => throw (.unknownNodeType other)
 
