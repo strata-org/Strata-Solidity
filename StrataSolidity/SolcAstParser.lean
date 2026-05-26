@@ -146,6 +146,18 @@ open Strata.Solidity (node type_name)
 private def annStr (sr : SourceRange) (s : String) : Strata.Ann String SourceRange :=
   ⟨sr, s⟩
 
+/-- Wrap an `Array (node SourceRange)` at this node's source range — the
+    shape every "sequence of children" field requires. -/
+private def annNodes (sr : SourceRange) (xs : Array (node SourceRange)) :
+    Strata.Ann (Array (node SourceRange)) SourceRange :=
+  ⟨sr, xs⟩
+
+/-- Wrap an `Array (Ann String SourceRange)` at this node's source range —
+    the shape `FunctionCall.names` and similar use. -/
+private def annStrs (sr : SourceRange) (xs : Array (Strata.Ann String SourceRange)) :
+    Strata.Ann (Array (Strata.Ann String SourceRange)) SourceRange :=
+  ⟨sr, xs⟩
+
 /-- Read an optional string field, defaulting to `""` if missing or wrong
     JSON shape. Matches Python's `_str(node.get(field, ""))` idiom. -/
 private def getStrOr (j : Json) (field : String) (default : String := "") : String :=
@@ -153,7 +165,33 @@ private def getStrOr (j : Json) (field : String) (default : String := "") : Stri
   | some (Json.str s) => s
   | _                 => default
 
+/-- Read a boolean field as a string ("true"/"false"), defaulting per arg.
+    Mirrors `solast.py:_bool_str`. -/
+private def getBoolStr (j : Json) (field : String) (default : Bool := true) : String :=
+  match (j.getObjVal? field).toOption with
+  | some (Json.bool b) => if b then "true" else "false"
+  | _                  => if default then "true" else "false"
+
 mutual
+
+/-- Helper: read field `f` and recursively translate it as a `node`.
+    Returns a typed `missingField` error if the field is absent. -/
+partial def convertChild (parentNt : String) (f : String) (j : Json) :
+    ConvertM (node SourceRange) := do
+  match j.getObjVal? f with
+  | .ok child => convertNode child
+  | .error _  => throw (.missingField parentNt f)
+
+/-- Helper: read optional field `f` and translate it as `opt_node`.
+    Missing field, `null`, or wrong shape → `missing_node`. -/
+partial def convertOptChild (sr : SourceRange) (j : Json) (f : String) :
+    ConvertM (Strata.Solidity.opt_node SourceRange) := do
+  match j.getObjVal? f with
+  | .ok Json.null => return Strata.Solidity.opt_node.missing_node sr
+  | .ok child =>
+    let n ← convertNode child
+    return Strata.Solidity.opt_node.some_node sr n
+  | .error _  => return Strata.Solidity.opt_node.missing_node sr
 
 /-- Translate a top-level `SourceUnit` JSON node to a list of `Solidity.node`s.
     The `Command` arm of the dialect produces a `Solidity.Command`; that
@@ -184,6 +222,96 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let sub  := getStrOr j "subdenomination" ""
     return node.Literal sr (annStr sr val) (annStr sr kind) (annStr sr sub)
 
+  | "Assignment" =>
+    -- solc: { nodeType: "Assignment", leftHandSide, rightHandSide, operator: "="|"+="|..., ... }
+    let lhs ← convertChild "Assignment" "leftHandSide" j
+    let rhs ← convertChild "Assignment" "rightHandSide" j
+    let op  := getStrOr j "operator" "="
+    return node.Assignment sr lhs rhs (annStr sr op)
+
+  | "BinaryOperation" =>
+    -- solc: { nodeType: "BinaryOperation", leftExpression, rightExpression, operator, ... }
+    let lhs ← convertChild "BinaryOperation" "leftExpression" j
+    let rhs ← convertChild "BinaryOperation" "rightExpression" j
+    let op  := getStrOr j "operator"
+    return node.BinaryOperation sr lhs rhs (annStr sr op)
+
+  | "UnaryOperation" =>
+    -- solc: { nodeType: "UnaryOperation", subExpression, operator, prefix: true|false, ... }
+    -- prefix encodes whether the operator comes before (--x) or after (x--).
+    let sub ← convertChild "UnaryOperation" "subExpression" j
+    let op  := getStrOr j "operator"
+    let pre := getBoolStr j "prefix" true
+    return node.UnaryOperation sr sub (annStr sr op) (annStr sr pre)
+
+  | "FunctionCallOptions" =>
+    -- e.g. addr.call{value: amount}("") — strip the options modifier
+    -- and recurse on the wrapped expression. Matches solast.py.
+    convertChild "FunctionCallOptions" "expression" j
+
+  | "FunctionCall" =>
+    -- solc: { nodeType: "FunctionCall", expression, arguments: [...], kind: "functionCall"|...,
+    --        names: [...] (for named-arg calls), ... }
+    let callee ← convertChild "FunctionCall" "expression" j
+    let argsJ  := (j.getObjVal? "arguments").toOption.getD (Json.arr #[])
+    let argArr ← match argsJ with
+      | Json.arr a => a.mapM convertNode
+      | _ => pure #[]
+    let kind   := getStrOr j "kind" "functionCall"
+    let namesJ := (j.getObjVal? "names").toOption.getD Json.null
+    let names  := match namesJ with
+      | Json.arr a => a.filterMap (fun
+          | Json.str s => some (annStr sr s)
+          | _ => none)
+      | _ => #[]
+    return node.FunctionCall sr callee (annNodes sr argArr) (annStr sr kind) (annStrs sr names)
+
+  | "MemberAccess" =>
+    -- solc: { nodeType: "MemberAccess", expression, memberName, ... }
+    let inner ← convertChild "MemberAccess" "expression" j
+    let mem   := getStrOr j "memberName"
+    return node.MemberAccess sr inner (annStr sr mem)
+
+  | "IndexAccess" =>
+    -- solc: { nodeType: "IndexAccess", baseExpression, indexExpression?: optional, ... }
+    -- Solidity allows arr[] in some abstract type contexts; we represent
+    -- the missing index as opt_node.missing_node.
+    let base ← convertChild "IndexAccess" "baseExpression" j
+    let idx ← convertOptChild sr j "indexExpression"
+    return node.IndexAccess sr base idx
+
+  | "Conditional" =>
+    -- solc: { nodeType: "Conditional", condition, trueExpression, falseExpression, ... }
+    let c ← convertChild "Conditional" "condition" j
+    let t ← convertChild "Conditional" "trueExpression" j
+    let f ← convertChild "Conditional" "falseExpression" j
+    return node.Conditional sr c t f
+
+  | "TupleExpression" =>
+    -- solc: { nodeType: "TupleExpression", components: [<node>|null, ...], ... }
+    -- Trailing `null` slots (e.g. `(bool ok, )`) are dropped per solast.py.
+    let compsJ := (j.getObjVal? "components").toOption.getD (Json.arr #[])
+    let comps ← match compsJ with
+      | Json.arr a =>
+        a.filterMap (fun
+          | Json.null => none
+          | other     => some other) |>.mapM convertNode
+      | _ => pure #[]
+    return node.TupleExpression sr (annNodes sr comps)
+
+  | "ElementaryTypeNameExpression" =>
+    -- solc: { nodeType: "ElementaryTypeNameExpression", typeName: { name: <string> } | <string>, ... }
+    -- Used for type-conversion expressions like `address(0)`. Python pulls
+    -- `typeName.name` if `typeName` is an object, otherwise stringifies.
+    let typeStr := match (j.getObjVal? "typeName").toOption with
+      | some (Json.obj _) =>
+        match j.getObjVal? "typeName" with
+        | .ok tn => getStrOr tn "name"
+        | _ => ""
+      | some (Json.str s) => s
+      | _ => ""
+    return node.ElementaryTypeNameExpression sr (annStr sr typeStr)
+
   | "PragmaDirective"
   | "ContractDefinition"
   | "ModifierDefinition" | "ModifierInvocation"
@@ -191,9 +319,6 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
   | "Block" | "UncheckedBlock" | "ExpressionStatement"
   | "Return" | "IfStatement" | "WhileStatement" | "ForStatement"
   | "VariableDeclarationStatement"
-  | "Assignment" | "BinaryOperation" | "UnaryOperation" | "FunctionCall"
-  | "MemberAccess" | "IndexAccess"
-  | "Conditional" | "TupleExpression" | "ElementaryTypeNameExpression"
   | "StructDefinition" | "EnumDefinition" | "EnumValue" =>
     throw (.unimplemented nt)
   | other => throw (.unknownNodeType other)

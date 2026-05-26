@@ -190,6 +190,190 @@ private def isNestedMapping (j : Json) : Bool :=
   (jsonOf r#"{"nodeType":"Mapping","keyType":{"nodeType":"ElementaryTypeName","name":"address","src":"0:0:0"},"src":"0:0:0"}"#)
   (fun | .missingField "Mapping" "valueType" => true | _ => false)
 
+/-! ### Expressions (B2.3) -/
+
+-- Helpers reused below for matching specific expression shapes.
+
+private def idLit (j : Json) : Option String :=
+  match convertNode j with
+  | .ok (node.Identifier _ name) => some name.val
+  | _ => none
+
+private def litVal (j : Json) : Option (String × String) :=
+  match convertNode j with
+  | .ok (node.Literal _ v k) => some (v.val, k.val)
+  | _ => none
+
+/-- A simple `id` Identifier JSON. -/
+private def idJ (name : String) : String :=
+  "{\"nodeType\":\"Identifier\",\"name\":\"" ++ name ++ "\",\"src\":\"0:0:0\"}"
+
+/-- A simple `<n>` number Literal JSON. -/
+private def numJ (n : String) : String :=
+  "{\"nodeType\":\"Literal\",\"value\":\"" ++ n ++ "\",\"kind\":\"number\",\"src\":\"0:0:0\"}"
+
+/-- Wrap children inside a binary-op JSON shell. -/
+private def binopJ (op lhs rhs : String) : String :=
+  "{\"nodeType\":\"BinaryOperation\",\"leftExpression\":" ++ lhs ++
+  ",\"rightExpression\":" ++ rhs ++
+  ",\"operator\":\"" ++ op ++ "\",\"src\":\"0:0:0\"}"
+
+private def unopJ (op pre sub : String) : String :=
+  "{\"nodeType\":\"UnaryOperation\",\"subExpression\":" ++ sub ++
+  ",\"operator\":\"" ++ op ++ "\",\"prefix\":" ++ pre ++ ",\"src\":\"0:0:0\"}"
+
+private def assignJ (op lhs rhs : String) : String :=
+  "{\"nodeType\":\"Assignment\",\"leftHandSide\":" ++ lhs ++
+  ",\"rightHandSide\":" ++ rhs ++
+  ",\"operator\":\"" ++ op ++ "\",\"src\":\"0:0:0\"}"
+
+private def memJ (mem inner : String) : String :=
+  "{\"nodeType\":\"MemberAccess\",\"expression\":" ++ inner ++
+  ",\"memberName\":\"" ++ mem ++ "\",\"src\":\"0:0:0\"}"
+
+private def idxJWith (base idx : String) : String :=
+  "{\"nodeType\":\"IndexAccess\",\"baseExpression\":" ++ base ++
+  ",\"indexExpression\":" ++ idx ++ ",\"src\":\"0:0:0\"}"
+
+private def idxJBase (base : String) : String :=
+  "{\"nodeType\":\"IndexAccess\",\"baseExpression\":" ++ base ++
+  ",\"src\":\"0:0:0\"}"
+
+private def fcJ (callee args : String) : String :=
+  "{\"nodeType\":\"FunctionCall\",\"expression\":" ++ callee ++
+  ",\"arguments\":" ++ args ++
+  ",\"kind\":\"functionCall\",\"src\":\"0:0:0\"}"
+
+private def fcoJ (inner : String) : String :=
+  "{\"nodeType\":\"FunctionCallOptions\",\"expression\":" ++ inner ++
+  ",\"src\":\"0:0:0\"}"
+
+private def condJ (c t f : String) : String :=
+  "{\"nodeType\":\"Conditional\",\"condition\":" ++ c ++
+  ",\"trueExpression\":" ++ t ++
+  ",\"falseExpression\":" ++ f ++ ",\"src\":\"0:0:0\"}"
+
+private def tupleJ (comps : String) : String :=
+  "{\"nodeType\":\"TupleExpression\",\"components\":" ++ comps ++
+  ",\"src\":\"0:0:0\"}"
+
+/-! #### BinaryOperation -/
+
+private def isBinop (j : Json) (expectedOp : String)
+    (lhsCheck : node SourceRange → Bool) (rhsCheck : node SourceRange → Bool) : Bool :=
+  match convertNode j with
+  | .ok (node.BinaryOperation _ l r op) =>
+    op.val == expectedOp && lhsCheck l && rhsCheck r
+  | _ => false
+
+#guard isBinop (jsonOf (binopJ "+" (idJ "x") (numJ "1"))) "+"
+  (fun | node.Identifier _ n => n.val == "x" | _ => false)
+  (fun | node.Literal _ v _ => v.val == "1" | _ => false)
+
+#guard isBinop (jsonOf (binopJ "==" (idJ "a") (idJ "b"))) "=="
+  (fun | node.Identifier _ n => n.val == "a" | _ => false)
+  (fun | node.Identifier _ n => n.val == "b" | _ => false)
+
+/-! #### UnaryOperation — operator + prefix flag -/
+
+private def isUnop (j : Json) (expectedOp expectedPrefix : String) : Bool :=
+  match convertNode j with
+  | .ok (node.UnaryOperation _ _ op pre) =>
+    op.val == expectedOp && pre.val == expectedPrefix
+  | _ => false
+
+#guard isUnop (jsonOf (unopJ "!" "true" (idJ "x"))) "!" "true"
+#guard isUnop (jsonOf (unopJ "++" "false" (idJ "x"))) "++" "false"
+
+/-! #### Assignment -/
+
+private def isAssign (j : Json) (expectedOp : String) : Bool :=
+  match convertNode j with
+  | .ok (node.Assignment _ _ _ op) => op.val == expectedOp
+  | _ => false
+
+#guard isAssign (jsonOf (assignJ "=" (idJ "x") (numJ "5"))) "="
+#guard isAssign (jsonOf (assignJ "+=" (idJ "total") (numJ "1"))) "+="
+
+/-! #### MemberAccess — `<expr>.member` -/
+
+private def isMemberAccess (j : Json) (expectedMember : String)
+    (innerCheck : node SourceRange → Bool) : Bool :=
+  match convertNode j with
+  | .ok (node.MemberAccess _ inner m) =>
+    m.val == expectedMember && innerCheck inner
+  | _ => false
+
+#guard isMemberAccess (jsonOf (memJ "sender" (idJ "msg"))) "sender"
+  (fun | node.Identifier _ n => n.val == "msg" | _ => false)
+
+/-! #### IndexAccess — `<base>[<idx>]`, idx may be missing -/
+
+private def isIndexAccessOf (j : Json) (expectedBase : String) (hasIdx : Bool) : Bool :=
+  match convertNode j with
+  | .ok (node.IndexAccess _ (node.Identifier _ b) idx) =>
+    b.val == expectedBase &&
+    (match idx with
+     | Strata.Solidity.opt_node.some_node _ _ => hasIdx
+     | Strata.Solidity.opt_node.missing_node _ => !hasIdx)
+  | _ => false
+
+#guard isIndexAccessOf (jsonOf (idxJWith (idJ "balances") (idJ "user"))) "balances" true
+#guard isIndexAccessOf (jsonOf (idxJBase (idJ "arr"))) "arr" false
+
+/-! #### FunctionCall — callee + args, kind, names -/
+
+private def fcArgCount (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.FunctionCall _ _ args _ _) => args.val.size
+  | _ => 999  -- Sentinel: doesn't match any expected count, so #guard fails on error.
+
+#guard fcArgCount (jsonOf (fcJ (idJ "transfer") ("[" ++ idJ "to" ++ "," ++ numJ "100" ++ "]"))) == 2
+#guard fcArgCount (jsonOf (fcJ (idJ "f") "[]")) == 0
+
+-- FunctionCallOptions wrapper strips itself and recurses on `expression`.
+#guard idLit (jsonOf (fcoJ (idJ "addr"))) == some "addr"
+
+/-! #### Conditional — `c ? t : f` -/
+
+private def isCondId3 (j : Json) (cName tName fName : String) : Bool :=
+  match convertNode j with
+  | .ok (node.Conditional _
+         (node.Identifier _ c)
+         (node.Identifier _ t)
+         (node.Identifier _ f)) =>
+    c.val == cName && t.val == tName && f.val == fName
+  | _ => false
+
+#guard isCondId3 (jsonOf (condJ (idJ "ok") (idJ "a") (idJ "b"))) "ok" "a" "b"
+
+/-! #### TupleExpression — null components are dropped -/
+
+private def tupleSize (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.TupleExpression _ comps) => comps.val.size
+  | _ => 999
+
+-- (a, b) → 2 components
+#guard tupleSize (jsonOf (tupleJ ("[" ++ idJ "a" ++ "," ++ idJ "b" ++ "]"))) == 2
+
+-- (a, ) → null trailing component is dropped
+#guard tupleSize (jsonOf (tupleJ ("[" ++ idJ "a" ++ ",null]"))) == 1
+
+-- () → zero components
+#guard tupleSize (jsonOf (tupleJ "[]")) == 0
+
+/-! #### ElementaryTypeNameExpression — `address(0)`-style conversions -/
+
+private def isEtne (j : Json) (expectedName : String) : Bool :=
+  match convertNode j with
+  | .ok (node.ElementaryTypeNameExpression _ tn) => tn.val == expectedName
+  | _ => false
+
+#guard isEtne
+  (jsonOf r#"{"nodeType":"ElementaryTypeNameExpression","typeName":{"name":"address","nodeType":"ElementaryTypeName"},"src":"0:0:0"}"#)
+  "address"
+
 /-! ### Source range parsing — start and stop offsets -/
 
 private def srcRangeOk (j : Json) (expStart expStop : Nat) : Bool :=
