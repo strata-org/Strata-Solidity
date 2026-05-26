@@ -374,6 +374,170 @@ private def isEtne (j : Json) (expectedName : String) : Bool :=
   (jsonOf r#"{"nodeType":"ElementaryTypeNameExpression","typeName":{"name":"address","nodeType":"ElementaryTypeName"},"src":"0:0:0"}"#)
   "address"
 
+/-! ### Statements (B2.4) -/
+
+/-- JSON builders for statement fixtures. -/
+private def blockJ (statements : String) : String :=
+  "{\"nodeType\":\"Block\",\"statements\":" ++ statements ++ ",\"src\":\"0:0:0\"}"
+
+private def uncheckedBlockJ (statements : String) : String :=
+  "{\"nodeType\":\"UncheckedBlock\",\"statements\":" ++ statements ++ ",\"src\":\"0:0:0\"}"
+
+private def exprStmtJ (e : String) : String :=
+  "{\"nodeType\":\"ExpressionStatement\",\"expression\":" ++ e ++ ",\"src\":\"0:0:0\"}"
+
+private def returnJBare : String :=
+  "{\"nodeType\":\"Return\",\"src\":\"0:0:0\"}"
+
+private def returnJWith (e : String) : String :=
+  "{\"nodeType\":\"Return\",\"expression\":" ++ e ++ ",\"src\":\"0:0:0\"}"
+
+private def ifStmtJ (cond t : String) : String :=
+  "{\"nodeType\":\"IfStatement\",\"condition\":" ++ cond ++
+  ",\"trueBody\":" ++ t ++ ",\"src\":\"0:0:0\"}"
+
+private def ifElseJ (cond t f : String) : String :=
+  "{\"nodeType\":\"IfStatement\",\"condition\":" ++ cond ++
+  ",\"trueBody\":" ++ t ++ ",\"falseBody\":" ++ f ++ ",\"src\":\"0:0:0\"}"
+
+private def whileJ (cond body : String) : String :=
+  "{\"nodeType\":\"WhileStatement\",\"condition\":" ++ cond ++
+  ",\"body\":" ++ body ++ ",\"src\":\"0:0:0\"}"
+
+private def forJBare (body : String) : String :=
+  "{\"nodeType\":\"ForStatement\",\"body\":" ++ body ++ ",\"src\":\"0:0:0\"}"
+
+private def vdsJ (decls init : String) : String :=
+  "{\"nodeType\":\"VariableDeclarationStatement\",\"declarations\":" ++ decls ++
+  ",\"initialValue\":" ++ init ++ ",\"src\":\"0:0:0\"}"
+
+private def placeholderJ : String :=
+  "{\"nodeType\":\"PlaceholderStatement\",\"src\":\"0:0:0\"}"
+
+/-! #### Block / UncheckedBlock — sequence of statements -/
+
+private def blockSize (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.Block _ stmts) => stmts.val.size
+  | _ => 999
+
+private def uncheckedBlockSize (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.UncheckedBlock _ stmts) => stmts.val.size
+  | _ => 999
+
+#guard blockSize (jsonOf (blockJ "[]")) == 0
+#guard blockSize (jsonOf (blockJ ("[" ++ exprStmtJ (idJ "x") ++ "]"))) == 1
+#guard blockSize
+  (jsonOf (blockJ ("[" ++ exprStmtJ (idJ "x") ++ "," ++ exprStmtJ (idJ "y") ++ "]")))
+  == 2
+
+#guard uncheckedBlockSize (jsonOf (uncheckedBlockJ "[]")) == 0
+#guard uncheckedBlockSize (jsonOf (uncheckedBlockJ ("[" ++ exprStmtJ (idJ "x") ++ "]"))) == 1
+
+/-! #### ExpressionStatement -/
+
+private def isExprStmtId (j : Json) (expectedName : String) : Bool :=
+  match convertNode j with
+  | .ok (node.ExpressionStatement _ (node.Identifier _ n)) => n.val == expectedName
+  | _ => false
+
+#guard isExprStmtId (jsonOf (exprStmtJ (idJ "x"))) "x"
+
+/-! #### Return -/
+
+private def isBareReturn (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.Return _ (Strata.Solidity.opt_node.missing_node _)) => true
+  | _ => false
+
+private def isReturnIdent (j : Json) (expected : String) : Bool :=
+  match convertNode j with
+  | .ok (node.Return _ (Strata.Solidity.opt_node.some_node _ (node.Identifier _ n))) =>
+    n.val == expected
+  | _ => false
+
+#guard isBareReturn (jsonOf returnJBare)
+#guard isReturnIdent (jsonOf (returnJWith (idJ "x"))) "x"
+
+/-! #### IfStatement — true body required, false body optional -/
+
+private def isIfWithoutElse (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.IfStatement _ _ _ (Strata.Solidity.opt_node.missing_node _)) => true
+  | _ => false
+
+private def isIfWithElse (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.IfStatement _ _ _ (Strata.Solidity.opt_node.some_node _ _)) => true
+  | _ => false
+
+#guard isIfWithoutElse (jsonOf (ifStmtJ (idJ "ok") (blockJ "[]")))
+#guard isIfWithElse (jsonOf (ifElseJ (idJ "ok") (blockJ "[]") (blockJ "[]")))
+
+/-! #### WhileStatement -/
+
+private def isWhileWithBlockBody (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.WhileStatement _ _ (node.Block _ _)) => true
+  | _ => false
+
+#guard isWhileWithBlockBody (jsonOf (whileJ (idJ "cond") (blockJ "[]")))
+
+/-! #### ForStatement — `for(;;)` has all three init/cond/loop optional -/
+
+private def forAllMissing (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.ForStatement _
+         (Strata.Solidity.opt_node.missing_node _)
+         (Strata.Solidity.opt_node.missing_node _)
+         (Strata.Solidity.opt_node.missing_node _)
+         (node.Block _ _)) => true
+  | _ => false
+
+#guard forAllMissing (jsonOf (forJBare (blockJ "[]")))
+
+/-! #### VariableDeclarationStatement — declarations + optional init,
+     supports tuple destructuring with null slots -/
+
+private def vdsSize (j : Json) : Nat :=
+  match convertNode j with
+  | .ok (node.VariableDeclarationStatement _ decls _) => decls.val.size
+  | _ => 999
+
+private def vdsHasInit (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.VariableDeclarationStatement _ _ (Strata.Solidity.opt_node.some_node _ _)) => true
+  | _ => false
+
+private def vdsMissingInit (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.VariableDeclarationStatement _ _ (Strata.Solidity.opt_node.missing_node _)) => true
+  | _ => false
+
+-- Single declaration with init: `uint x = 5;` (we use Identifier as a stand-in
+-- since VariableDeclaration itself isn't translated until B2.5).
+#guard vdsHasInit (jsonOf (vdsJ ("[" ++ idJ "decl1" ++ "]") (numJ "5")))
+#guard vdsSize   (jsonOf (vdsJ ("[" ++ idJ "decl1" ++ "]") (numJ "5"))) == 1
+
+-- Tuple destructuring with a null slot: `(uint a, , bool c) = …` → 3 decls
+-- (well, here we use Identifier placeholders for the non-null slots).
+#guard vdsSize (jsonOf (vdsJ ("[" ++ idJ "a" ++ ",null," ++ idJ "c" ++ "]") (idJ "f"))) == 3
+
+-- No initializer: `uint x;`
+#guard vdsMissingInit
+  (jsonOf "{\"nodeType\":\"VariableDeclarationStatement\",\"declarations\":[],\"src\":\"0:0:0\"}")
+
+/-! #### PlaceholderStatement — `_;` lowered to ExpressionStatement(Literal "_") -/
+
+private def isPlaceholderLit (j : Json) : Bool :=
+  match convertNode j with
+  | .ok (node.ExpressionStatement _ (node.Literal _ v k)) =>
+    v.val == "_" && k.val == "string"
+  | _ => false
+
+#guard isPlaceholderLit (jsonOf placeholderJ)
+
 /-! ### Source range parsing — start and stop offsets -/
 
 private def srcRangeOk (j : Json) (expStart expStop : Nat) : Bool :=

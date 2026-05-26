@@ -193,6 +193,32 @@ partial def convertOptChild (sr : SourceRange) (j : Json) (f : String) :
     return Strata.Solidity.opt_node.some_node sr n
   | .error _  => return Strata.Solidity.opt_node.missing_node sr
 
+/-- Helper: read field `f` as a JSON array and convert each element via
+    `convertNode`. Missing field is treated as an empty array (matches
+    `solast.py:_seq_nodes(node.get(field, []))`). -/
+partial def convertSeqChildren (parentNt : String) (f : String) (j : Json) :
+    ConvertM (Array (node SourceRange)) := do
+  match j.getObjVal? f with
+  | .ok (Json.arr a) => a.mapM convertNode
+  | .ok Json.null    => pure #[]
+  | .error _         => pure #[]
+  | .ok other        => throw (.wrongType parentNt f s!"expected array, got {other}")
+
+/-- Helper: like `convertSeqChildren` but for tuple-destructuring positions
+    where elements may be `null`. Matches `solast.py:_seq_opt_nodes`. -/
+partial def convertOptSeqChildren (sr : SourceRange) (parentNt : String) (f : String) (j : Json) :
+    ConvertM (Array (Strata.Solidity.opt_node SourceRange)) := do
+  match j.getObjVal? f with
+  | .ok (Json.arr a) =>
+    a.mapM (fun
+      | Json.null => pure (Strata.Solidity.opt_node.missing_node sr)
+      | child => do
+        let n ← convertNode child
+        pure (Strata.Solidity.opt_node.some_node sr n))
+  | .ok Json.null => pure #[]
+  | .error _      => pure #[]
+  | .ok other     => throw (.wrongType parentNt f s!"expected array, got {other}")
+
 /-- Translate a top-level `SourceUnit` JSON node to a list of `Solidity.node`s.
     The `Command` arm of the dialect produces a `Solidity.Command`; that
     higher-level wrapping is left for the per-node implementations to land. -/
@@ -312,13 +338,71 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
       | _ => ""
     return node.ElementaryTypeNameExpression sr (annStr sr typeStr)
 
+  | "Block" =>
+    -- solc: { nodeType: "Block", statements: [<node>, ...], ... }
+    let stmts ← convertSeqChildren "Block" "statements" j
+    return node.Block sr (annNodes sr stmts)
+
+  | "UncheckedBlock" =>
+    -- solc: { nodeType: "UncheckedBlock", statements: [<node>, ...], ... }
+    -- Verification semantics same as Block; the "unchecked" wraps arithmetic
+    -- so 0.8.x overflow checks are skipped — modeled as standard arithmetic
+    -- by downstream translators, so we don't need to mark it specially here.
+    let stmts ← convertSeqChildren "UncheckedBlock" "statements" j
+    return node.UncheckedBlock sr (annNodes sr stmts)
+
+  | "ExpressionStatement" =>
+    -- solc: { nodeType: "ExpressionStatement", expression: <node>, ... }
+    let e ← convertChild "ExpressionStatement" "expression" j
+    return node.ExpressionStatement sr e
+
+  | "Return" =>
+    -- solc: { nodeType: "Return", expression?: <node | null>, ... }
+    -- A bare `return;` has no expression.
+    let v ← convertOptChild sr j "expression"
+    return node.Return sr v
+
+  | "IfStatement" =>
+    -- solc: { nodeType: "IfStatement", condition, trueBody, falseBody?: optional, ... }
+    let c ← convertChild "IfStatement" "condition" j
+    let t ← convertChild "IfStatement" "trueBody" j
+    let f ← convertOptChild sr j "falseBody"
+    return node.IfStatement sr c t f
+
+  | "WhileStatement" =>
+    -- solc: { nodeType: "WhileStatement", condition, body, ... }
+    let c ← convertChild "WhileStatement" "condition" j
+    let b ← convertChild "WhileStatement" "body" j
+    return node.WhileStatement sr c b
+
+  | "ForStatement" =>
+    -- solc: { nodeType: "ForStatement", initializationExpression?, condition?, loopExpression?, body, ... }
+    -- `for (;;) {}` has all three init/cond/loop optional.
+    let init ← convertOptChild sr j "initializationExpression"
+    let cond ← convertOptChild sr j "condition"
+    let loop ← convertOptChild sr j "loopExpression"
+    let body ← convertChild "ForStatement" "body" j
+    return node.ForStatement sr init cond loop body
+
+  | "VariableDeclarationStatement" =>
+    -- solc: { nodeType: "VariableDeclarationStatement", declarations: [<node>|null, ...], initialValue?, ... }
+    -- Tuple destructuring: `(uint a, , bool c) = f()` produces 3 declarations
+    -- with `null` in unwanted slots.
+    let decls ← convertOptSeqChildren sr "VariableDeclarationStatement" "declarations" j
+    let init ← convertOptChild sr j "initialValue"
+    return node.VariableDeclarationStatement sr (⟨sr, decls⟩) init
+
+  | "PlaceholderStatement" =>
+    -- The `_;` in a modifier body. Not a first-class dialect op; mirror
+    -- solast.py and lower it to an ExpressionStatement wrapping a string
+    -- Literal "_" — downstream translators recognize this marker.
+    return node.ExpressionStatement sr
+      (node.Literal sr (annStr sr "_") (annStr sr "string"))
+
   | "PragmaDirective"
   | "ContractDefinition"
   | "ModifierDefinition" | "ModifierInvocation"
   | "FunctionDefinition" | "ParameterList" | "VariableDeclaration"
-  | "Block" | "UncheckedBlock" | "ExpressionStatement"
-  | "Return" | "IfStatement" | "WhileStatement" | "ForStatement"
-  | "VariableDeclarationStatement"
   | "StructDefinition" | "EnumDefinition" | "EnumValue" =>
     throw (.unimplemented nt)
   | other => throw (.unknownNodeType other)
