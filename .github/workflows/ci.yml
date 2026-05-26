@@ -81,6 +81,35 @@ jobs:
       # leanprover/lean-action handles elan install, .lake caching
       # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
       # and `lake test` in one step.
+      #
+      # Cache-bust workaround for stale dialect oleans
+      # ----------------------------------------------
+      # `#load_dialect "../Tools/Solidity/dialects/Solidity.dialect.st.ion"`
+      # in StrataSolidity/SolidityDialect.lean reads the Ion file at
+      # elaboration time, but Lake doesn't track the .ion file as a build
+      # input. lean-action@v1's cache key is hardcoded as
+      # `…hashFiles('lean-toolchain')…hashFiles('lake-manifest.json')…`
+      # and has no input to customize, so a PR that regenerates the Ion
+      # (e.g. any Phase 2 dialect change) restores a stale
+      # SolidityDialect.olean from a previous run on `feat/upstream-port`
+      # and the build sees mismatched constructor names like
+      # "Unknown constant Strata.Solidity.node.EmitStatement".
+      #
+      # Removing the four artifacts forces just SolidityDialect to rebuild
+      # (~3s) while every other olean is reused — preserving cache value.
+      #
+      # Long-term fix: upstream `#load_dialect` should register the Ion
+      # file as a build input so Lake invalidates dependent oleans.
+      - name: bust stale SolidityDialect olean
+        run: |
+          # Match SolidityDialect.* but not SolidityDialectLean* / SolidityDialectParity* —
+          # we want a fresh elaboration of the Ion-loaded canonical only.
+          shopt -s nullglob
+          for f in .lake/build/lib/lean/StrataSolidity/SolidityDialect.* \
+                   .lake/build/ir/StrataSolidity/SolidityDialect.*; do
+            rm -f "$f"
+          done
+
       - name: lake build + lake test
         uses: leanprover/lean-action@v1
         with:
