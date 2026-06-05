@@ -45,7 +45,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
+  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
@@ -128,7 +128,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     | .ParameterList _ paramsSeq =>
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn _ _ =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ storageLocAnn _ _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -154,7 +154,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | .ParameterList _ retSeq =>
         retSeq.val.toList.mapM fun param =>
           match param with
-          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ =>
+          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }

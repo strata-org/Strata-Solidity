@@ -15,7 +15,7 @@ open Laurel
 def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ _ =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ _ _ _ _ =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode ctx tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
@@ -46,7 +46,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq _contractDocAnn _baseContracts => do
+  | .ContractDefinition _ nameAnn _kindAnn _abstractAnn nodesSeq _contractDocAnn _baseContracts => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
@@ -93,7 +93,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           isFunctional := true
           body := .Abstract postcondsAsConds
         }]
-      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt docAnn =>
+      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           -- Collect @custom:strata invariant from state variable NatSpec
           let varAnnotations := parseStrataAnnotations docAnn.val
@@ -163,7 +163,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut arrayStateVars : List String := []
     for member in nodesSeq.val do
       match member with
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
           | .some_type_name _ (.ArrayTypeName _ _) =>
@@ -173,7 +173,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
         let fnIsExternal := fnVisAnn.val == "external"
@@ -208,7 +208,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ bodyOpt _ _ => do
+      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ _ bodyOpt _ _ => do
           -- Skip functions that reference struct-valued mappings (unsupported in Core)
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
@@ -263,7 +263,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
 
     for node in nodesSeq.val do
       match node with
-      | .ContractDefinition _ _ _ _ _ _ => do
+      | .ContractDefinition _ _ _ _ _ _ _ => do
         let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types

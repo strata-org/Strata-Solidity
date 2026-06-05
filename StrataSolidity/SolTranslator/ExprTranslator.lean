@@ -13,7 +13,7 @@ def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidit
     match declsSeq.val.toList with
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn _ _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ storageLocAnn _ _) =>
         if storageLocAnn.val == "storage" then some (nameAnn.val, initOpt) else none
       | _ => none
     | _ => none
@@ -25,7 +25,7 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
   match n with
   | .VariableDeclarationStatement _ declsSeq _ =>
     match declsSeq.val.toList with
-    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _ _)] =>
+    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _ _ _ _ _)] =>
       match typeNameOpt with
       | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => some nameAnn.val
       | _ => none
@@ -676,7 +676,7 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _)] =>
+          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ _ _ _)] =>
             { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
           | _ => ctx
         | _ => ctx
@@ -892,7 +892,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn _ _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const _ _ _ storageLocAnn _ _) =>
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
