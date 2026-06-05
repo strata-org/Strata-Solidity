@@ -47,7 +47,7 @@ partial def collectArrayIndexNodes (ctx : TransCtx) (n : Solidity.node SourceRan
       | _ => false
     let idxIsSafe := match indexOpt with
       | .some_node _ (.Identifier _ _) => true
-      | .some_node _ (.Literal _ _ _) => true
+      | .some_node _ (.Literal _ _ _ _) => true
       | .some_node _ (.BinaryOperation _ _ _ _) => true
       | _ => false
     let fromIdx := match indexOpt with
@@ -136,7 +136,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 
-  | .Literal _ valueAnn kindAnn =>
+  | .Literal _ valueAnn kindAnn subAnn =>
     match kindAnn.val with
     | "number" =>
       let v := valueAnn.val
@@ -152,7 +152,20 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
             d.map (n * 16 + ·)) (some 0) |>.map Int.ofNat
       else v.toInt?
       match parsed with
-      | some i => return mkStmtExprMd (.LiteralInt i)
+      | some i =>
+        -- Apply subdenomination unit multiplier (Solidity ether/time units).
+        -- e.g. `1 ether` == 10^18 wei, `1 days` == 86400 seconds.
+        let factor : Int := match subAnn.val with
+          | "wei"     => 1
+          | "gwei"    => 1000000000
+          | "ether"   => 1000000000000000000
+          | "seconds" => 1
+          | "minutes" => 60
+          | "hours"   => 3600
+          | "days"    => 86400
+          | "weeks"   => 604800
+          | _         => 1
+        return mkStmtExprMd (.LiteralInt (i * factor))
       | none => throw (.typeError s!"Invalid number literal: {v}")
     | "bool" =>
       return mkStmtExprMd (.LiteralBool (valueAnn.val == "true"))
@@ -695,7 +708,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
           (mkStmtExprMd .Hole))]
     return mkStmtExprMd (.Block havocs none)
 
-  | .ExpressionStatement _ (.Literal _ valAnn kindAnn) =>
+  | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
     -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
     -- compatibility with any Ion produced by an older solast.py.
     if valAnn.val == "__assembly__" && kindAnn.val == "string" then
@@ -717,7 +730,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
             (mkStmtExprMd .Hole))]
       return mkStmtExprMd (.Block havocs none)
     else
-      translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn))
+      translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
 

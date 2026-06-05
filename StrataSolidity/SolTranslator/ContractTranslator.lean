@@ -30,7 +30,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
   -- Take statements before the placeholder `_;`
   let preStmts := stmts.takeWhile fun stmt =>
     match stmt with
-    | .ExpressionStatement _ (.Literal _ valAnn _) => valAnn.val != "_"
+    | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val != "_"
     | _ => true
   -- Extract require condition arguments
   preStmts.filterMap fun stmt =>
