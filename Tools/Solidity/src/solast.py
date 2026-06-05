@@ -82,9 +82,21 @@ def invoke_solc(sol_path: str) -> dict:
     return output
 
 
-def get_ast(solc_output: dict) -> dict:
-    """Extract the AST from solc standard-json output."""
+def get_ast(solc_output: dict, primary_name: str | None = None) -> dict:
+    """Extract the AST from solc standard-json output.
+
+    When the contract imports other files, solc emits multiple sources. We must
+    return the AST of the file being verified (primary_name), NOT just the first
+    source — otherwise an imported library (which has no specs) shadows the main
+    contract and the verifier silently checks nothing.
+    """
     sources = solc_output.get("sources", {})
+    # Prefer the source whose key matches the primary input file's basename.
+    if primary_name is not None:
+        for name, info in sources.items():
+            if Path(name).name == primary_name and info.get("ast") is not None:
+                return info["ast"]
+    # Fallback: first source with an AST (single-file case).
     for _name, info in sources.items():
         ast = info.get("ast")
         if ast is not None:
@@ -547,7 +559,7 @@ def sol_to_strata_imp(args):
 
     sol_path = args.sol_file
     solc_output = invoke_solc(sol_path)
-    ast = get_ast(solc_output)
+    ast = get_ast(solc_output, Path(sol_path).name)
 
     prog = Program(dialect)
     prog.add(converter.convert_source_unit(ast))
