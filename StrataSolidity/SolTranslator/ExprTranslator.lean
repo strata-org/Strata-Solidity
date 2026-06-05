@@ -233,6 +233,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
+  -- `new T(args)` parses as FunctionCall(NewExpression(T), args). Contract
+  -- creation is an opaque external effect and dynamic memory arrays
+  -- (`new uint[](n)`) yield a fresh unconstrained value. Model as a Hole.
+  -- Must precede the general FunctionCall arm (matched top-to-bottom).
+  | .FunctionCall _ (.NewExpression _ _) _ _ _ =>
+    return mkStmtExprMd .Hole
+
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
     -- Check the FunctionCall kind
     match kindAnn.val with
@@ -560,6 +567,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | ">>=" => pure (mkStmtExprMd (.StaticCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
     return mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
+
+  -- Call with {value:, gas:} options: the options don't affect verification
+  -- semantics (ETH transfer is external/opaque). Translate the wrapped call.
+  | .FunctionCallOptions _ inner _ _ => translateExpr ctx inner
+
+  -- A bare NewExpression operand (no call args) — also opaque.
+  | .NewExpression _ _ =>
+    return mkStmtExprMd .Hole
 
   | _ => throw (.unsupported s!"Expression node type")
 
