@@ -589,6 +589,18 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .NewExpression _ _ =>
     return mkStmtExprMd .Hole
 
+  -- Static array literal `[a, b, c]`. A faithful model requires the memory-
+  -- array length-tracking representation the translator uses for other arrays;
+  -- the simple fresh-map encoding conflicts with it. Until that lands, reject
+  -- explicitly (sound: a clean error, never a silent vacuous pass).
+  | .InlineArrayExpression _ _ =>
+    throw (.unsupported "inline array literal [a, b, c] (needs memory-array length tracking)")
+
+  -- Calldata/bytes slice `x[start:end]`. Opaque slice — fresh unconstrained
+  -- value (sound over-approximation).
+  | .IndexRangeAccess _ _ _ _ =>
+    return mkStmtExprMd .Hole
+
   | _ => throw (.unsupported s!"Expression node type")
 
 /-- Translate a list of statements in a block, threading storage alias context.
