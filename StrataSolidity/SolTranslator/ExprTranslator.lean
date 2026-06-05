@@ -726,8 +726,77 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .WhileStatement _ cond body => do
     let condExpr ← translateExpr ctx cond
-    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
-    return mkStmtExprMd (.While condExpr invariants none bodyStmt)
+    -- Labels for break/continue. Nested loops get distinct labels via the counter.
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    -- body wrapped in continue-labelled block; loop wrapped in break-labelled block
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
+    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock)
+    return mkStmtExprMd (.Block [whileStmt] (some breakLbl))
+
+  | .DoWhileStatement _ cond body => do
+    -- Desugar: do { body } while (cond)  →  { body; while (cond) { body } }
+    -- The leading body executes once unconditionally; the while replays it.
+    let condExpr ← translateExpr ctx cond
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    let firstBody ← translateStmt bodyCtx body
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
+    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock)
+    return mkStmtExprMd (.Block [firstBody, mkStmtExprMd (.Block [whileStmt] (some breakLbl))] none)
+
+  | .BreakStatement _ =>
+    match ctx.currentLoopLabels with
+    | some (breakLbl, _) => return mkStmtExprMd (.Exit breakLbl)
+    | none => throw (.unsupported "break outside of a loop")
+
+  | .ContinueStatement _ =>
+    match ctx.currentLoopLabels with
+    | some (_, contLbl) => return mkStmtExprMd (.Exit contLbl)
+    | none => throw (.unsupported "continue outside of a loop")
+
+  | .TryStatement _ externalCall clausesSeq => do
+    -- Model try/catch as a nondeterministic choice between the success path
+    -- (clause 0, the call's `returns` body) and the catch path(s). The
+    -- external call result and any revert reason are unknown, so each clause's
+    -- parameters are introduced as havoc'd locals and both branches explored.
+    -- Sound over-approximation: any state either branch reaches is reachable.
+    let _ ← translateExpr ctx externalCall
+    let clauses := clausesSeq.val.toList
+    let mut branches : List StmtExprMd := []
+    for clause in clauses do
+      match clause with
+      | .TryCatchClause _ _ paramsOpt block => do
+        -- Introduce clause parameters (e.g. `returns (uint256 val)` or
+        -- `catch Error(string memory reason)`) as havoc'd local declarations.
+        let mut prelude : List StmtExprMd := []
+        match paramsOpt with
+        | .some_node _ (.ParameterList _ paramSeq) =>
+          for p in paramSeq.val.toList do
+            match p with
+            | .VariableDeclaration _ pName pTypeOpt _ _ _ _ _ =>
+              let solTy := match pTypeOpt with
+                | .some_type_name _ tn => translateTypeNode ctx tn
+                | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType (some (mkStmtExprMd .Hole)))]
+            | _ => pure ()
+        | _ => pure ()
+        let b ← translateStmt ctx block
+        branches := branches ++ [mkStmtExprMd (.Block (prelude ++ [b]) none)]
+      | _ => pure ()
+    -- Nondeterministic selection: nest each branch under an `if *` (Hole cond).
+    let nondet := branches.foldr (fun br acc =>
+      mkStmtExprMd (.IfThenElse (mkStmtExprMd .Hole) br (some acc)))
+      (mkStmtExprMd (.Block [] none))
+    return nondet
 
   | .ForStatement _ initOpt condOpt loopOpt body => do
     -- Desugar: for (init; cond; loop) body → { init; while (cond) { body; loop } }
@@ -742,16 +811,24 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let condExpr ← match condOpt with
       | .some_node _ condNode => translateExpr ctx condNode
       | .missing_node _ => pure (mkStmtExprMd (.LiteralBool true))
+    -- Labels for break/continue.
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
     -- Get loop invariants from NatSpec and translate loop body
-    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    -- `continue` exits the body block but the increment still runs afterward.
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
     -- Loop body + increment
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
-        let loopStmt ← translateStmt ctx loopNode
-        pure (mkStmtExprMd (.Block [bodyStmt, loopStmt] none))
-      | .missing_node _ => pure bodyStmt
+        let loopStmt ← translateStmt bodyCtx loopNode
+        pure (mkStmtExprMd (.Block [contBlock, loopStmt] none))
+      | .missing_node _ => pure contBlock
     let whileStmt := mkStmtExprMd (.While condExpr invariants none loopBody)
-    stmts := stmts ++ [whileStmt]
+    stmts := stmts ++ [mkStmtExprMd (.Block [whileStmt] (some breakLbl))]
     return mkStmtExprMd (.Block stmts none)
 
   | .VariableDeclarationStatement _ declsSeq initOpt => do

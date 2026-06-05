@@ -109,6 +109,12 @@ structure TransCtx where
       non-mapping state variable (see translateFunction). Used by the inline
       assembly havoc to decide whether `self.<field>` references are valid. -/
   hasSelfParam : Bool := false
+  /-- Labels of the innermost enclosing loop, as (breakLabel, continueLabel).
+      Set when translating a loop body so that `break`/`continue` statements
+      can emit `Exit` to the correct labelled block. `none` outside any loop. -/
+  currentLoopLabels : Option (String × String) := none
+  /-- Monotonic counter used to generate unique loop labels. -/
+  loopLabelCounter : Nat := 0
   /-- Loop invariant expressions parsed from NatSpec `@custom:strata loop-invariant`.
       Applied to loops encountered during function body translation. -/
   loopInvariantExprs : List StmtExprMd := []
