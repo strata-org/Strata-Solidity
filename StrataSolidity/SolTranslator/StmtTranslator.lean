@@ -65,10 +65,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
                               type := mkHighTypeMd (.UserDefined (mkIdent ctx.contractName)) }]
-      -- Assert non-negativity for uint scalar state vars (Solidity uints are always >= 0)
+      -- Assert non-negativity only for INTEGER scalar state vars (Solidity
+      -- uints are always >= 0). Non-int fields (e.g. bool) must not get a
+      -- `>= 0` precondition — that produces an ill-typed `bool >= 0`.
       for name in nonMappingStateVars do
-        let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
-        preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
+        let isIntField := ctx.contractFields.any fun f =>
+          f.name.text == name && (match f.type.val with | .TInt => true | _ => false)
+        if isIntField then
+          let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
+          preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
       -- Synthetic pre-state input parameters for scalar state vars.
       -- For each scalar field, add `<name>_in : <type>` and a precondition
       -- `self.<name> == <name>_in` so that `<name>_in` carries the pre-state
@@ -206,6 +211,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
+                              hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
@@ -365,7 +371,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
         -- Only include self in modifies list when contract has scalar (non-mapping) state vars
-        let modifiesList := if hasNonMappingState && !isConstructor then
+        let modifiesList := if !isPure && hasNonMappingState && !isConstructor then
           [mkStmtExprMd (mkIdentifier "self")]
         else []
         let allPostsConds : List Condition :=

@@ -655,8 +655,34 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts uncheckedCtx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
+  -- Inline assembly: havoc strategy. Any state variable potentially touched
+  -- by the assembly block is treated as unknown afterward (sound
+  -- over-approximation). The Yul payload is preserved in the AST but not
+  -- interpreted here. Without this arm, InlineAssembly falls through to the
+  -- catch-all assume(false), which silently makes post-assembly specs vacuous.
+  | .InlineAssembly _ _ =>
+    let mut havocs : List StmtExprMd := []
+    -- Havoc scalar state vars via self field assigns — only when `self` is in
+    -- scope (non-pure, non-constructor functions with non-mapping state).
+    if ctx.hasSelfParam then
+      for name in ctx.stateVarNames do
+        if !ctx.mappingStateVars.contains name then
+          havocs := havocs ++ [mkStmtExprMd (.Assign
+            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
+            (mkStmtExprMd .Hole))]
+    for name in ctx.mappingStateVars do
+      havocs := havocs ++ [mkStmtExprMd (.Assign
+        [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
+        (mkStmtExprMd .Hole))]
+      if ctx.arrayStateVars.contains name then
+        havocs := havocs ++ [mkStmtExprMd (.Assign
+          [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
+          (mkStmtExprMd .Hole))]
+    return mkStmtExprMd (.Block havocs none)
+
   | .ExpressionStatement _ (.Literal _ valAnn kindAnn) =>
-    -- Detect __assembly__ marker from InlineAssembly: havoc all state variables
+    -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
+    -- compatibility with any Ion produced by an older solast.py.
     if valAnn.val == "__assembly__" && kindAnn.val == "string" then
       let mut havocs : List StmtExprMd := []
       -- Havoc scalar state vars via self field assigns to Hole

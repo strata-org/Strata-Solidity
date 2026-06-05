@@ -104,6 +104,11 @@ structure TransCtx where
   -- TODO: Add a debug/trace flag that prints the generated Laurel IR for each function.
   -- This would help catch issues like uninitialized storage refs, missing $heap threading,
   -- and Block wrapper problems during development.
+  /-- Whether the current function has an implicit `self` parameter in scope.
+      True only for non-pure, non-constructor functions that have at least one
+      non-mapping state variable (see translateFunction). Used by the inline
+      assembly havoc to decide whether `self.<field>` references are valid. -/
+  hasSelfParam : Bool := false
   /-- Loop invariant expressions parsed from NatSpec `@custom:strata loop-invariant`.
       Applied to loops encountered during function body translation. -/
   loopInvariantExprs : List StmtExprMd := []
