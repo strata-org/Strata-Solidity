@@ -82,32 +82,61 @@ jobs:
       # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
       # and `lake test` in one step.
       #
-      # Cache-bust workaround for stale dialect oleans
-      # ----------------------------------------------
+      # Cache + stale-dialect handling
+      # ------------------------------------------------------------------
       # `#load_dialect "../Tools/Solidity/dialects/Solidity.dialect.st.ion"`
       # in StrataSolidity/SolidityDialect.lean reads the Ion file at
-      # elaboration time, but Lake doesn't track the .ion file as a build
-      # input. lean-action@v1's cache key is hardcoded as
-      # `…hashFiles('lean-toolchain')…hashFiles('lake-manifest.json')…`
-      # and has no input to customize, so a PR that regenerates the Ion
-      # (e.g. any Phase 2 dialect change) restores a stale
-      # SolidityDialect.olean from a previous run on `feat/upstream-port`
-      # and the build sees mismatched constructor names like
+      # elaboration time, but Lake does NOT track the .ion as a build input.
+      # The .lake cache key (toolchain + manifest, falling back across
+      # commits) therefore restores a SolidityDialect.olean built against a
+      # DIFFERENT Ion — e.g. a `feat/upstream-port` build with an older
+      # dialect schema. A PR that regenerates the Ion (any dialect change)
+      # then compiles its translator against the stale generated AST and
+      # fails with errors like "Function expected at node.Literal …" or
       # "Unknown constant Strata.Solidity.node.EmitStatement".
       #
-      # Removing the four artifacts forces just SolidityDialect to rebuild
-      # (~3s) while every other olean is reused — preserving cache value.
+      # The previous workaround busted the olean in a step BEFORE
+      # lean-action — but lean-action runs `actions/cache/restore` INSIDE
+      # itself (see leanprover/lean-action action.yml), so the restore
+      # re-added the stale olean seconds after the bust deleted it,
+      # defeating the workaround entirely.
       #
-      # Long-term fix: upstream `#load_dialect` should register the Ion
-      # file as a build input so Lake invalidates dependent oleans.
-      - name: bust stale SolidityDialect olean
+      # Fix: drive caching ourselves so the bust runs strictly AFTER the
+      # restore and is not undone. We restore the .lake cache, delete the
+      # dialect-derived oleans (forcing a fresh elaboration from the
+      # committed Ion + a rebuild of everything that pattern-matches the
+      # generated AST), then run lean-action with use-github-cache:false,
+      # and finally save the cache.
+      #
+      # Long-term fix: upstream `#load_dialect` should register the Ion as a
+      # build input so Lake invalidates dependent oleans automatically; then
+      # this whole dance collapses back to a plain lean-action call.
+      - name: restore .lake cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-${{ github.sha }}
+          restore-keys: |
+            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-
+
+      - name: bust stale dialect-derived oleans (AFTER restore)
         run: |
-          # Match SolidityDialect.* but not SolidityDialectLean* / SolidityDialectParity* —
-          # we want a fresh elaboration of the Ion-loaded canonical only.
+          # Remove the Ion-loaded canonical dialect olean and every olean that
+          # transitively pattern-matches the #strata_gen-generated AST types.
+          # This forces a fresh elaboration from the committed Ion and a
+          # rebuild of the translator against the correct constructor layout,
+          # while leaving the (expensive) Strata submodule oleans cached.
+          #
+          # Match SolidityDialect.* but NOT SolidityDialectLean* /
+          # SolidityDialectParity* (those are independent modules).
           shopt -s nullglob
-          for f in .lake/build/lib/lean/StrataSolidity/SolidityDialect.* \
-                   .lake/build/ir/StrataSolidity/SolidityDialect.*; do
-            rm -f "$f"
+          for base in lib/lean ir; do
+            d=".lake/build/${base}/StrataSolidity"
+            # canonical dialect (Ion-loaded), excluding *Lean* / *Parity*
+            for f in "$d"/SolidityDialect.*; do rm -f "$f"; done
+            # downstream consumers of the generated AST
+            rm -f "$d"/Solidity.* "$d"/ReadSolidity.* 2>/dev/null || true
+            rm -rf "$d"/SolTranslator 2>/dev/null || true
           done
 
       - name: lake build + lake test
@@ -116,6 +145,14 @@ jobs:
           build: true
           test: true
           lint: false
+          use-github-cache: false
+
+      - name: save .lake cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-${{ github.sha }}
 
       # ---- Stage 5: golden + REQ-PBT-007 exit-code sub-stage ----
       # test/run_tests.sh runs strata-verify.sh against test/examples/*.sol
