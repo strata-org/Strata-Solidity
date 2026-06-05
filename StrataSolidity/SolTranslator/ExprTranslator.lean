@@ -353,7 +353,14 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.StaticCall qualifiedName args)
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val) on array state variables
-      if memberAnn.val == "push" then do
+      if memberAnn.val == "wrap" || memberAnn.val == "unwrap" then do
+        -- User-defined value type wrap/unwrap (`Wei.wrap(x)`, `Wei.unwrap(w)`)
+        -- are pure identity on the underlying representation (issue #13).
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        match args with
+        | [x] => return x
+        | _ => throw (.typeError s!"{memberAnn.val}() expects exactly one argument")
+      else if memberAnn.val == "push" then do
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         -- Check if base is an array state variable
         let arrayName := match baseNode with

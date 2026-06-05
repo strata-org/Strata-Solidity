@@ -52,6 +52,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
+    let mut udvtNames : List String := ctx.udvtNames
     let mut stateVarInvariants : List StrataAnnotation := []
     let mut constantDefs : List (String × StmtExprMd) := []
 
@@ -117,6 +118,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           | .EnumValue _ nameAnn => some nameAnn.val
           | _ => none
         enumDefs := enumDefs ++ [(eNameAnn.val, memberNames)]
+      | .UserDefinedValueTypeDefinition _ udvtNameAnn _ =>
+        udvtNames := udvtNames ++ [udvtNameAnn.val]
       | _ => pure ()
 
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
@@ -189,6 +192,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
+                 udvtNames := udvtNames
                  constantDefs := constantDefs }
     -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
     -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
@@ -246,6 +250,16 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
   | .SourceUnit _ nodesSeq => do
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
+
+    -- Pre-pass: collect top-level user-defined value types (`type Wei is uint256`)
+    -- so contracts can resolve UDVT-typed locals/params/mappings to TInt.
+    let mut topUdvtNames : List String := []
+    for node in nodesSeq.val do
+      match node with
+      | .UserDefinedValueTypeDefinition _ udvtNameAnn _ =>
+        topUdvtNames := topUdvtNames ++ [udvtNameAnn.val]
+      | _ => pure ()
+    let ctx := { ctx with udvtNames := ctx.udvtNames ++ topUdvtNames }
 
     for node in nodesSeq.val do
       match node with

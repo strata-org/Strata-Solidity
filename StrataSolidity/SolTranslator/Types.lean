@@ -127,6 +127,10 @@ structure TransCtx where
   /-- Enum definitions: maps enum name to ordered list of member names.
       Used to resolve `EnumName.Member` to integer literals. -/
   enumDefs : List (String × List String) := []
+  /-- Names of user-defined value types (`type Wei is uint256`). Resolved to
+      their underlying value type (modeled as TInt, like enums) so local
+      declarations and parameters typed as a UDVT resolve. -/
+  udvtNames : List String := []
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
@@ -274,8 +278,8 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
   match tn with
   | .ElementaryTypeName _ nameAnn _ => translateTypeName nameAnn.val
   | .UserDefinedTypeName _ nameAnn =>
-    -- Enum types are modeled as TInt (uint8 in Solidity)
-    if ctx.enumDefs.any (·.1 == nameAnn.val) then
+    -- Enum types and user-defined value types (UDVT) are modeled as TInt.
+    if ctx.enumDefs.any (·.1 == nameAnn.val) || ctx.udvtNames.contains nameAnn.val then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
     else
       { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
