@@ -1,33 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-library SafeMath {
-    function add(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a + b;
-    }
-}
+// Exercises field-level metadata additions (#17): abstract contract,
+// virtual/override functions, immutable state var, explicit visibility.
+// These are metadata that must not break translation.
 
 abstract contract Base {
-    uint256 public immutable deployTime;
-    uint256 public constant MAX_SUPPLY = 1000000;
-
-    constructor() {
-        deployTime = block.timestamp;
-    }
-
-    function name() external virtual pure returns (string memory);
+    /// @custom:strata requires x >= 0
+    /// @custom:strata ensures r == x
+    function echo(uint256 x) external pure virtual returns (uint256 r);
 }
 
 contract Derived is Base {
-    using SafeMath for uint256;
-
     uint256 private _supply;
 
-    function name() external pure override returns (string memory) {
-        return "Derived";
+    /// @custom:strata requires x >= 0
+    /// @custom:strata ensures r == x
+    function echo(uint256 x) external pure override returns (uint256 r) {
+        r = x;
     }
 
+    /// @custom:strata requires amount >= 0
+    /// @custom:strata ensures _supply == old(_supply) + amount
     function mint(uint256 amount) external {
-        _supply = _supply.add(amount);
+        _supply = _supply + amount;
     }
 }
