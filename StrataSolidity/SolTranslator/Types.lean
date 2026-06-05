@@ -272,14 +272,14 @@ def translateTypeName (name : String) : SolType :=
     Requires TransCtx to resolve enum types to TInt. -/
 def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : SolType :=
   match tn with
-  | .ElementaryTypeName _ nameAnn => translateTypeName nameAnn.val
+  | .ElementaryTypeName _ nameAnn _ => translateTypeName nameAnn.val
   | .UserDefinedTypeName _ nameAnn =>
     -- Enum types are modeled as TInt (uint8 in Solidity)
     if ctx.enumDefs.any (·.1 == nameAnn.val) then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
     else
       { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
-  | .MappingType _ keyTn valTn =>
+  | .MappingType _ keyTn valTn _ _ =>
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
@@ -289,6 +289,11 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     -- so we use TInt as the key type. This means array indices can be negative in the SMT
     -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
     { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
+  | .FunctionTypeName _ _ _ _ _ =>
+    -- First-class function types are modeled as an opaque user-defined type.
+    -- Verification doesn't reason about function-pointer values; this keeps
+    -- the type well-formed without claiming any structure.
+    { highType := mkHighTypeMd (.UserDefined (mkIdent "function")), solName := "function" }
 
 /-- Is this a Solidity unsigned integer type? -/
 def SolType.isUint (st : SolType) : Bool :=
