@@ -364,18 +364,34 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- use Body.Opaque with an empty postconds list — semantically a
         -- procedure with no observable effect, which is what spec-less
         -- functions deserve.
-        -- Tag invariant postconditions with __strata_invariant wrapper for label generation
-        let taggedInvariants := contractInvariants.map fun inv =>
-          mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
-        let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
+        -- Contract invariants are emitted as plain postcondition expressions
+        -- and tagged via the Condition `summary` field (the designed labeling
+        -- channel — it flows to Core's propertySummary metadata and the SARIF
+        -- `strata/invariant-fail` classifier keys off the substring
+        -- "invariant"). A previous attempt wrapped each invariant in a
+        -- synthetic `StaticCall "__strata_invariant" [inv]` "for label
+        -- generation", but the obligation label is derived from the
+        -- translateChecks labelBase ("postcondition_N"), NOT from the
+        -- expression — so the wrapper never affected any label and instead
+        -- reached Laurel→Core as a call to an undeclared function, failing
+        -- with "Resolution failed: '__strata_invariant' is not defined" for
+        -- every contract carrying an in-contract invariant (ERC20,
+        -- Initializable, ReentrancyGuard, ...).
+        let specAndFramePosts := specPostExprs ++ frameConditions
+        let allPosts := specAndFramePosts ++ contractInvariants
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
         -- Only include self in modifies list when contract has scalar (non-mapping) state vars
         let modifiesList := if !isPure && hasNonMappingState && !isConstructor then
           [mkStmtExprMd (mkIdentifier "self")]
         else []
-        let allPostsConds : List Condition :=
-          allPosts.map fun p => { condition := p, summary := none }
+        let specAndFrameConds : List Condition :=
+          (specAndFramePosts.map (withSourceRange ctx fnSr)).map fun p =>
+            { condition := p, summary := none }
+        let invariantConds : List Condition :=
+          (contractInvariants.map (withSourceRange ctx fnSr)).map fun p =>
+            { condition := p, summary := some "invariant" }
+        let allPostsConds : List Condition := specAndFrameConds ++ invariantConds
         pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
           modifiesList, contractInvariants)
       | .missing_node _ =>
