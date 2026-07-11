@@ -532,7 +532,7 @@ private def vdsMissingInit (j : Json) : Bool :=
 
 private def isPlaceholderLit (j : Json) : Bool :=
   match convertNode j with
-  | .ok (node.ExpressionStatement _ (node.Literal _ v k)) =>
+  | .ok (node.ExpressionStatement _ (node.Literal _ v k _)) =>
     v.val == "_" && k.val == "string"
   | _ => false
 

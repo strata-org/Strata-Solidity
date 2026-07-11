@@ -397,7 +397,7 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     -- solast.py and lower it to an ExpressionStatement wrapping a string
     -- Literal "_" — downstream translators recognize this marker.
     return node.ExpressionStatement sr
-      (node.Literal sr (annStr sr "_") (annStr sr "string"))
+      (node.Literal sr (annStr sr "_") (annStr sr "string") (annStr sr ""))
 
   | "PragmaDirective"
   | "ContractDefinition"
