@@ -836,7 +836,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | .some_node _ (.ParameterList _ paramSeq) =>
           for p in paramSeq.val.toList do
             match p with
-            | .VariableDeclaration _ pName pTypeOpt _ _ _ _ _ =>
+            | .VariableDeclaration _ pName pTypeOpt _ _ _ _ _ _ _ _ =>
               let solTy := match pTypeOpt with
                 | .some_type_name _ tn => translateTypeNode ctx tn
                 | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
