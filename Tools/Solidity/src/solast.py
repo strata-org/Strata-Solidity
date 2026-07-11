@@ -91,11 +91,15 @@ def get_ast(solc_output: dict, primary_name: str | None = None) -> dict:
     contract and the verifier silently checks nothing.
     """
     sources = solc_output.get("sources", {})
-    # Prefer the source whose key matches the primary input file's basename.
+    # Match the primary source by its EXACT key. invoke_solc registers the
+    # primary under exactly its basename (sol_name), so an exact-key match is
+    # precise. A basename match (Path(name).name == primary_name) would
+    # silently re-introduce the shadowing bug when an imported file shares
+    # the primary's basename (e.g. `import "./sub/token.sol"` from token.sol).
     if primary_name is not None:
-        for name, info in sources.items():
-            if Path(name).name == primary_name and info.get("ast") is not None:
-                return info["ast"]
+        info = sources.get(primary_name)
+        if info is not None and info.get("ast") is not None:
+            return info["ast"]
     # Fallback: first source with an AST (single-file case).
     for _name, info in sources.items():
         ast = info.get("ast")
