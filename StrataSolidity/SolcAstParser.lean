@@ -481,11 +481,12 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     --        documentation?, src: ... }
     let name        := getStrOr j "name"
     let kind        := getStrOr j "contractKind" "contract"
+    let abstract?   := getBoolStr j "abstract" false
     let members     ← convertSeqChildrenSkipping "ContractDefinition" "nodes" j
     let doc         := getDocText j
     let baseStrs    := getBaseContractNames j
     return node.ContractDefinition sr (annStr sr name) (annStr sr kind)
-      (annNodes sr members) (annStr sr doc)
+      (annStr sr abstract?) (annNodes sr members) (annStr sr doc)
       (annStrs sr (baseStrs.map (annStr sr)))
 
   | "ModifierDefinition" =>
@@ -519,13 +520,15 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let kind          := getStrOr j "kind" "function"
     let mut'          := getStrOr j "stateMutability"
     let vis           := getStrOr j "visibility"
+    let virtual?      := getBoolStr j "virtual" false
     let params       ← convertChild "FunctionDefinition" "parameters" j
     let returnParams ← convertChild "FunctionDefinition" "returnParameters" j
     let body         ← convertOptChild sr j "body"
     let doc           := getDocText j
     let modifiers    ← convertSeqChildrenSkipping "FunctionDefinition" "modifiers" j
     return node.FunctionDefinition sr (annStr sr name) (annStr sr kind)
-      (annStr sr mut') (annStr sr vis) params returnParams body
+      (annStr sr mut') (annStr sr vis) (annStr sr virtual?)
+      params returnParams body
       (annStr sr doc) (annNodes sr modifiers)
 
   | "ParameterList" =>
@@ -542,12 +545,16 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let typeName ← convertOptTypeName sr j "typeName"
     let stateVar  := getBoolStr j "stateVariable" false
     let const?    := getBoolStr j "constant"      false
+    let mut'      := getStrOr   j "mutability"
+    let vis       := getStrOr   j "visibility"
+    let indexed?  := getBoolStr j "indexed" false
     let storLoc   := getStrOr   j "storageLocation"
     let value    ← convertOptChild sr j "value"
     let doc       := getDocText j
     return node.VariableDeclaration sr (annStr sr name) typeName
-      (annStr sr stateVar) (annStr sr const?) (annStr sr storLoc)
-      value (annStr sr doc)
+      (annStr sr stateVar) (annStr sr const?)
+      (annStr sr mut') (annStr sr vis) (annStr sr indexed?)
+      (annStr sr storLoc) value (annStr sr doc)
 
   | "StructDefinition" =>
     -- solc: { nodeType: "StructDefinition", name, members: [<VariableDeclaration>, ...], src: ... }

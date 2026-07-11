@@ -613,7 +613,7 @@ private def pragmaLits (j : Json) : Option (Array String) :=
 
 private def contractInfo (j : Json) : Option (String × String × Nat × Array String) :=
   match convertNode j with
-  | .ok (node.ContractDefinition _ name kind members _doc bases) =>
+  | .ok (node.ContractDefinition _ name kind _abstract members _doc bases) =>
     some (name.val, kind.val, members.val.size, bases.val.map (·.val))
   | _ => none
 
@@ -660,10 +660,10 @@ private def paramListSize (j : Json) : Nat :=
 
 private def varDeclInfo (j : Json) : Option (String × String × String × String) :=
   match convertNode j with
-  | .ok (node.VariableDeclaration _ name typeName stateVar const? _ _ _) =>
+  | .ok (node.VariableDeclaration _ name typeName stateVar const? _ _ _ _ _ _) =>
     let typeStr := match typeName with
       | Strata.Solidity.opt_type_name.some_type_name _
-          (type_name.ElementaryTypeName _ n) => n.val
+          (type_name.ElementaryTypeName _ n _) => n.val
       | _ => "<other>"
     some (name.val, typeStr, stateVar.val, const?.val)
   | _ => none
@@ -677,7 +677,7 @@ private def varDeclInfo (j : Json) : Option (String × String × String × Strin
 -- Test missing typeName → opt_type_name.missing_type_name
 private def varDeclMissingType (j : Json) : Bool :=
   match convertNode j with
-  | .ok (node.VariableDeclaration _ _ (Strata.Solidity.opt_type_name.missing_type_name _) _ _ _ _ _) => true
+  | .ok (node.VariableDeclaration _ _ (Strata.Solidity.opt_type_name.missing_type_name _) _ _ _ _ _ _ _ _) => true
   | _ => false
 
 #guard varDeclMissingType
@@ -709,7 +709,7 @@ private def modInvName (j : Json) : Option String :=
 
 private def funcDefSig (j : Json) : Option (String × String × String × Bool × Nat) :=
   match convertNode j with
-  | .ok (node.FunctionDefinition _ name kind _stateMut vis _params _returnParams body _doc mods) =>
+  | .ok (node.FunctionDefinition _ name kind _stateMut vis _virtual _params _returnParams body _doc mods) =>
     let hasBody := match body with
       | Strata.Solidity.opt_node.some_node _ _ => true
       | Strata.Solidity.opt_node.missing_node _ => false
