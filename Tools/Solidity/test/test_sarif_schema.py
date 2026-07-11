@@ -48,7 +48,7 @@ _PROJECT_ROOT = _THIS_DIR.parents[2]
 
 _STRATA_VERIFY = _PROJECT_ROOT / "Tools" / "Solidity" / "scripts" / "strata-verify.sh"
 _STRATA_BIN = _PROJECT_ROOT / ".lake" / "build" / "bin" / "strataSolidity"
-_DIALECT = _PROJECT_ROOT / "Tools" / "Solidity" / "dialects" / "Solidity.dialect.st.ion"
+# Dialect is compiled into the binary (Lean-canonical); no Ion artifact needed.
 _SCHEMA_PATH = _THIS_DIR / "schemas" / "sarif-schema-2.1.0.json"
 
 # Fixtures are curated to exercise at least one @custom:strata spec or
@@ -73,11 +73,8 @@ def _require_built_binary() -> None:
 
 
 def _require_dialect() -> None:
-    if not _DIALECT.exists():
-        pytest.skip(
-            f"Solidity dialect file not found at {_DIALECT}; "
-            "run Tools/Solidity/scripts/gen_dialect.sh first."
-        )
+    """Dialect is Lean-canonical and compiled into the binary; nothing to check."""
+    return
 
 
 def _require_solc() -> None:

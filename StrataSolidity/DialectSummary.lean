@@ -4,13 +4,13 @@
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
 
-import StrataSolidity.SolidityDialectLean
+import StrataSolidity.SolidityDialect
 
 /-!
 # `lake exe gen-dialect-summary` — print a structural snapshot of the Lean dialect
 
 Group A step 2 of `.kiro/specs/pipeline-language-rationalization/`.
-Produces a deterministic, human-readable summary of `soliditydialectLean` so
+Produces a deterministic, human-readable summary of the canonical `Solidity` dialect so
 contributors can:
 
   * inspect what the Lean dialect declares without reading the Lean source,
@@ -66,11 +66,11 @@ private def declSummary (decl : Decl) : Option String :=
   | _         => none
 
 def main : IO Unit := do
-  let d := Strata.Solidity.soliditydialectLean
+  let d := Strata.Solidity.Solidity
   let lines := d.declarations.filterMap declSummary
   let sorted := lines.qsort (· < ·)
   IO.println s!"# Solidity dialect — structural summary"
-  IO.println s!"# Generated from StrataSolidity/SolidityDialectLean.lean"
+  IO.println s!"# Generated from StrataSolidity/SolidityDialect.lean"
   IO.println s!"# {d.declarations.size} total declarations"
   IO.println ""
   for line in sorted do

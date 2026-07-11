@@ -82,77 +82,18 @@ jobs:
       # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
       # and `lake test` in one step.
       #
-      # Cache + stale-dialect handling
-      # ------------------------------------------------------------------
-      # `#load_dialect "../Tools/Solidity/dialects/Solidity.dialect.st.ion"`
-      # in StrataSolidity/SolidityDialect.lean reads the Ion file at
-      # elaboration time, but Lake does NOT track the .ion as a build input.
-      # The .lake cache key (toolchain + manifest, falling back across
-      # commits) therefore restores a SolidityDialect.olean built against a
-      # DIFFERENT Ion — e.g. a `feat/upstream-port` build with an older
-      # dialect schema. A PR that regenerates the Ion (any dialect change)
-      # then compiles its translator against the stale generated AST and
-      # fails with errors like "Function expected at node.Literal …" or
-      # "Unknown constant Strata.Solidity.node.EmitStatement".
-      #
-      # The previous workaround busted the olean in a step BEFORE
-      # lean-action — but lean-action runs `actions/cache/restore` INSIDE
-      # itself (see leanprover/lean-action action.yml), so the restore
-      # re-added the stale olean seconds after the bust deleted it,
-      # defeating the workaround entirely.
-      #
-      # Fix: drive caching ourselves so the bust runs strictly AFTER the
-      # restore and is not undone. We restore the .lake cache, delete the
-      # dialect-derived oleans (forcing a fresh elaboration from the
-      # committed Ion + a rebuild of everything that pattern-matches the
-      # generated AST), then run lean-action with use-github-cache:false,
-      # and finally save the cache.
-      #
-      # Long-term fix: upstream `#load_dialect` should register the Ion as a
-      # build input so Lake invalidates dependent oleans automatically; then
-      # this whole dance collapses back to a plain lean-action call.
-      - name: restore .lake cache
-        uses: actions/cache/restore@v5
-        with:
-          path: .lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-${{ github.sha }}
-          restore-keys: |
-            lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-
-
-      - name: bust stale dialect-derived oleans (AFTER restore)
-        run: |
-          # Remove the Ion-loaded canonical dialect olean and every olean that
-          # transitively pattern-matches the #strata_gen-generated AST types.
-          # This forces a fresh elaboration from the committed Ion and a
-          # rebuild of the translator against the correct constructor layout,
-          # while leaving the (expensive) Strata submodule oleans cached.
-          #
-          # Match SolidityDialect.* but NOT SolidityDialectLean* /
-          # SolidityDialectParity* (those are independent modules).
-          shopt -s nullglob
-          for base in lib/lean ir; do
-            d=".lake/build/${base}/StrataSolidity"
-            # canonical dialect (Ion-loaded), excluding *Lean* / *Parity*
-            for f in "$d"/SolidityDialect.*; do rm -f "$f"; done
-            # downstream consumers of the generated AST
-            rm -f "$d"/Solidity.* "$d"/ReadSolidity.* 2>/dev/null || true
-            rm -rf "$d"/SolTranslator 2>/dev/null || true
-          done
-
+      # The dialect is now declared directly in Lean
+      # (StrataSolidity/SolidityDialect.lean, `#dialect … #end` +
+      # `#strata_gen`), so there is no Ion artifact that Lake fails to
+      # track and no stale-olean hazard: any dialect edit is an ordinary
+      # .lean change that Lake invalidates like any other. The former
+      # restore→bust→build→save cache dance is gone.
       - name: lake build + lake test
         uses: leanprover/lean-action@v1
         with:
           build: true
           test: true
           lint: false
-          use-github-cache: false
-
-      - name: save .lake cache
-        if: always()
-        uses: actions/cache/save@v5
-        with:
-          path: .lake
-          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-${{ github.sha }}
 
       # ---- Stage 5: golden + REQ-PBT-007 exit-code sub-stage ----
       # test/run_tests.sh runs strata-verify.sh against test/examples/*.sol
@@ -162,19 +103,16 @@ jobs:
       - name: test/run_tests.sh (golden + REQ-PBT-007)
         run: bash test/run_tests.sh
 
-      # ---- Group A step 3: Solidity dialect parity (Python ↔ Lean) ----
-      # Catches drift between Tools/Solidity/src/base_dialect.py (the Python
-      # source of truth, which generates the Ion artifact) and
-      # StrataSolidity/SolidityDialectLean.lean (the parallel Lean dialect
-      # introduced in PR #5).
-      #
-      # The two summaries must be byte-equal (after dropping the per-source
-      # provenance comment). Any drift — added/removed/renamed op, changed
-      # arg order — produces a non-empty diff and fails the build.
-      - name: dialect parity (Python ↔ Lean)
+      # ---- Solidity dialect parity (Python frontend ↔ Lean canonical) ----
+      # The Lean dialect (StrataSolidity/SolidityDialect.lean) is canonical.
+      # While the legacy Python frontend (solast.py + base_dialect.py) is
+      # still present, this gate ensures its schema matches the canonical
+      # dialect byte-for-byte, so the two frontends cannot drift. It is
+      # retired together with the Python frontend.
+      - name: dialect parity (Python frontend ↔ Lean canonical)
         run: |
           set -euo pipefail
-          python3 Tools/Solidity/src/print_dialect_summary.py \
+          python3 Tools/Solidity/src/print_dialect_summary.py --as=Solidity \
             | grep -v '^# Generated from' > /tmp/python-dialect.txt
           lake exe gen-dialect-summary \
             | grep -v '^# Generated from' > /tmp/lean-dialect.txt
