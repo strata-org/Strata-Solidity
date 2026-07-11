@@ -353,9 +353,16 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.StaticCall qualifiedName args)
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val) on array state variables
-      if memberAnn.val == "wrap" || memberAnn.val == "unwrap" then do
-        -- User-defined value type wrap/unwrap (`Wei.wrap(x)`, `Wei.unwrap(w)`)
-        -- are pure identity on the underlying representation (issue #13).
+      -- User-defined value type wrap/unwrap (`Wei.wrap(x)`, `Wei.unwrap(w)`)
+      -- are pure identity on the underlying representation (issue #13).
+      -- Guarded on the base being a KNOWN UDVT name: a plain method that
+      -- happens to be called `wrap`/`unwrap` (e.g. `wstETH.wrap(amount)`,
+      -- which converts at a rate) must NOT be modeled as identity — it falls
+      -- through to the general uninterpreted-call path below.
+      let baseIsUdvt := match baseNode with
+        | .Identifier _ baseNameAnn => ctx.udvtNames.contains baseNameAnn.val
+        | _ => false
+      if (memberAnn.val == "wrap" || memberAnn.val == "unwrap") && baseIsUdvt then do
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         match args with
         | [x] => return x
