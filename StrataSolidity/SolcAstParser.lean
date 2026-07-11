@@ -209,10 +209,11 @@ private def getBaseContractNames (j : Json) : Array String :=
   | _ => #[]
 
 /-- Node types whose presence in a sequence is structurally noise for
-    verification (NatSpec, events, emits, imports). Mirrors
-    `solast.py:_SKIP_NODE_TYPES`. -/
+    verification. Mirrors `solast.py:_SKIP_NODE_TYPES` — after Phase 2
+    (events/errors, imports, using-for became first-class dialect ops)
+    only NatSpec documentation nodes remain skippable. -/
 private def skipNodeTypes : List String :=
-  ["StructuredDocumentation", "ImportDirective", "EventDefinition", "EmitStatement"]
+  ["StructuredDocumentation"]
 
 mutual
 
@@ -289,15 +290,17 @@ partial def convertOptTypeName (sr : SourceRange) (j : Json) (f : String) :
     return Strata.Solidity.opt_type_name.some_type_name sr tn
   | .error _ => return Strata.Solidity.opt_type_name.missing_type_name sr
 
-/-- Translate a top-level `SourceUnit` JSON node to a list of `Solidity.node`s.
-    The `Command` arm of the dialect produces a `Solidity.Command`; that
-    higher-level wrapping is left for the per-node implementations to land. -/
-partial def convertSourceUnit (j : Json) : ConvertM Unit := do
+/-- Translate a top-level `SourceUnit` JSON node to a typed
+    `Solidity.Command` — the same shape `ReadSolidity.readSolidityStrata`
+    produces from an Ion file, so `solidityToLaurel` can consume either
+    frontend interchangeably. Skips `skipNodeTypes` children (mirrors
+    `solast.py:convert_source_unit` via `_seq_nodes`). -/
+partial def convertSourceUnit (j : Json) : ConvertM (Strata.Solidity.Command SourceRange) := do
   let nt ← getNodeType j
   if nt != "SourceUnit" then throw (.wrongType "SourceUnit" "nodeType" nt)
-  let _nodes ← getArr "SourceUnit" j "nodes"
-  -- TODO(group-b): walk nodes and build typed Solidity.node values.
-  return ()
+  let sr := parseSrc j
+  let nodes ← convertSeqChildrenSkipping "SourceUnit" "nodes" j
+  return .SourceUnit sr (annNodes sr nodes)
 
 /-- Dispatch on `nodeType` to the appropriate per-node translator.
     Returns a typed `node SourceRange` value. -/
@@ -573,6 +576,123 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let name := getStrOr j "name"
     return node.EnumValue sr (annStr sr name)
 
+  | "ImportDirective" =>
+    -- solc: { nodeType: "ImportDirective", file, absolutePath, unitAlias,
+    --        symbolAliases: [{foreign: {name}, local?}, ...], src: ... }
+    -- Encode symbolAliases as "foreign:local" strings (mirrors solast.py).
+    let aliases : Array String := match (j.getObjVal? "symbolAliases").toOption with
+      | some (Json.arr sas) =>
+        sas.map fun sa =>
+          let foreign := match (sa.getObjVal? "foreign").toOption with
+            | some f => getStrOr f "name"
+            | none   => ""
+          let local_ := getStrOr sa "local"
+          if local_.isEmpty then foreign else s!"{foreign}:{local_}"
+      | _ => #[]
+    return node.ImportDirective sr
+      (annStr sr (getStrOr j "file"))
+      (annStr sr (getStrOr j "absolutePath"))
+      (annStr sr (getStrOr j "unitAlias"))
+      (annStrs sr (aliases.map (annStr sr)))
+
+  | "UserDefinedValueTypeDefinition" =>
+    -- solc: { nodeType: "UserDefinedValueTypeDefinition", name, underlyingType, src: ... }
+    let name := getStrOr j "name"
+    match j.getObjVal? "underlyingType" with
+    | .ok tyJ =>
+      let ty ← convertTypeName tyJ
+      return node.UserDefinedValueTypeDefinition sr (annStr sr name) ty
+    | .error _ => throw (.missingField "UserDefinedValueTypeDefinition" "underlyingType")
+
+  | "DoWhileStatement" =>
+    -- solc: { nodeType: "DoWhileStatement", condition, body, src: ... }
+    let cond ← convertChild "DoWhileStatement" "condition" j
+    let body ← convertChild "DoWhileStatement" "body" j
+    return node.DoWhileStatement sr cond body
+
+  | "Break" =>
+    -- solc emits "Break"; the dialect op is BreakStatement.
+    return node.BreakStatement sr
+
+  | "Continue" =>
+    -- solc emits "Continue"; the dialect op is ContinueStatement.
+    return node.ContinueStatement sr
+
+  | "TryStatement" =>
+    -- solc: { nodeType: "TryStatement", externalCall,
+    --        clauses: [{errorName, parameters?, block}, ...], src: ... }
+    let call ← convertChild "TryStatement" "externalCall" j
+    let clauses ← match (j.getObjVal? "clauses").toOption with
+      | some (Json.arr cs) => cs.mapM fun c => do
+          let csr := parseSrc c
+          let errName := getStrOr c "errorName"
+          let params ← convertOptChild csr c "parameters"
+          let block ← convertChild "TryCatchClause" "block" c
+          pure (node.TryCatchClause csr (annStr csr errName) params block)
+      | _ => pure #[]
+    return node.TryStatement sr call (annNodes sr clauses)
+
+  | "InlineAssembly" =>
+    -- solc: { nodeType: "InlineAssembly", AST: <Yul AST>, src: ... }
+    -- Serialize the Yul AST as a JSON string payload; the translator uses
+    -- the havoc strategy. Mirrors solast.py.
+    let yulPayload := match (j.getObjVal? "AST").toOption with
+      | some yul => yul.compress
+      | none     => ""
+    return node.InlineAssembly sr (annStr sr yulPayload)
+
+  | "IndexRangeAccess" =>
+    -- solc: { nodeType: "IndexRangeAccess", baseExpression, startExpression?, endExpression?, ... }
+    let base ← convertChild "IndexRangeAccess" "baseExpression" j
+    let startE ← convertOptChild sr j "startExpression"
+    let endE ← convertOptChild sr j "endExpression"
+    return node.IndexRangeAccess sr base startE endE
+
+  | "InlineArrayExpression" =>
+    -- solc: { nodeType: "InlineArrayExpression", components: [<expr>, ...], ... }
+    let comps ← convertSeqChildrenSkipping "InlineArrayExpression" "components" j
+    return node.InlineArrayExpression sr (annNodes sr comps)
+
+  | "NewExpression" =>
+    -- solc: { nodeType: "NewExpression", typeName: <type-name>, ... }
+    match j.getObjVal? "typeName" with
+    | .ok tyJ =>
+      let ty ← convertTypeName tyJ
+      return node.NewExpression sr ty
+    | .error _ => throw (.missingField "NewExpression" "typeName")
+
+  | "EventDefinition" =>
+    -- solc: { nodeType: "EventDefinition", name, parameters, anonymous, src: ... }
+    let name := getStrOr j "name"
+    let params ← convertChild "EventDefinition" "parameters" j
+    return node.EventDefinition sr (annStr sr name) params
+      (annStr sr (getBoolStr j "anonymous" false))
+
+  | "ErrorDefinition" =>
+    -- solc: { nodeType: "ErrorDefinition", name, parameters, src: ... }
+    let name := getStrOr j "name"
+    let params ← convertChild "ErrorDefinition" "parameters" j
+    return node.ErrorDefinition sr (annStr sr name) params
+
+  | "EmitStatement" =>
+    -- solc: { nodeType: "EmitStatement", eventCall, src: ... }
+    let call ← convertChild "EmitStatement" "eventCall" j
+    return node.EmitStatement sr call
+
+  | "RevertStatement" =>
+    -- solc: { nodeType: "RevertStatement", errorCall, src: ... }
+    let call ← convertChild "RevertStatement" "errorCall" j
+    return node.RevertStatement sr call
+
+  | "UsingForDirective" =>
+    -- solc: { nodeType: "UsingForDirective", libraryName: {name}?, typeName?, global?, ... }
+    let libName := match (j.getObjVal? "libraryName").toOption with
+      | some ln => getStrOr ln "name"
+      | none    => ""
+    let tyName ← convertOptTypeName sr j "typeName"
+    return node.UsingForDirective sr (annStr sr libName) tyName
+      (annStr sr (getBoolStr j "global" false))
+
   | other => throw (.unknownNodeType other)
 
 /-- Dispatch on `nodeType` for type-name positions. -/
@@ -631,21 +751,37 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
       return type_name.ArrayTypeName sr baseTy
     | .error _ => throw (.missingField "ArrayTypeName" "baseType")
 
-  | other => throw (.unknownNodeType other)
+  | "FunctionTypeName" =>
+    -- solc: { nodeType: "FunctionTypeName", parameterTypes: <ParameterList>,
+    --        returnParameterTypes: <ParameterList>, visibility, stateMutability, ... }
+    let params ← convertChild "FunctionTypeName" "parameterTypes" j
+    let retParams ← convertChild "FunctionTypeName" "returnParameterTypes" j
+    return type_name.FunctionTypeName sr params retParams
+      (annStr sr (getStrOr j "visibility"))
+      (annStr sr (getStrOr j "stateMutability"))
+
+  | other =>
+    -- Fallback: wrap unknown type names as ElementaryTypeName carrying the
+    -- solc typeString (mirrors solast.py's convert_type_name fallback).
+    let ts := match (j.getObjVal? "typeDescriptions").toOption with
+      | some td => getStrOr td "typeString" s!"unknown:{other}"
+      | none    => s!"unknown:{other}"
+    return type_name.ElementaryTypeName sr (annStr sr ts) (annStr sr "")
 
 end
 
 /-! ## Public entry point -/
 
-/-- Run solc on `solPath`, then walk the resulting JSON AST. Returns
-    `Unit` until per-node translators are filled in; subsequent PRs
-    will change this to `IO (Except _ (Solidity.Command SourceRange))`. -/
-def parseFile (solPath : System.FilePath) : IO (Except String Unit) := do
+/-- Run solc on `solPath`, then walk the resulting JSON AST into a typed
+    `Solidity.Command` — the same shape the Ion path produces, ready for
+    `solidityToLaurel`. -/
+def parseFile (solPath : System.FilePath)
+    : IO (Except String (Strata.Solidity.Command SourceRange)) := do
   match ← Strata.Solidity.Solc.parseFile solPath with
   | .error e => return .error (toString e)
   | .ok astJson =>
     match convertSourceUnit astJson with
-    | .ok _ => return .ok ()
+    | .ok cmd => return .ok cmd
     | .error e => return .error (toString e)
 
 end Strata.Solidity.SolcAst

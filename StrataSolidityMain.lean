@@ -156,24 +156,39 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--pipeline-json"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--pipeline-json", "--from-sol"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
-    let cmds ← readSolidityStrata' filePath
+    -- Frontend selection: `.sol` inputs (or --from-sol) go through the
+    -- in-Lean frontend (solc --standard-json → typed AST, no Ion round
+    -- trip); `.solidity.st.ion` inputs use the Ion reader.
+    let useSolFrontend := args.contains "--from-sol" || filePath.endsWith ".sol"
+    let cmd ←
+      if useSolFrontend then do
+        match ← Strata.Solidity.SolcAst.parseFile ⟨filePath⟩ with
+        | .ok cmd => pure cmd
+        | .error e => exitFailure s!"Failed to parse {filePath}: {e}"
+      else do
+        let cmds ← readSolidityStrata' filePath
+        if cmds.size != 1 then
+          exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
+        pure cmds[0]!
     let solSourceOpt ← match solSourcePath with
       | some p => do
         try
           let content ← IO.FS.readFile p
           pure (some (p, content))
-        catch _ => tryReadSoliditySource filePath
-      | none => tryReadSoliditySource filePath
-    if cmds.size != 1 then
-      exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
-    let cmd := cmds[0]!
+      catch _ => tryReadSoliditySource filePath
+      | none =>
+        if useSolFrontend then do
+          -- The input IS the source file.
+          try pure (some (filePath, ← IO.FS.readFile filePath))
+          catch _ => pure none
+        else tryReadSoliditySource filePath
 
     if verbose then
-      IO.println "==== Solidity AST (Ion) loaded ===="
+      IO.println s!"==== Solidity AST ({if useSolFrontend then "solc, in-Lean frontend" else "Ion"}) loaded ===="
 
     let sourcePathForMetadata := match solSourcePath with
       | some p => p
@@ -296,5 +311,5 @@ def main (args : List String) : IO Unit := do
           IO.println s
           if hasFailures then IO.Process.exit 1
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.solidity.st.ion> [--verbose] [--sarif] [--json]"
+    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json]"
     IO.Process.exit 1
