@@ -201,7 +201,7 @@ private def idLit (j : Json) : Option String :=
 
 private def litVal (j : Json) : Option (String × String) :=
   match convertNode j with
-  | .ok (node.Literal _ v k) => some (v.val, k.val)
+  | .ok (node.Literal _ v k _sub) => some (v.val, k.val)
   | _ => none
 
 /-- A simple `id` Identifier JSON. -/
@@ -268,7 +268,7 @@ private def isBinop (j : Json) (expectedOp : String)
 
 #guard isBinop (jsonOf (binopJ "+" (idJ "x") (numJ "1"))) "+"
   (fun | node.Identifier _ n => n.val == "x" | _ => false)
-  (fun | node.Literal _ v _ => v.val == "1" | _ => false)
+  (fun | node.Literal _ v _ _ => v.val == "1" | _ => false)
 
 #guard isBinop (jsonOf (binopJ "==" (idJ "a") (idJ "b"))) "=="
   (fun | node.Identifier _ n => n.val == "a" | _ => false)
