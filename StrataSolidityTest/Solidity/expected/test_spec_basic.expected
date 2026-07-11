@@ -1,9 +1,0 @@
-
-==== Verification Results ====
-add_ensures: ✅ pass
-maxVal_ensures: ✅ pass
-(Origin_add_Requires)requires_0: ✅ pass
-(Origin_add_Requires)requires_1: ✅ pass
-(Origin_add_Requires)requires_2: ✅ pass
-(Origin_add_Requires)requires_3: ✅ pass
-assert(1118): ✅ pass (at line 36, col 8)

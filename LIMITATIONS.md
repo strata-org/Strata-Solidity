@@ -72,7 +72,12 @@ This is not practical for verifying existing contracts but works for new designs
 | `msg.sender`, `msg.value` | Used as keys or in expressions | ✅ |
 | `address(0)`, type casts | `address(expr)` treated as identity | ✅ |
 | `type(uint256).max/min` | Compile-time constants | ✅ |
-| Arithmetic | `+`, `-`, `*` in specs | ✅ |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` in specs | ✅ |
+| Unary operators in specs | `!paused`, negative literals (`-887272`) | ✅ |
+| Named constants in specs | `requires status == NOT_ENTERED`, `modifies roles[DEFAULT_ADMIN_ROLE]` | ✅ |
+| Subdenominations | `1 ether`, `2 days` folded to base units | ✅ |
+| In-contract invariants | `invariant` attached to a state variable's NatSpec | ✅ |
+| Return value + `modifies` | `returns (uint256)` with mapping-state outputs | ✅ |
 | Comparisons | `==`, `!=`, `>=`, `<=`, `>`, `<` | ✅ |
 | Boolean logic | `&&`, `\|\|`, `==>` | ✅ |
 | `requires` / `ensures` | Pre/postconditions | ✅ |
@@ -89,10 +94,10 @@ This is not practical for verifying existing contracts but works for new designs
 | `block.timestamp` | ❌ Not modeled | No time abstraction yet |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ❌ | No cross-contract reasoning |
-| Assembly / inline Yul | ❌ | Not parsed |
-| Dynamic arrays (push/pop) | ⚠️ Partial | `.length` works, push/pop not modeled |
+| Assembly / inline Yul | ⚠️ Havoc | Parsed; state touched by assembly treated as unknown (sound over-approximation) |
+| Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |
-| Events / errors | Ignored | No effect on verification |
+| Events / errors | First-class ops | `revert` prunes its path; `emit` is a verification no-op |
 
 ## Storage References
 

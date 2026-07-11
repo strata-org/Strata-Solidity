@@ -210,9 +210,19 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let natspecLoopInvExprs := natspecLoopInvExprs.map
       (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
     let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
+    -- Valued-return desugaring: when the procedure ends up with MULTIPLE
+    -- output parameters (a declared return value plus mapping-state
+    -- outputs), Laurel's EliminateValueReturns rejects `return e`. Record
+    -- the declared return's output name so translateStmt desugars
+    -- `return e` into `<name> := e; return`.
+    let valuedReturnTarget :=
+      if outputs.length > 1 && !isConstructor then
+        baseOutputs.head?.map (·.name.text)
+      else none
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
                               hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
+                              valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do

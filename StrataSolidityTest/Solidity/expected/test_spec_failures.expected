@@ -1,8 +1,0 @@
-
-==== Verification Results ====
-SpecFailures_ctor_ensures: ✅ pass
-wrongPostcondition_ensures: ❌ fail
-breakInvariant_ensures_0: 🟡 unknown
-breakInvariant_ensures_1: 🟡 unknown
-entry_invariant_0_0: ✅ pass
-arbitrary_iter_maintain_invariant_0_0: ❌ fail

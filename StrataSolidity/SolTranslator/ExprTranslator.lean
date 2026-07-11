@@ -764,7 +764,16 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     match exprOpt with
     | .some_node _ expr => do
       let e ← translateExpr ctx expr
-      return mkStmtExprMd (.Return (some e))
+      match ctx.valuedReturnTarget with
+      | some outName =>
+        -- The procedure has multiple output parameters (declared return +
+        -- mapping-state outputs); Laurel's EliminateValueReturns rejects a
+        -- valued `return` there. Desugar: `<out> := e; return`.
+        return mkStmtExprMd (.Block [
+          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e),
+          mkStmtExprMd (.Return none)] none)
+      | none =>
+        return mkStmtExprMd (.Return (some e))
     | .missing_node _ =>
       return mkStmtExprMd (.Return none)
 

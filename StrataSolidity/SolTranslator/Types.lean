@@ -141,6 +141,13 @@ structure TransCtx where
   /-- Constant state variable definitions: maps constant name to its
       compile-time value expression for constant folding. -/
   constantDefs : List (String × StmtExprMd) := []
+  /-- When the current function has a declared return value AND additional
+      output parameters (mapping state vars are threaded as outputs), Laurel's
+      EliminateValueReturns cannot handle `return e` ("Valued return is not
+      supported for procedures with multiple output parameters"). In that case
+      this holds the declared return's output-parameter name, and the
+      translator desugars `return e` into `<name> := e; return`. -/
+  valuedReturnTarget : Option String := none
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, source := none }

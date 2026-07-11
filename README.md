@@ -3,17 +3,21 @@
 Solidity formal verification front-end for the [Strata](https://github.com/strata-org/Strata) framework. Translates annotated Solidity contracts through the Strata pipeline for verification via SMT solving.
 
 ```
-Solidity (.sol) → solc + solast.py → Ion → SolToLaurel → Laurel IR
-  → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
+Solidity (.sol) → solc --standard-json → SolcAstParser (Lean) → SolTranslator
+  → Laurel IR → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
 ```
+
+The entire pipeline lives in the `strataSolidity` binary: it invokes `solc`,
+parses the JSON AST into typed Lean structures, and verifies — no Python,
+no intermediate serialization.
 
 ## Prerequisites
 
-- [Lean 4](https://lean-lang.org/) v4.27.0 (see `lean-toolchain`)
+- [Lean 4](https://lean-lang.org/) (see `lean-toolchain` for the pinned version)
 - [Strata](https://github.com/evertonfraga/Strata/tree/solidity) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
-- Python 3.12+
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
 - z3 or cvc5 SMT solver
+- Python 3.12+ — dev/CI tooling only (SARIF schema check, bench CSV enforcer); not needed to verify contracts
 
 ### Strata submodule
 
@@ -39,13 +43,13 @@ lake build
 
 1. Checks out StrataSolidity with `submodules: recursive` so the Strata submodule is materialized at the recorded SHA
 2. Verifies the submodule layout via `scripts/check-strata.sh`
-3. Installs `solc` (via the `ethereum/ethereum` PPA) and the Python dev dependencies in `Tools/Solidity/requirements-dev.txt`
+3. Installs `solc` (via the `ethereum/ethereum` PPA) and the CI-only Python deps in `Tools/Solidity/requirements-dev.txt`
 4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action) (which handles elan install and `.lake` caching)
 5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)
 6. Runs `python3 bench/check_csv_schema.py bench/results.csv` (REQ-PBT-008 schema enforcer against the committed CSV)
 7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema compliance)
 
-`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow). The primary golden harness `StrataSolidityTest/Solidity/run_sol_analyze_laurel.sh` is also not wired (see `StrataSolidityTest/Solidity/CHECKPOINT_GAP.md`).
+`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow).
 
 ## Quick start
 
@@ -149,19 +153,17 @@ Requires `lake build` to have been run first.
 StrataSolidity/             Lean library (dialect, parser, AST → Laurel translation)
 StrataSolidityMain.lean     CLI entry point (strataSolidity executable)
 StrataSolidityTest/         Integration tests (.sol files + expected output)
-Tools/Solidity/             Python frontend (being migrated to Lean)
-  src/solast.py             solc JSON AST → Ion serialization
-  scripts/strata-verify.sh  Shell verification wrapper
+Tools/Solidity/
+  scripts/strata-verify.sh  Thin shell wrapper around the binary
+  test/                     SARIF schema check (CI-only Python)
 ```
 
 ## Running tests
 
 ```bash
-cd StrataSolidityTest/Solidity
-bash run_sol_analyze_laurel.sh
+lake test               # Lean unit + characterization tests (#guard suites, JSON/pipeline-JSON shape)
+bash test/run_tests.sh  # golden suite (test/examples/*.sol vs test/expected/) + exit-code contract
 ```
-
-Runs each `tests/test_*.sol` through the full pipeline and diffs against `expected/*.expected`. Tests in `known_failures.txt` are treated as expected failures (XFAIL).
 
 ## License
 
