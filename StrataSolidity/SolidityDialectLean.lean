@@ -6,342 +6,227 @@
 module
 
 public import Strata.DDM.AST
-public import Strata.DDM.BuiltinDialects.Init
-import Strata.DDM.BuiltinDialects.BuiltinM
+public import Strata.DDM.Integration.Lean
 
 /-!
 # Solidity DDM dialect — Lean source of truth (Group A)
 
 Lean equivalent of `Tools/Solidity/src/base_dialect.py`'s `gen_dialect()`.
-This file defines the Solidity DDM dialect as a Lean value, eliminating the
-need to read it from a precompiled Ion artifact at compile time.
+This file defines the Solidity DDM dialect using DDM's *declarative* dialect
+syntax (the `#dialect … #end` command), rather than programmatic
+`declareOp` calls — per review feedback on PR #23 and the DDM manual:
+https://strata-org.github.io/Strata/ddm/html-single/
 
-## Why
+## Why declarative
 
-Per `.kiro/specs/pipeline-language-rationalization/` (Group A, REQ-LCD-*):
-- The dialect's *consumer* is Lean. Defining it in Lean removes a Python
-  dependency and a serialization round-trip on the verification path.
-- Adding a new AST node becomes a single edit here, not a Python edit + an
-  Ion regeneration step.
-- Lean's type system makes the schema readable top-to-bottom.
+- The dialect reads top-to-bottom like a grammar: `op Name (arg : cat, …) :
+  cat => syntax;` — the same shape the DDM manual documents and the other
+  Strata dialects (Core, B3, C_Simp, SMT) use.
+- Each op also gets a concrete display syntax (`Name(arg, …)`), so DDM can
+  pretty-print Solidity AST values for debugging — the programmatic
+  `syntaxDef := default` version could not.
 
 ## Structure
 
-Mirrors `base_dialect.py` line-for-line:
+Mirrors `base_dialect.py` section-for-section:
   1. Four syntax categories: `node`, `opt_node`, `type_name`, `opt_type_name`.
-  2. Four optional-wrapper ops: `some_node`, `missing_node`,
-     `some_type_name`, `missing_type_name`.
-  3. ~30 AST node ops grouped by area: top-level, modifiers, functions,
-     statements, expressions, structs/enums, type names.
+  2. Four optional-wrapper ops: `some_node` / `missing_node`,
+     `some_type_name` / `missing_type_name`.
+  3. ~50 AST node ops grouped by area: top-level, definitions, statements,
+     expressions, events/errors, structs/enums, type names.
 
-## Compatibility check
+## Parity check
 
-A future commit will add a `lake gen-dialect` script that serializes
-`soliditydialectLean` to binary Ion via Strata's encoder, then a CI check
-that the result is byte-identical to the existing
-`Tools/Solidity/dialects/Solidity.dialect.st.ion` (per REQ-LCD-005).
-Once parity is established, `SolidityDialect.lean` can drop `#load_dialect`
-and import this file directly (REQ-LCD-014).
+`lake exe gen-dialect-summary` prints this dialect's structural summary;
+CI diffs it against `Tools/Solidity/src/print_dialect_summary.py`'s output
+from `base_dialect.py` on every push (Group A step 3). Keep the two in sync.
 -/
 
-open Strata Strata.Elab
-
-public section
 namespace Strata.Solidity
 
-/-! ## Helper builders for terse op declarations.
+#dialect
+dialect SolidityLean;
 
-We use the BuiltinM API (mirroring `Strata/DDM/BuiltinDialects/Init.lean`).
-The original Python uses an `Sol.add_op(name, args..., return_cat)` shape
-where each arg is `ArgDecl(name, type)`. Below, `mkOp` reproduces that
-ergonomically: it takes a return category, an op name, and an array of
-`(arg_name, arg_kind)` pairs.
--/
+// ── Syntax categories ────────────────────────────────────────────────
+category node;
+category opt_node;
+category type_name;
+category opt_type_name;
 
-private def mkArg (name : String) (k : ArgDeclKind) : ArgDecl :=
-  { ident := name, kind := k }
+// ── Optional-node wrappers ───────────────────────────────────────────
+op some_node (x : node) : opt_node =>
+  "some_node(" x ")";
+op missing_node : opt_node => "missing_node";
+op some_type_name (x : type_name) : opt_type_name =>
+  "some_type_name(" x ")";
+op missing_type_name : opt_type_name => "missing_type_name";
 
-/-- Local syntactic-category atoms (mirrors Python's `Sol.<cat>()`). -/
-private def Node     : SyntaxCat := .atom .none q`SolidityLean.node
-private def OptNode  : SyntaxCat := .atom .none q`SolidityLean.opt_node
-private def TypeName : SyntaxCat := .atom .none q`SolidityLean.type_name
-private def OptType  : SyntaxCat := .atom .none q`SolidityLean.opt_type_name
+// ── Top-level ────────────────────────────────────────────────────────
+op SourceUnit (nodes : Seq node) : Command =>
+  "SourceUnit(" nodes ")";
+op PragmaDirective (literals : Seq Str) : node =>
+  "PragmaDirective(" literals ")";
+op ImportDirective (
+    file : Str,
+    absolutePath : Str,
+    unitAlias : Str,
+    symbolAliases : Seq Str) : node =>
+  "ImportDirective(" file ", " absolutePath ", " unitAlias ", " symbolAliases ")";
 
-/-- `Init.Str()` from Python — atomic string. -/
-private def Str : SyntaxCat := .atom .none q`Init.Str
+// ── Definitions ──────────────────────────────────────────────────────
+op ContractDefinition (
+    name : Str,
+    contractKind : Str,
+    abstract : Str,
+    nodes : Seq node,
+    documentation : Str,
+    baseContracts : Seq Str) : node =>
+  "ContractDefinition(" name ", " contractKind ", " abstract ", " nodes ", " documentation ", " baseContracts ")";
+op UserDefinedValueTypeDefinition (name : Str, underlyingType : type_name) : node =>
+  "UserDefinedValueTypeDefinition(" name ", " underlyingType ")";
+op ModifierDefinition (name : Str, parameters : node, body : opt_node) : node =>
+  "ModifierDefinition(" name ", " parameters ", " body ")";
+op ModifierInvocation (modifierName : Str, arguments : Seq node) : node =>
+  "ModifierInvocation(" modifierName ", " arguments ")";
+op FunctionDefinition (
+    name : Str,
+    kind : Str,
+    stateMutability : Str,
+    visibility : Str,
+    virtual : Str,
+    parameters : node,
+    returnParameters : node,
+    body : opt_node,
+    documentation : Str,
+    modifiers : Seq node) : node =>
+  "FunctionDefinition(" name ", " kind ", " stateMutability ", " visibility ", " virtual ", " parameters ", " returnParameters ", " body ", " documentation ", " modifiers ")";
+op ParameterList (parameters : Seq node) : node =>
+  "ParameterList(" parameters ")";
+op VariableDeclaration (
+    name : Str,
+    typeName : opt_type_name,
+    stateVariable : Str,
+    constant : Str,
+    mutability : Str,
+    visibility : Str,
+    indexed : Str,
+    storageLocation : Str,
+    value : opt_node,
+    documentation : Str) : node =>
+  "VariableDeclaration(" name ", " typeName ", " stateVariable ", " constant ", " mutability ", " visibility ", " indexed ", " storageLocation ", " value ", " documentation ")";
 
-/-- `Init.Seq(c)` — a sequence of category `c`. -/
-private def Seq (c : SyntaxCat) : SyntaxCat := SyntaxCat.mkSeq c
+// ── Statements ───────────────────────────────────────────────────────
+op Block (statements : Seq node) : node =>
+  "Block(" statements ")";
+op UncheckedBlock (statements : Seq node) : node =>
+  "UncheckedBlock(" statements ")";
+op ExpressionStatement (expression : node) : node =>
+  "ExpressionStatement(" expression ")";
+op Return (expression : opt_node) : node =>
+  "Return(" expression ")";
+op IfStatement (condition : node, trueBody : node, falseBody : opt_node) : node =>
+  "IfStatement(" condition ", " trueBody ", " falseBody ")";
+op WhileStatement (condition : node, body : node) : node =>
+  "WhileStatement(" condition ", " body ")";
+op ForStatement (
+    initializationExpression : opt_node,
+    condition : opt_node,
+    loopExpression : opt_node,
+    body : node) : node =>
+  "ForStatement(" initializationExpression ", " condition ", " loopExpression ", " body ")";
+op DoWhileStatement (condition : node, body : node) : node =>
+  "DoWhileStatement(" condition ", " body ")";
+op BreakStatement : node => "BreakStatement";
+op ContinueStatement : node => "ContinueStatement";
+op TryStatement (externalCall : node, clauses : Seq node) : node =>
+  "TryStatement(" externalCall ", " clauses ")";
+op TryCatchClause (errorName : Str, parameters : opt_node, block : node) : node =>
+  "TryCatchClause(" errorName ", " parameters ", " block ")";
+op VariableDeclarationStatement (declarations : Seq opt_node, initialValue : opt_node) : node =>
+  "VariableDeclarationStatement(" declarations ", " initialValue ")";
+op InlineAssembly (yul : Str) : node =>
+  "InlineAssembly(" yul ")";
 
-/-- `Init.Command()` — top-level command return category. -/
-private def Command : SyntaxCat := .atom .none q`Init.Command
+// ── Expressions ──────────────────────────────────────────────────────
+op Assignment (leftHandSide : node, rightHandSide : node, operator : Str) : node =>
+  "Assignment(" leftHandSide ", " rightHandSide ", " operator ")";
+op BinaryOperation (leftExpression : node, rightExpression : node, operator : Str) : node =>
+  "BinaryOperation(" leftExpression ", " rightExpression ", " operator ")";
+op UnaryOperation (subExpression : node, operator : Str, prefix : Str) : node =>
+  "UnaryOperation(" subExpression ", " operator ", " prefix ")";
+op FunctionCall (expression : node, arguments : Seq node, kind : Str, names : Seq Str) : node =>
+  "FunctionCall(" expression ", " arguments ", " kind ", " names ")";
+op FunctionCallOptions (expression : node, names : Seq Str, options : Seq node) : node =>
+  "FunctionCallOptions(" expression ", " names ", " options ")";
+op NewExpression (typeName : type_name) : node =>
+  "NewExpression(" typeName ")";
+op Identifier (name : Str) : node =>
+  "Identifier(" name ")";
+op Literal (value : Str, kind : Str, subdenomination : Str) : node =>
+  "Literal(" value ", " kind ", " subdenomination ")";
+op MemberAccess (expression : node, memberName : Str) : node =>
+  "MemberAccess(" expression ", " memberName ")";
+op IndexAccess (baseExpression : node, indexExpression : opt_node) : node =>
+  "IndexAccess(" baseExpression ", " indexExpression ")";
+op IndexRangeAccess (
+    baseExpression : node,
+    startExpression : opt_node,
+    endExpression : opt_node) : node =>
+  "IndexRangeAccess(" baseExpression ", " startExpression ", " endExpression ")";
+op InlineArrayExpression (components : Seq node) : node =>
+  "InlineArrayExpression(" components ")";
+op Conditional (condition : node, trueExpression : node, falseExpression : node) : node =>
+  "Conditional(" condition ", " trueExpression ", " falseExpression ")";
+op TupleExpression (components : Seq node) : node =>
+  "TupleExpression(" components ")";
+op ElementaryTypeNameExpression (typeName : Str) : node =>
+  "ElementaryTypeNameExpression(" typeName ")";
 
-/-- Convenience: `mkOp returnCat name args` is the Lean equivalent of
-    `Sol.add_op(name, ArgDecl(...), ..., returnCat)` from `base_dialect.py`. -/
-private def mkOp (returnCat : QualifiedIdent) (name : String) (args : Array ArgDecl)
-    : BuiltinM Unit := do
-  declareOp {
-    name      := name,
-    argDecls  := { toArray := args },
-    category  := returnCat,
-    syntaxDef := default
-  }
+// ── Events and custom errors ─────────────────────────────────────────
+op EventDefinition (name : Str, parameters : node, anonymous : Str) : node =>
+  "EventDefinition(" name ", " parameters ", " anonymous ")";
+op ErrorDefinition (name : Str, parameters : node) : node =>
+  "ErrorDefinition(" name ", " parameters ")";
+op EmitStatement (eventCall : node) : node =>
+  "EmitStatement(" eventCall ")";
+op RevertStatement (errorCall : node) : node =>
+  "RevertStatement(" errorCall ")";
 
-/-- The Lean-canonical Solidity DDM dialect. Mirrors
-    `Tools/Solidity/src/base_dialect.py:gen_dialect()` line-for-line. -/
-def soliditydialectLean : Strata.Dialect := BuiltinM.create! "SolidityLean" #[initDialect] do
-  -- Syntax categories
-  declareCat q`SolidityLean.node
-  declareCat q`SolidityLean.opt_node
-  declareCat q`SolidityLean.type_name
-  declareCat q`SolidityLean.opt_type_name
+// ── Structs and enums ────────────────────────────────────────────────
+op StructDefinition (name : Str, members : Seq node) : node =>
+  "StructDefinition(" name ", " members ")";
+op EnumDefinition (name : Str, members : Seq node) : node =>
+  "EnumDefinition(" name ", " members ")";
+op EnumValue (name : Str) : node =>
+  "EnumValue(" name ")";
+op UsingForDirective (libraryName : Str, typeName : opt_type_name, global : Str) : node =>
+  "UsingForDirective(" libraryName ", " typeName ", " global ")";
 
-  -- Optional-node wrappers
-  mkOp q`SolidityLean.opt_node "some_node"
-    #[mkArg "x" (.cat Node)]
-  mkOp q`SolidityLean.opt_node "missing_node" #[]
-  mkOp q`SolidityLean.opt_type_name "some_type_name"
-    #[mkArg "x" (.cat TypeName)]
-  mkOp q`SolidityLean.opt_type_name "missing_type_name" #[]
+// ── Type names ───────────────────────────────────────────────────────
+op ElementaryTypeName (name : Str, stateMutability : Str) : type_name =>
+  "ElementaryTypeName(" name ", " stateMutability ")";
+op UserDefinedTypeName (name : Str) : type_name =>
+  "UserDefinedTypeName(" name ")";
+op MappingType (
+    keyType : type_name,
+    valueType : type_name,
+    keyName : Str,
+    valueName : Str) : type_name =>
+  "MappingType(" keyType ", " valueType ", " keyName ", " valueName ")";
+op ArrayTypeName (baseType : type_name) : type_name =>
+  "ArrayTypeName(" baseType ")";
+op FunctionTypeName (
+    parameterTypes : node,
+    returnParameterTypes : node,
+    visibility : Str,
+    stateMutability : Str) : type_name =>
+  "FunctionTypeName(" parameterTypes ", " returnParameterTypes ", " visibility ", " stateMutability ")";
 
-  -- Top-level
-  mkOp q`Init.Command "SourceUnit"
-    #[mkArg "nodes" (.cat (Seq Node))]
+#end
 
-  mkOp q`SolidityLean.node "PragmaDirective"
-    #[mkArg "literals" (.cat (Seq Str))]
-
-  mkOp q`SolidityLean.node "ImportDirective"
-    #[mkArg "file" (.cat Str),
-      mkArg "absolutePath" (.cat Str),
-      mkArg "unitAlias" (.cat Str),
-      mkArg "symbolAliases" (.cat (Seq Str))]
-
-  mkOp q`SolidityLean.node "ContractDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "contractKind" (.cat Str),
-      mkArg "abstract" (.cat Str),
-      mkArg "nodes" (.cat (Seq Node)),
-      mkArg "documentation" (.cat Str),
-      mkArg "baseContracts" (.cat (Seq Str))]
-
-  mkOp q`SolidityLean.node "UserDefinedValueTypeDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "underlyingType" (.cat TypeName)]
-
-  -- Modifiers
-  mkOp q`SolidityLean.node "ModifierDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "parameters" (.cat Node),
-      mkArg "body" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "ModifierInvocation"
-    #[mkArg "modifierName" (.cat Str),
-      mkArg "arguments" (.cat (Seq Node))]
-
-  -- Functions
-  mkOp q`SolidityLean.node "FunctionDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "kind" (.cat Str),
-      mkArg "stateMutability" (.cat Str),
-      mkArg "visibility" (.cat Str),
-      mkArg "virtual" (.cat Str),
-      mkArg "parameters" (.cat Node),
-      mkArg "returnParameters" (.cat Node),
-      mkArg "body" (.cat OptNode),
-      mkArg "documentation" (.cat Str),
-      mkArg "modifiers" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "ParameterList"
-    #[mkArg "parameters" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "VariableDeclaration"
-    #[mkArg "name" (.cat Str),
-      mkArg "typeName" (.cat OptType),
-      mkArg "stateVariable" (.cat Str),
-      mkArg "constant" (.cat Str),
-      mkArg "mutability" (.cat Str),
-      mkArg "visibility" (.cat Str),
-      mkArg "indexed" (.cat Str),
-      mkArg "storageLocation" (.cat Str),
-      mkArg "value" (.cat OptNode),
-      mkArg "documentation" (.cat Str)]
-
-  -- Statements
-  mkOp q`SolidityLean.node "Block"
-    #[mkArg "statements" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "UncheckedBlock"
-    #[mkArg "statements" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "ExpressionStatement"
-    #[mkArg "expression" (.cat Node)]
-
-  mkOp q`SolidityLean.node "Return"
-    #[mkArg "expression" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "IfStatement"
-    #[mkArg "condition" (.cat Node),
-      mkArg "trueBody" (.cat Node),
-      mkArg "falseBody" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "WhileStatement"
-    #[mkArg "condition" (.cat Node),
-      mkArg "body" (.cat Node)]
-
-  mkOp q`SolidityLean.node "ForStatement"
-    #[mkArg "initializationExpression" (.cat OptNode),
-      mkArg "condition" (.cat OptNode),
-      mkArg "loopExpression" (.cat OptNode),
-      mkArg "body" (.cat Node)]
-
-  mkOp q`SolidityLean.node "DoWhileStatement"
-    #[mkArg "condition" (.cat Node),
-      mkArg "body" (.cat Node)]
-
-  mkOp q`SolidityLean.node "BreakStatement" #[]
-
-  mkOp q`SolidityLean.node "ContinueStatement" #[]
-
-  mkOp q`SolidityLean.node "TryStatement"
-    #[mkArg "externalCall" (.cat Node),
-      mkArg "clauses" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "TryCatchClause"
-    #[mkArg "errorName" (.cat Str),
-      mkArg "parameters" (.cat OptNode),
-      mkArg "block" (.cat Node)]
-
-  mkOp q`SolidityLean.node "VariableDeclarationStatement"
-    #[mkArg "declarations" (.cat (Seq OptNode)),
-      mkArg "initialValue" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "InlineAssembly"
-    #[mkArg "yul" (.cat Str)]
-
-  -- Expressions
-  mkOp q`SolidityLean.node "Assignment"
-    #[mkArg "leftHandSide" (.cat Node),
-      mkArg "rightHandSide" (.cat Node),
-      mkArg "operator" (.cat Str)]
-
-  mkOp q`SolidityLean.node "BinaryOperation"
-    #[mkArg "leftExpression" (.cat Node),
-      mkArg "rightExpression" (.cat Node),
-      mkArg "operator" (.cat Str)]
-
-  mkOp q`SolidityLean.node "UnaryOperation"
-    #[mkArg "subExpression" (.cat Node),
-      mkArg "operator" (.cat Str),
-      mkArg "prefix" (.cat Str)]
-
-  mkOp q`SolidityLean.node "FunctionCall"
-    #[mkArg "expression" (.cat Node),
-      mkArg "arguments" (.cat (Seq Node)),
-      mkArg "kind" (.cat Str),
-      mkArg "names" (.cat (Seq Str))]
-
-  mkOp q`SolidityLean.node "FunctionCallOptions"
-    #[mkArg "expression" (.cat Node),
-      mkArg "names" (.cat (Seq Str)),
-      mkArg "options" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "NewExpression"
-    #[mkArg "typeName" (.cat TypeName)]
-
-  mkOp q`SolidityLean.node "Identifier"
-    #[mkArg "name" (.cat Str)]
-
-  mkOp q`SolidityLean.node "Literal"
-    #[mkArg "value" (.cat Str),
-      mkArg "kind" (.cat Str),
-      mkArg "subdenomination" (.cat Str)]
-
-  mkOp q`SolidityLean.node "MemberAccess"
-    #[mkArg "expression" (.cat Node),
-      mkArg "memberName" (.cat Str)]
-
-  mkOp q`SolidityLean.node "IndexAccess"
-    #[mkArg "baseExpression" (.cat Node),
-      mkArg "indexExpression" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "IndexRangeAccess"
-    #[mkArg "baseExpression" (.cat Node),
-      mkArg "startExpression" (.cat OptNode),
-      mkArg "endExpression" (.cat OptNode)]
-
-  mkOp q`SolidityLean.node "InlineArrayExpression"
-    #[mkArg "components" (.cat (Seq Node))]
-
-  -- Ternary / tuple expressions
-  mkOp q`SolidityLean.node "Conditional"
-    #[mkArg "condition" (.cat Node),
-      mkArg "trueExpression" (.cat Node),
-      mkArg "falseExpression" (.cat Node)]
-
-  mkOp q`SolidityLean.node "TupleExpression"
-    #[mkArg "components" (.cat (Seq Node))]
-
-  -- Type conversion expressions
-  mkOp q`SolidityLean.node "ElementaryTypeNameExpression"
-    #[mkArg "typeName" (.cat Str)]
-
-  -- Events and errors
-  mkOp q`SolidityLean.node "EventDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "parameters" (.cat Node),
-      mkArg "anonymous" (.cat Str)]
-
-  mkOp q`SolidityLean.node "ErrorDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "parameters" (.cat Node)]
-
-  mkOp q`SolidityLean.node "EmitStatement"
-    #[mkArg "eventCall" (.cat Node)]
-
-  mkOp q`SolidityLean.node "RevertStatement"
-    #[mkArg "errorCall" (.cat Node)]
-
-  -- Structs
-  mkOp q`SolidityLean.node "StructDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "members" (.cat (Seq Node))]
-
-  -- Enums
-  mkOp q`SolidityLean.node "EnumDefinition"
-    #[mkArg "name" (.cat Str),
-      mkArg "members" (.cat (Seq Node))]
-
-  mkOp q`SolidityLean.node "EnumValue"
-    #[mkArg "name" (.cat Str)]
-
-  mkOp q`SolidityLean.node "UsingForDirective"
-    #[mkArg "libraryName" (.cat Str),
-      mkArg "typeName" (.cat OptType),
-      mkArg "global" (.cat Str)]
-
-  -- Type names
-  mkOp q`SolidityLean.type_name "ElementaryTypeName"
-    #[mkArg "name" (.cat Str),
-      mkArg "stateMutability" (.cat Str)]
-
-  mkOp q`SolidityLean.type_name "UserDefinedTypeName"
-    #[mkArg "name" (.cat Str)]
-
-  mkOp q`SolidityLean.type_name "MappingType"
-    #[mkArg "keyType" (.cat TypeName),
-      mkArg "valueType" (.cat TypeName),
-      mkArg "keyName" (.cat Str),
-      mkArg "valueName" (.cat Str)]
-
-  mkOp q`SolidityLean.type_name "ArrayTypeName"
-    #[mkArg "baseType" (.cat TypeName)]
-
-  mkOp q`SolidityLean.type_name "FunctionTypeName"
-    #[mkArg "parameterTypes" (.cat Node),
-      mkArg "returnParameterTypes" (.cat Node),
-      mkArg "visibility" (.cat Str),
-      mkArg "stateMutability" (.cat Str)]
+/-- The Lean-canonical Solidity DDM dialect (declared via `#dialect` above).
+    Alias kept so existing consumers (`DialectSummary.lean`, the parity CI
+    gate) are unaffected by the declarative rewrite. -/
+public def soliditydialectLean : Strata.Dialect := SolidityLean
 
 end Strata.Solidity
-end
