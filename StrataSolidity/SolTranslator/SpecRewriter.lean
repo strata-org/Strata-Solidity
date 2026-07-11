@@ -99,13 +99,20 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
 /-- Rewrite bare state variable identifiers in NatSpec-parsed spec expressions.
     Scalar state vars: `Identifier "x"` → `FieldSelect self "x"`
     Mapping state vars: left as `Identifier "x"` (they're explicit parameters).
+    Constant state vars: `Identifier "NOT_ENTERED"` → the constant's value
+      expression (constants are removed from the contract's fields by
+      ContractTranslator, so without folding they'd reach Core unresolved).
+      Checked AFTER locals so a shadowing local/param wins — same ordering as
+      the body path in ExprTranslator (localNames before ctx.constantDefs).
     Skips identifiers that are local names, parameters, or not state vars. -/
 partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars : List String)
-    (localNames : List String) (expr : StmtExprMd) : StmtExprMd :=
-  let go := rewriteStateVarRefs stateVarNames mappingStateVars localNames
+    (localNames : List String) (expr : StmtExprMd)
+    (constantDefs : List (String × StmtExprMd) := []) : StmtExprMd :=
+  let go (e : StmtExprMd) := rewriteStateVarRefs stateVarNames mappingStateVars localNames e constantDefs
   match expr.val with
   | .Var (.Local name) =>
     if localNames.contains name.text then expr
+    else if let some valExpr := constantDefs.lookup name.text then valExpr
     else if mappingStateVars.contains name.text then expr  -- mappings are explicit params
     else if name.text.startsWith "__old_" then
       let realName := (name.text.drop 6).toString
@@ -115,6 +122,9 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
         -- a precondition `self.<name> == <name>_in` at entry, so `<name>_in`
         -- carries the pre-state value of the scalar state variable.
         { expr with val := mkIdentifier s!"{realName}_in" }
+      else if constantDefs.lookup realName |>.isSome then
+        -- old(CONSTANT) — constants never change; fold to the value.
+        (constantDefs.lookup realName).get!
       else expr
     else if stateVarNames.contains name.text then
       mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name.text)
@@ -129,7 +139,7 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
     { expr with val := .IfThenElse (go cond) (go thenBr) (elseBr.map go) }
   | .Quantifier mode param trigger body =>
     let locals' := localNames ++ [param.name.text]
-    let body' := rewriteStateVarRefs stateVarNames mappingStateVars locals' body
+    let body' := rewriteStateVarRefs stateVarNames mappingStateVars locals' body constantDefs
     { expr with val := .Quantifier mode param trigger body' }
   | _ => expr
 

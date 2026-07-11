@@ -795,6 +795,19 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .DoWhileStatement _ cond body => do
     -- Desugar: do { body } while (cond)  →  { body; while (cond) { body } }
     -- The leading body executes once unconditionally; the while replays it.
+    --
+    -- Label placement: BOTH the first iteration and the while replay live
+    -- inside the break-labelled block, and the first iteration gets its own
+    -- continue-labelled block. This makes `break`/`continue` in the FIRST
+    -- iteration behave correctly:
+    --   break    → Exit break_n    → exits past the while (loop over)
+    --   continue → Exit continue_n → exits firstBody's block, landing at the
+    --              while (i.e. the condition check — do-while continue
+    --              semantics). Labels are lexically scoped in
+    --              StructuredToUnstructured, so the sibling contLbl block
+    --              inside the while does not clash.
+    -- (Previously firstBody sat OUTSIDE the labelled blocks; its Exit was
+    -- uncaught, fell through into the while, and re-ran the loop.)
     let condExpr ← translateExpr ctx cond
     let n := ctx.loopLabelCounter
     let breakLbl := s!"break_{n}"
@@ -803,9 +816,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
                               loopLabelCounter := n + 1 }
     let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
     let firstBody ← translateStmt bodyCtx body
+    let firstBlock := mkStmtExprMd (.Block [firstBody] (some contLbl))
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
     let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock)
-    return mkStmtExprMd (.Block [firstBody, mkStmtExprMd (.Block [whileStmt] (some breakLbl))] none)
+    return mkStmtExprMd (.Block [firstBlock, whileStmt] (some breakLbl))
 
   | .BreakStatement _ =>
     match ctx.currentLoopLabels with

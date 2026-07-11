@@ -204,7 +204,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Rewrite state var refs in loop invariants
     let specLocalNames := userParamInfo.map (·.1) ++
       (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-    let rewriteSVGlobal := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+    let rewriteSVGlobal := fun e =>
+      rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
     -- Process old() markers in loop invariants BEFORE rewriting state var refs
     let natspecLoopInvExprs := natspecLoopInvExprs.map
       (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
@@ -231,7 +232,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Parameter names and output names are treated as locals (not rewritten).
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let rewriteSV := fun e =>
+          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
         let specPreExprs := specPreExprs.map rewriteSV
         let specPostExprs := specPostExprs.map rewriteSV
 
@@ -320,7 +322,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 let keyExprs := entries.filterMap fun (_, k) => k
                 let parsedKeys := keyExprs.filterMap fun keyStr =>
                   match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
-                  | .ok (keyExpr, _) => some (rewriteParamRefs userParamNames keyExpr)
+                  | .ok (keyExpr, _) =>
+                    -- Fold constant state vars (e.g. `modifies roles[DEFAULT_ADMIN_ROLE]`)
+                    -- and resolve scalar state vars in key position; then rename
+                    -- user params to their `_param` form.
+                    let keyExpr := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars
+                      (userParamInfo.map (·.1) ++ ["msg_sender", "msg_value"]) keyExpr ctx.constantDefs
+                    some (rewriteParamRefs userParamNames keyExpr)
                   | .error _ => none
                 if parsedKeys.isEmpty then none
                 else
@@ -398,7 +406,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let rewriteSV := fun e =>
+          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
         let contractInvariants := if isPure || isView then []
           else ctx.contractInvariantNatspec.map rewriteSV
         let invariantsAsConds : List Condition :=

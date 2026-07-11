@@ -143,32 +143,14 @@ Tools/Solidity/scripts/strata-verify.sh <file.sol> [--sarif] [--verbose]
 
 Requires `lake build` to have been run first.
 
-### strata_verify.py
-
-Python wrapper with two modes:
-
-**File mode:**
-```bash
-python3 -m src.strata_verify --file contract.sol [--sarif]
-```
-
-**Standard-JSON mode** (solc-compatible):
-```bash
-echo '{"language":"Solidity","sources":{"file.sol":{"content":"..."}},"settings":{"modelChecker":{"engine":"strata"}}}' \
-  | python3 -m src.strata_verify
-```
-
-Returns solc-compatible JSON with verification results in the `errors` array.
-
 ## Directory layout
 
 ```
 StrataSolidity/             Lean library (dialect, parser, AST → Laurel translation)
 StrataSolidityMain.lean     CLI entry point (strataSolidity executable)
 StrataSolidityTest/         Integration tests (.sol files + expected output)
-Tools/Solidity/             Python parser and verification wrappers
+Tools/Solidity/             Python frontend (being migrated to Lean)
   src/solast.py             solc JSON AST → Ion serialization
-  src/strata_verify.py      Python verification wrapper
   scripts/strata-verify.sh  Shell verification wrapper
 ```
 
