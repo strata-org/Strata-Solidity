@@ -229,14 +229,18 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
     -- solc: { nodeType: "Mapping",
     --        keyType: <type-name node>,
     --        valueType: <type-name node>,
+    --        keyName: <string> (optional, named mapping keys),
+    --        valueName: <string> (optional),
     --        src: ... }
     -- Note solc emits "Mapping" (not "MappingType"); the dialect's op
-    -- constructor is named MappingType.
+    -- constructor is named MappingType. Python defaults key/value names
+    -- to "" when absent.
     match j.getObjVal? "keyType", j.getObjVal? "valueType" with
     | .ok keyJ, .ok valJ =>
       let keyTy ← convertTypeName keyJ
       let valTy ← convertTypeName valJ
       return type_name.MappingType sr keyTy valTy
+        (annStr sr (getStrOr j "keyName" "")) (annStr sr (getStrOr j "valueName" ""))
     | .error _, _ => throw (.missingField "Mapping" "keyType")
     | _, .error _ => throw (.missingField "Mapping" "valueType")
 

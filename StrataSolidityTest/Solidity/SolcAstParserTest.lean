@@ -130,7 +130,7 @@ private def errIsTypeName (j : Json) (pred : ConvertError → Bool) : Bool :=
 
 private def isArrayOfElementary (j : Json) (expectedBaseName : String) : Bool :=
   match convertTypeName j with
-  | .ok (type_name.ArrayTypeName _ (type_name.ElementaryTypeName _ name)) =>
+  | .ok (type_name.ArrayTypeName _ (type_name.ElementaryTypeName _ name _)) =>
     name.val == expectedBaseName
   | _ => false
 
@@ -147,8 +147,8 @@ private def isArrayOfElementary (j : Json) (expectedBaseName : String) : Bool :=
 private def isAddressToUintMapping (j : Json) : Bool :=
   match convertTypeName j with
   | .ok (type_name.MappingType _
-         (type_name.ElementaryTypeName _ k)
-         (type_name.ElementaryTypeName _ v)) =>
+         (type_name.ElementaryTypeName _ k _)
+         (type_name.ElementaryTypeName _ v _) _ _) =>
     k.val == "address" && v.val == "uint256"
   | _ => false
 
@@ -163,10 +163,10 @@ private def isAddressToUintMapping (j : Json) : Bool :=
 private def isNestedMapping (j : Json) : Bool :=
   match convertTypeName j with
   | .ok (type_name.MappingType _
-         (type_name.ElementaryTypeName _ k1)
+         (type_name.ElementaryTypeName _ k1 _)
          (type_name.MappingType _
-           (type_name.ElementaryTypeName _ k2)
-           (type_name.ElementaryTypeName _ v))) =>
+           (type_name.ElementaryTypeName _ k2 _)
+           (type_name.ElementaryTypeName _ v _) _ _) _ _) =>
     k1.val == "address" && k2.val == "address" && v.val == "uint256"
   | _ => false
 
