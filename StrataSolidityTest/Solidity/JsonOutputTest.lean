@@ -28,9 +28,9 @@
 
   **Downgrade rationale (cited per task 2.6).** Plausible properties are
   pure `Prop`s checked over a generator; they cannot thread `IO` through
-  the `Testable` machinery. We additionally need to regenerate Ion inputs
-  from `.sol` sources via `python3 -m src.solast`, because Ion files are
-  not committed. Both concerns make a true Plausible property impractical
+  the `Testable` machinery. We additionally need to invoke the
+  external `strataSolidity` binary per fixture. Both concerns make a
+  true Plausible property impractical
   in this harness today. Accordingly, this module loops over a curated
   fixture matrix in `#eval` blocks and performs *the same assertions* the
   task prescribes on every JSON element, using `Lean.Json.parse` for
@@ -42,9 +42,8 @@
 
   ### Robustness
 
-  If the `strataSolidity` binary is not built, if the `Strata` submodule
-  is not initialized, or if `python3 -m src.solast` cannot emit an Ion
-  file, the setup helpers return a `.error` outcome and the `#eval`
+  If the `strataSolidity` binary is not built or the `Strata` submodule
+  is not initialized, the setup helpers return a `.error` outcome and the `#eval`
   asserts fail with an actionable message rather than silently skipping.
   This is deliberate: characterization tests must fail loud when the
   pipeline under test is unavailable.
@@ -87,18 +86,10 @@ structure TestPaths where
   /-- Absolute path to the StrataSolidity project root
       (inferred by walking up from `StrataSolidityTest/Solidity/`). -/
   projectRoot : System.FilePath
-  /-- Absolute path to the built `strataSolidity` binary. -/
+  /-- Absolute path to the built `strataSolidity` binary. The binary
+      invokes solc and parses its JSON AST directly (in-Lean frontend);
+      no Python or Ion step is involved. -/
   binary : System.FilePath
-  /-- Absolute path to `Tools/Solidity` (working directory for
-      `python3 -m src.solast`). -/
-  toolsDir : System.FilePath
-  /-- Absolute path to the Solidity dialect Ion file produced by the
-      Python front-end. -/
-  dialectIon : System.FilePath
-  /-- Absolute path to `Strata/Tools/Python` inside the submodule
-      (added to `PYTHONPATH` so that `src.solast` can import Strata's
-      Python bindings). -/
-  strataPython : System.FilePath
 
 /-- Resolve the repo-relative paths by walking upward from CWD until we
     find a Lake manifest (`lakefile.lean` or `lakefile.toml`). Falls back
@@ -125,9 +116,6 @@ def mkTestPaths : IO TestPaths := do
   return {
     projectRoot := root
     binary := root / ".lake" / "build" / "bin" / "strataSolidity"
-    toolsDir := root / "Tools" / "Solidity"
-    dialectIon := root / "Tools" / "Solidity" / "dialects" / "Solidity.dialect.st.ion"
-    strataPython := root / "Strata" / "Tools" / "Python"
   }
 
 /-- Outcome of running the test pipeline for one fixture. -/
@@ -138,41 +126,16 @@ inductive RunResult where
   | error (reason : String)
   deriving Inhabited
 
-/-- Convert a `.sol` source path into an Ion file alongside it.
-    Invokes `python3 -m src.solast sol_to_strata` exactly the way
-    `run_sol_analyze_laurel.sh` and `strata-verify.sh` do. -/
-def generateIon (paths : TestPaths) (solPath ionPath : System.FilePath) : IO Unit := do
-  let existingPythonPath := (← IO.getEnv "PYTHONPATH").getD ""
-  let pythonPath := s!"{paths.strataPython}:{existingPythonPath}"
-  let out ← IO.Process.output {
-    cmd := "python3"
-    args := #[
-      "-m", "src.solast", "sol_to_strata",
-      "--dialect", paths.dialectIon.toString,
-      solPath.toString,
-      ionPath.toString
-    ]
-    cwd := some paths.toolsDir
-    env := #[("PYTHONPATH", some pythonPath)]
-  }
-  if out.exitCode != 0 then
-    throw <| IO.userError
-      s!"solast failed (exit {out.exitCode}):\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}"
-
-/-- Invoke `strataSolidity <ion> --json [--sol-source=<sol>]` and return
-    its stdout. Returns `.error` if the binary or the Ion input are
-    missing, or if the process exited non-zero.
-
-    We pass `--sol-source` explicitly so `line`/`col` fields are populated
-    whenever the source metadata can be resolved — this exercises the
-    "both present / both absent" branch of REQ-PBT-005. -/
-def runStrataJson (paths : TestPaths) (ionPath solPath : System.FilePath) : IO String := do
+/-- Invoke `strataSolidity <sol> --json` and return its stdout. The
+    binary runs the in-Lean frontend (solc → typed AST) itself; source
+    positions come from the input file, exercising the "both present /
+    both absent" branch of REQ-PBT-005. -/
+def runStrataJson (paths : TestPaths) (solPath : System.FilePath) : IO String := do
   let out ← IO.Process.output {
     cmd := paths.binary.toString
     args := #[
-      ionPath.toString,
-      "--json",
-      s!"--sol-source={solPath}"
+      solPath.toString,
+      "--json"
     ]
   }
   if out.exitCode != 0 then
@@ -180,24 +143,17 @@ def runStrataJson (paths : TestPaths) (ionPath solPath : System.FilePath) : IO S
       s!"strataSolidity --json failed (exit {out.exitCode}):\nstderr:\n{out.stderr}"
   return out.stdout
 
-/-- Drive the full pipeline end-to-end for one Solidity fixture:
-    1. Generate the Ion file via `solast`.
-    2. Invoke `strataSolidity --json` on the Ion file.
-    3. Clean up the Ion file.
-    Returns the `--json` stdout or an explanatory error string. -/
+/-- Drive the pipeline end-to-end for one Solidity fixture: invoke
+    `strataSolidity <sol> --json` (the binary runs solc + the in-Lean
+    frontend itself). Returns the `--json` stdout or an error string. -/
 def runFixtureJson (paths : TestPaths) (fixtureName : String) : IO RunResult := do
   if !(← paths.binary.pathExists) then
     return .error s!"strataSolidity binary not found at {paths.binary}. Run `lake build` first."
-  if !(← paths.dialectIon.pathExists) then
-    return .error s!"Solidity dialect Ion not found at {paths.dialectIon}. Run gen_dialect.sh first."
   let solPath := paths.projectRoot / "StrataSolidityTest" / "Solidity" / "tests" / s!"{fixtureName}.sol"
   if !(← solPath.pathExists) then
     return .error s!"Fixture not found: {solPath}"
-  let tmpDir ← IO.FS.createTempDir
-  let ionPath : System.FilePath := tmpDir / s!"{fixtureName}.solidity.st.ion"
   try
-    generateIon paths solPath ionPath
-    let stdout ← runStrataJson paths ionPath solPath
+    let stdout ← runStrataJson paths solPath
     return .ok stdout
   catch e =>
     return .error s!"{e}"
@@ -213,14 +169,13 @@ def runFixtureJson (paths : TestPaths) (fixtureName : String) : IO RunResult := 
     this test from concurrently-running runs and to keep
     `STRATA_SMT_DIR` hermetic per fixture, we allocate a per-invocation
     directory and export it via `STRATA_SMT_DIR`. -/
-def runStrataPipelineJson (paths : TestPaths) (ionPath solPath : System.FilePath) : IO String := do
+def runStrataPipelineJson (paths : TestPaths) (solPath : System.FilePath) : IO String := do
   let smtDir ← IO.FS.createTempDir
   let out ← IO.Process.output {
     cmd := paths.binary.toString
     args := #[
-      ionPath.toString,
-      "--pipeline-json",
-      s!"--sol-source={solPath}"
+      solPath.toString,
+      "--pipeline-json"
     ]
     env := #[("STRATA_SMT_DIR", some smtDir.toString)]
   }
@@ -229,30 +184,18 @@ def runStrataPipelineJson (paths : TestPaths) (ionPath solPath : System.FilePath
       s!"strataSolidity --pipeline-json failed (exit {out.exitCode}):\nstderr:\n{out.stderr}"
   return out.stdout
 
-/-- Drive the full pipeline end-to-end for one Solidity fixture under
-    `--pipeline-json`:
-    1. Generate the Ion file via `solast`.
-    2. Invoke `strataSolidity --pipeline-json` on the Ion file.
-    3. Temp directories are left to the OS; no cleanup needed.
-    Returns the `--pipeline-json` stdout or an explanatory error string.
-
-    Sibling of `runFixtureJson`; any infrastructure failure (missing
-    binary, missing dialect, missing fixture, failed `solast`, non-zero
-    exit from the binary) is surfaced as `.error` so the `#eval` below
-    fails loud rather than silently skipping. -/
+/-- Sibling of `runFixtureJson` for `--pipeline-json` (REQ-PBT-006).
+    Any infrastructure failure (missing binary, missing fixture,
+    non-zero exit) is surfaced as `.error` so the `#eval` below fails
+    loud rather than silently skipping. -/
 def runFixturePipelineJson (paths : TestPaths) (fixtureName : String) : IO RunResult := do
   if !(← paths.binary.pathExists) then
     return .error s!"strataSolidity binary not found at {paths.binary}. Run `lake build` first."
-  if !(← paths.dialectIon.pathExists) then
-    return .error s!"Solidity dialect Ion not found at {paths.dialectIon}. Run gen_dialect.sh first."
   let solPath := paths.projectRoot / "StrataSolidityTest" / "Solidity" / "tests" / s!"{fixtureName}.sol"
   if !(← solPath.pathExists) then
     return .error s!"Fixture not found: {solPath}"
-  let tmpDir ← IO.FS.createTempDir
-  let ionPath : System.FilePath := tmpDir / s!"{fixtureName}.solidity.st.ion"
   try
-    generateIon paths solPath ionPath
-    let stdout ← runStrataPipelineJson paths ionPath solPath
+    let stdout ← runStrataPipelineJson paths solPath
     return .ok stdout
   catch e =>
     return .error s!"{e}"
@@ -286,8 +229,8 @@ def allowedStatuses : List String :=
       * `test_arithmetic` — mostly-passing arithmetic fixture; baseline
         "everything green" case.
 
-    Chosen small and fast so the full pipeline (solast + binary + JSON
-    parse) runs quickly under `lake test`. -/
+    Chosen small and fast so the full pipeline (binary — which runs
+    solc itself — + JSON parse) runs quickly under `lake test`. -/
 def jsonFixtureMatrix : List String :=
   [ "test_spec_basic"
   , "test_assert_fail"

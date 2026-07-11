@@ -51,9 +51,9 @@ jobs:
 
       - name: Install solc
         run: |
-          # solc is a runtime prerequisite for solast.py (Tools/Solidity/src/solast.py
-          # invokes `solc --standard-json`). The Ubuntu PPA package is fine for
-          # the AST-extraction-only path that StrataSolidity uses.
+          # solc is a runtime prerequisite: the strataSolidity binary invokes
+          # `solc --standard-json` (StrataSolidity/SolcRunner.lean). The Ubuntu
+          # PPA package is fine for the AST-extraction-only path used here.
           sudo add-apt-repository -y ppa:ethereum/ethereum
           sudo apt-get update -y
           sudo apt-get install -y solc
@@ -103,21 +103,6 @@ jobs:
       - name: test/run_tests.sh (golden + REQ-PBT-007)
         run: bash test/run_tests.sh
 
-      # ---- Solidity dialect parity (Python frontend ↔ Lean canonical) ----
-      # The Lean dialect (StrataSolidity/SolidityDialect.lean) is canonical.
-      # While the legacy Python frontend (solast.py + base_dialect.py) is
-      # still present, this gate ensures its schema matches the canonical
-      # dialect byte-for-byte, so the two frontends cannot drift. It is
-      # retired together with the Python frontend.
-      - name: dialect parity (Python frontend ↔ Lean canonical)
-        run: |
-          set -euo pipefail
-          python3 Tools/Solidity/src/print_dialect_summary.py --as=Solidity \
-            | grep -v '^# Generated from' > /tmp/python-dialect.txt
-          lake exe gen-dialect-summary \
-            | grep -v '^# Generated from' > /tmp/lean-dialect.txt
-          diff -u /tmp/python-dialect.txt /tmp/lean-dialect.txt
-
       # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
       # bench/bench.sh itself is intentionally NOT run in CI: b6_erc20
       # routinely takes 10+ minutes locally, which is too slow for the
@@ -130,8 +115,8 @@ jobs:
       # ---- Stage 7: SARIF 2.1.0 schema compliance (REQ-PBT-004) ----
       # The pytest fixture spawns strata-verify.sh --sarif against curated
       # fixtures and validates the stdout against the vendored OASIS schema.
-      # Skipped automatically if the binary, dialect, or solc are missing
-      # (the test prints a Skip with a reason); this stage will fail only
-      # on a real schema violation.
+      # Skipped automatically if the binary or solc are missing (the test
+      # prints a Skip with a reason); this stage fails only on a real
+      # schema violation.
       - name: pytest Tools/Solidity/test (REQ-PBT-004 SARIF schema)
         run: python3 -m pytest Tools/Solidity/test -v
