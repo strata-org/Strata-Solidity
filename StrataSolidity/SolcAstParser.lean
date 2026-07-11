@@ -176,11 +176,13 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     return node.Identifier sr (annStr sr (getStrOr j "name"))
 
   | "Literal" =>
-    -- solc: { nodeType: "Literal", value: <string>, kind: "number"|"string"|"bool"|"hexString"|..., src: ... }
-    -- Python defaults: value → "", kind → "number".
+    -- solc: { nodeType: "Literal", value: <string>, kind: "number"|"string"|"bool"|"hexString"|...,
+    --         subdenomination: "ether"|"days"|... (optional), src: ... }
+    -- Python defaults: value → "", kind → "number", subdenomination → "".
     let val  := getStrOr j "value" ""
     let kind := getStrOr j "kind" "number"
-    return node.Literal sr (annStr sr val) (annStr sr kind)
+    let sub  := getStrOr j "subdenomination" ""
+    return node.Literal sr (annStr sr val) (annStr sr kind) (annStr sr sub)
 
   | "PragmaDirective"
   | "ContractDefinition"
@@ -202,8 +204,11 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
   let sr := parseSrc j
   match nt with
   | "ElementaryTypeName" =>
-    -- solc: { nodeType: "ElementaryTypeName", name: <"uint256"|"bool"|...>, src: ... }
+    -- solc: { nodeType: "ElementaryTypeName", name: <"uint256"|"bool"|...>,
+    --         stateMutability: "payable"|"nonpayable" (optional, address only), src: ... }
+    -- Python default: stateMutability → "".
     return type_name.ElementaryTypeName sr (annStr sr (getStrOr j "name"))
+      (annStr sr (getStrOr j "stateMutability" ""))
 
   | "UserDefinedTypeName" | "MappingType" | "ArrayTypeName" =>
     throw (.unimplemented nt)

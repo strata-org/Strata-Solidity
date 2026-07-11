@@ -53,7 +53,7 @@ private def isIdentifier (j : Json) (expectedName : String) : Bool :=
 
 private def isLiteral (j : Json) (expectedVal expectedKind : String) : Bool :=
   match convertNode j with
-  | .ok (node.Literal _ val kind) => val.val == expectedVal && kind.val == expectedKind
+  | .ok (node.Literal _ val kind _sub) => val.val == expectedVal && kind.val == expectedKind
   | _ => false
 
 #guard isLiteral
@@ -82,7 +82,7 @@ private def isLiteral (j : Json) (expectedVal expectedKind : String) : Bool :=
 
 private def isElementaryTypeName (j : Json) (expectedName : String) : Bool :=
   match convertTypeName j with
-  | .ok (type_name.ElementaryTypeName _ name) => name.val == expectedName
+  | .ok (type_name.ElementaryTypeName _ name _mut) => name.val == expectedName
   | _ => false
 
 #guard isElementaryTypeName
