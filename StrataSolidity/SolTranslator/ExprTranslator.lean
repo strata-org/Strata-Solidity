@@ -936,8 +936,24 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
-      -- Tuple/multi-variable declarations: sound over-approximation
-      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+      -- Tuple/multi-variable declarations `(a, b) = f()`: declare each
+      -- variable with a havoc'd (nondeterministic) initial value. This is
+      -- the sound over-approximation — the values are unknown but the
+      -- names are in scope for subsequent statements.
+      -- (Previously this emitted assume(false), which silently made every
+      -- POST-declaration obligation vacuous — the #26 anti-pattern — and
+      -- left the names undeclared, causing resolution failures.)
+      let mut declStmts : List StmtExprMd := []
+      for declOpt in decls do
+        match declOpt with
+        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+          let solTy := match typeNameOpt with
+            | .some_type_name _ tn => translateTypeNode ctx tn
+            | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+          declStmts := declStmts ++
+            [mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType (some (mkStmtExprMd .Hole)))]
+        | _ => pure ()  -- skipped tuple slot `(, b) = ...`
+      return mkStmtExprMd (.Block declStmts none)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 

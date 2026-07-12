@@ -290,8 +290,8 @@ where
         match args.head?.map (·.val) with
         | some (.Var (.Local name)) => s!"sum_{name.text}"
         | _ => fname
-      else if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
-        s!"{fname}2"
+      else if args.length > 1 && (fname == "abi_encodePacked" || fname == "abi_encode") then
+        s!"{fname}{args.length}"
       else fname
       let call := mkStmtExprMd (.StaticCall fname' args)
       parsePostfixTail call rest'

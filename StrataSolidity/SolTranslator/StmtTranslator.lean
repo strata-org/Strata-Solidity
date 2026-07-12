@@ -126,39 +126,52 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
     match params with
     | .ParameterList _ paramsSeq =>
+      let mut anonIdx := 0
       for param in paramsSeq.val do
         match param with
         | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ storageLocAnn _ _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+          -- Unnamed parameters (`function f(address, int24)`) are legal
+          -- Solidity; synthesize a unique name per position so the `_param`
+          -- inputs (and their local copies) don't collide.
+          let baseName ← if pName.val.isEmpty then do
+              let n := anonIdx
+              anonIdx := anonIdx + 1
+              pure s!"__arg{n}"
+            else pure pName.val
           -- Rename user parameter to `name_param` so we can create a mutable local copy
-          let inputName := s!"{pName.val}_param"
+          let inputName := s!"{baseName}_param"
           inputs := inputs ++ [{ name := inputName, type := solTy.highType }]
-          userParamInfo := userParamInfo ++ [(pName.val, solTy.highType)]
+          userParamInfo := userParamInfo ++ [(baseName, solTy.highType)]
           -- Add non-negative precondition for uint, address, and bytes types
           if solTy.isUint || solTy.isAddress || solTy.isBytes then
             preconditions := preconditions ++ [mkNonNegPrecond inputName]
           -- For memory array parameters, add a paired length parameter
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
-            let lenName := s!"{pName.val}_length"
+            let lenName := s!"{baseName}_length"
             inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
             preconditions := preconditions ++ [mkNonNegPrecond lenName]
-            memoryArrayParamNames := memoryArrayParamNames ++ [pName.val]
+            memoryArrayParamNames := memoryArrayParamNames ++ [baseName]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
 
-    -- Translate return parameters
+    -- Translate return parameters. Unnamed returns get position-unique
+    -- names (`result`, `result1`, ...) so multi-value unnamed returns
+    -- (`returns (uint256, uint256)`) don't collide.
     let baseOutputs ← match retParams with
       | .ParameterList _ retSeq =>
-        retSeq.val.toList.mapM fun param =>
+        retSeq.val.toList.zipIdx.mapM fun (param, i) =>
           match param with
           | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-            let outName := if pName.val.isEmpty then "result" else pName.val
+            let outName := if pName.val.isEmpty then
+                (if i == 0 then "result" else s!"result{i}")
+              else pName.val
             pure ({ name := outName, type := solTy.highType } : Parameter)
           | _ => throw (.unsupported "Non-VariableDeclaration in return parameters")
       | _ => throw (.internalError "Expected ParameterList for return parameters")
@@ -304,15 +317,36 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
             -- Parse comma-separated variable names from modifies annotation.
-            -- Each entry may be "varName" or "varName[keyExpr]".
+            -- Each entry may be "varName" or "varName[keyExpr]". Split on
+            -- commas ONLY at bracket/paren depth 0 — key expressions may
+            -- themselves contain commas (e.g.
+            -- `positions[keccak256(abi.encodePacked(a, b, c))]`).
+            let splitTopLevel (s : String) : List String := Id.run do
+              let mut out : List String := []
+              let mut cur : String := ""
+              let mut depth : Nat := 0
+              for c in s.toList do
+                if c == '[' || c == '(' then
+                  depth := depth + 1; cur := cur.push c
+                else if c == ']' || c == ')' then
+                  depth := depth - 1; cur := cur.push c
+                else if c == ',' && depth == 0 then
+                  out := out ++ [cur]; cur := ""
+                else
+                  cur := cur.push c
+              if !cur.toSlice.trimAscii.isEmpty then out := out ++ [cur]
+              return out
             let modifiedEntries := natspecModifies.foldl (fun acc s =>
-              acc ++ ((s.splitOn ",").map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- Split entries into (baseName, optionalKeyExpr) pairs
+              acc ++ ((splitTopLevel s).map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
+            -- Split entries into (baseName, optionalKeyExpr) pairs. Only the
+            -- FIRST '[' separates base from key; the key runs to the final ']'.
             let parseEntry (entry : String) : String × Option String :=
-              match entry.splitOn "[" with
-              | [base] => (base.trimAscii.toString, none)
-              | [base, keyPart] => (base.trimAscii.toString, some (keyPart.dropEnd 1 |>.trimAscii.toString))  -- strip trailing ]
-              | _ => (entry.trimAscii.toString, none)
+              match entry.toList.findIdx? (· == '[') with
+              | none => (entry.trimAscii.toString, none)
+              | some i =>
+                let base := (entry.take i).trimAscii.toString
+                let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
+                (base, some keyPart.trimAscii.toString)
             let parsedEntries := modifiedEntries.map parseEntry
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in

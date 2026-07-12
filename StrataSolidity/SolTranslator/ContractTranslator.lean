@@ -303,13 +303,26 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       isFunctional := true
       body := .Abstract []
     }
+    let mkUninterpN (name : String) (n : Nat) : Procedure := {
+      name := name
+      inputs := (List.range n).map fun i =>
+        { name := s!"a{i}", type := mkHighTypeMd .TInt }
+      outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
+      preconditions := []
+      decreases := none
+      isFunctional := true
+      body := .Abstract []
+    }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
       mkUninterpBinary "bit_xor", mkUninterpBinary "bit_shl",
       mkUninterpBinary "bit_shr", mkUninterpUnary "bit_not",
       mkUninterpUnary "keccak256", mkUninterpUnary "sha256",
       mkUninterpUnary "abi_encode", mkUninterpBinary "abi_encode2",
+      mkUninterpN "abi_encode3" 3, mkUninterpN "abi_encode4" 4,
+      mkUninterpN "abi_encode5" 5, mkUninterpN "abi_encode6" 6,
       mkUninterpUnary "abi_encodePacked", mkUninterpBinary "abi_encodePacked2",
+      mkUninterpN "abi_encodePacked3" 3, mkUninterpN "abi_encodePacked4" 4,
       mkUninterpUnary "abi_encodeWithSelector",
       mkUninterpUnary "abi_encodeWithSignature",
       mkUninterpUnary "abi_decode",
