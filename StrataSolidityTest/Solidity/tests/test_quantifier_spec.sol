@@ -7,7 +7,7 @@ contract QuantifierSpec {
     mapping(address => uint256) public balances;
     uint256 public totalSupply;
 
-    /// @custom:strata ensures forall a : address :: balances[a] >= 0
+    /// @custom:strata ensures forall a : address :: a != to ==> balances[a] == old(balances[a])
     function mint(address to, uint256 amount) external {
         require(amount <= 10000, "amount too large");
         totalSupply += amount;

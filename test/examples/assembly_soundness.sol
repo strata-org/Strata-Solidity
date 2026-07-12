@@ -9,7 +9,6 @@ pragma solidity ^0.8.0;
 contract AssemblySoundness {
     uint256 public stored;
 
-    /// @custom:strata requires x >= 0
     /// @custom:strata ensures y == x
     function passthrough(uint256 x) external returns (uint256 y) {
         y = x;

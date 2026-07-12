@@ -71,7 +71,7 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 |---|---|---|
 | `@custom:strata requires <expr>` | function | Precondition — must hold on entry |
 | `@custom:strata ensures <expr>` | function | Postcondition — must hold on exit; supports `old(expr)` for pre-state values |
-| `@custom:strata invariant <expr>` | contract | Contract invariant — checked after constructor and on entry/exit of public functions |
+| `@custom:strata invariant <expr>` | state variable | Contract invariant (attach to the state variable it constrains) — assumed on entry and checked on exit of every mutating function, and checked after the constructor |
 | `@custom:strata modifies <vars>` | function | Frame condition — only listed state variables may change |
 | `@custom:strata loop-invariant <expr>` | function | Loop invariant — maintained across loop iterations |
 | `@custom:strata forall v : T :: <expr>` | function | Universal quantifier |
@@ -83,36 +83,57 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @custom:strata invariant totalSupply >= 0
 contract Token {
     mapping(address => uint256) public balances;
+
+    /// @custom:strata invariant totalSupply == sum(balances)
     uint256 public totalSupply;
 
-    /// @custom:strata requires balances[to] <= 100000
+    /// @custom:strata modifies balances[to], totalSupply
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
     /// @custom:strata ensures totalSupply == old(totalSupply) + amount
     function mint(address to, uint256 amount) external {
-        require(amount <= 10000, "amount too large");
-        require(totalSupply <= 100000, "supply too large");
         totalSupply += amount;
         balances[to] += amount;
     }
 
-    /// @custom:strata requires balances[msg.sender] >= amount
     /// @custom:strata requires to != msg.sender
-    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
+    /// @custom:strata requires balances[msg.sender] >= amount
+    /// @custom:strata modifies balances[msg.sender], balances[to]
     /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
     function transfer(address to, uint256 amount) external {
         require(to != msg.sender, "self-transfer disallowed");
         require(balances[msg.sender] >= amount, "insufficient balance");
         balances[msg.sender] -= amount;
         balances[to] += amount;
     }
-
-    /// @custom:strata modifies x
-    /// @custom:strata ensures forall a : address :: balances[a] >= 0
-    function checkInvariant() external view {}
 }
 ```
+
+Every annotation here pulls its weight:
+
+- The **invariant** `totalSupply == sum(balances)` is the central data-structure
+  property of a token — it is checked on every mutating function, and deleting
+  `totalSupply += amount` from `mint` makes verification fail.
+- **`modifies` is key-scoped**: `modifies balances[to], totalSupply` generates a
+  frame condition that *every other holder's balance is unchanged* — the
+  property traditional specs must assert by hand.
+- The **`ensures`** clauses state the exact effect in terms of pre-state.
+
+### Keep specs crisp
+
+Don't state what the type system or the tool already guarantees:
+
+- `uint256` values are non-negative — never write `requires amount >= 0` or
+  `invariant totalSupply >= 0`; the verifier assumes non-negativity for every
+  unsigned integer automatically.
+- State not listed in `modifies` is unchanged — never write
+  `ensures x == old(x)` for a variable the function doesn't modify; the frame
+  condition already asserts it.
+- Prefer `modifies m[k]` over `modifies m` whenever the touched keys are
+  expressible: the narrower frame is both a stronger theorem and free
+  documentation of the function's write-set.
 
 ## Supported Solidity features
 

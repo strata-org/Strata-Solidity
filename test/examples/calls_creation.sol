@@ -9,14 +9,12 @@ pragma solidity ^0.8.0;
 contract CallsCreation {
     uint256 public lastSent;
 
-    /// @custom:strata requires amount >= 0
     /// @custom:strata ensures lastSent == amount
     function sendEther(address payable target, uint256 amount) external {
         target.call{value: amount, gas: 50000}("");
         lastSent = amount;
     }
 
-    /// @custom:strata requires n >= 0
     /// @custom:strata ensures len == n
     function allocate(uint256 n) external pure returns (uint256 len) {
         uint256[] memory arr = new uint256[](n);

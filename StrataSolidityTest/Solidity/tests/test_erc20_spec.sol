@@ -3,7 +3,6 @@ pragma solidity ^0.8.0;
 
 /// @title Minimal ERC20-like token with full contract specification.
 /// Demonstrates contract invariants, pre/postconditions, and old().
-/// @custom:strata invariant totalSupply >= 0
 contract ERC20Spec {
 
     mapping(address => uint256) public balances;

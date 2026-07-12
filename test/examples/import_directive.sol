@@ -11,7 +11,6 @@ contract ImportDirective {
 
     uint256 public stored;
 
-    /// @custom:strata requires x >= 0
     /// @custom:strata ensures stored == x
     function store(uint256 x) external {
         stored = x;
