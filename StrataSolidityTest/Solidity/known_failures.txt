@@ -1,4 +1,0 @@
-# Known test failures (XFAIL registry).
-# One test base name per line. Lines starting with # are comments.
-test_interface_abstract
-test_new_expression

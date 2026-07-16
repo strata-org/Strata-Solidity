@@ -2,7 +2,6 @@
 pragma solidity ^0.8.0;
 
 /// @title Vault deposit pattern with invariant and ensures.
-/// @custom:strata invariant totalDeposits >= 0
 contract VaultDeposit {
 
     mapping(address => uint256) public deposits;

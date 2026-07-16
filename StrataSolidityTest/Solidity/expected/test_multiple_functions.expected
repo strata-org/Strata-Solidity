@@ -1,5 +1,0 @@
-
-==== Verification Results ====
-assert(286): ✅ pass (at line 9, col 8)
-assert(482): ✅ pass (at line 16, col 8)
-set_result_calls_Int.SafeMod_0: ✅ pass

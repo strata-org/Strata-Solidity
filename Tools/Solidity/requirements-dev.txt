@@ -1,15 +1,8 @@
-# Python dependencies for Tools/Solidity.
+# Python dependencies for Tools/Solidity — CI/dev tooling only.
 #
-# `amazon.ion` is a runtime dependency: solast.py
-# (Tools/Solidity/src/solast.py) imports `amazon.ion.simpleion` to emit
-# the Ion AST that strata-verify.sh feeds into `strataSolidity`. The Lean
-# test harness (StrataSolidityTest/Solidity/JsonOutputTest.lean and
-# friends) shells out to `python3 -m src.solast`, so this dep is also
-# required to run `lake test` and the pytest harness in CI. Mirrors the
-# `amazon.ion` dependency declared in
-# Strata/Tools/Python/pyproject.toml.
+# The verification pipeline itself is pure Lean (the strataSolidity
+# binary invokes solc directly); Python is used only for the SARIF
+# schema check (REQ-PBT-004) under Tools/Solidity/test/.
 #
-# `jsonschema` is dev-only — it backs the SARIF 2.1.0 schema check
-# (REQ-PBT-004) executed by Tools/Solidity/test/.
-amazon.ion>=0.11
+# `jsonschema` backs the SARIF 2.1.0 schema validation.
 jsonschema>=4.0

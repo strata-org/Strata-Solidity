@@ -1,5 +1,0 @@
-
-==== Verification Results ====
-ContractInvariant_ctor_ensures: ✅ pass
-addOne_ensures_0: ✅ pass
-addOne_ensures_1: 🟡 unknown

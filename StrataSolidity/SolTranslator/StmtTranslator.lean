@@ -45,7 +45,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn params retParams bodyOpt docAnn modifiersSeq => do
+  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
@@ -65,10 +65,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
                               type := mkHighTypeMd (.UserDefined (mkIdent ctx.contractName)) }]
-      -- Assert non-negativity for uint scalar state vars (Solidity uints are always >= 0)
+      -- Assert non-negativity only for INTEGER scalar state vars (Solidity
+      -- uints are always >= 0). Non-int fields (e.g. bool) must not get a
+      -- `>= 0` precondition — that produces an ill-typed `bool >= 0`.
       for name in nonMappingStateVars do
-        let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
-        preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
+        let isIntField := ctx.contractFields.any fun f =>
+          f.name.text == name && (match f.type.val with | .TInt => true | _ => false)
+        if isIntField then
+          let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
+          preconditions := preconditions ++ [mkStmtExprMd (.PrimitiveOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
       -- Synthetic pre-state input parameters for scalar state vars.
       -- For each scalar field, add `<name>_in : <type>` and a precondition
       -- `self.<name> == <name>_in` so that `<name>_in` carries the pre-state
@@ -121,39 +126,52 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
     match params with
     | .ParameterList _ paramsSeq =>
+      let mut anonIdx := 0
       for param in paramsSeq.val do
         match param with
-        | .VariableDeclaration _ pName typeNameOpt _ _ storageLocAnn _ _ =>
+        | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ storageLocAnn _ _ =>
           let solTy := match typeNameOpt with
             | .some_type_name _ tn => translateTypeNode ctx tn
             | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+          -- Unnamed parameters (`function f(address, int24)`) are legal
+          -- Solidity; synthesize a unique name per position so the `_param`
+          -- inputs (and their local copies) don't collide.
+          let baseName ← if pName.val.isEmpty then do
+              let n := anonIdx
+              anonIdx := anonIdx + 1
+              pure s!"__arg{n}"
+            else pure pName.val
           -- Rename user parameter to `name_param` so we can create a mutable local copy
-          let inputName := s!"{pName.val}_param"
+          let inputName := s!"{baseName}_param"
           inputs := inputs ++ [{ name := inputName, type := solTy.highType }]
-          userParamInfo := userParamInfo ++ [(pName.val, solTy.highType)]
+          userParamInfo := userParamInfo ++ [(baseName, solTy.highType)]
           -- Add non-negative precondition for uint, address, and bytes types
           if solTy.isUint || solTy.isAddress || solTy.isBytes then
             preconditions := preconditions ++ [mkNonNegPrecond inputName]
           -- For memory array parameters, add a paired length parameter
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
-            let lenName := s!"{pName.val}_length"
+            let lenName := s!"{baseName}_length"
             inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
             preconditions := preconditions ++ [mkNonNegPrecond lenName]
-            memoryArrayParamNames := memoryArrayParamNames ++ [pName.val]
+            memoryArrayParamNames := memoryArrayParamNames ++ [baseName]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
 
-    -- Translate return parameters
+    -- Translate return parameters. Unnamed returns get position-unique
+    -- names (`result`, `result1`, ...) so multi-value unnamed returns
+    -- (`returns (uint256, uint256)`) don't collide.
     let baseOutputs ← match retParams with
       | .ParameterList _ retSeq =>
-        retSeq.val.toList.mapM fun param =>
+        retSeq.val.toList.zipIdx.mapM fun (param, i) =>
           match param with
-          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ =>
+          | .VariableDeclaration _ pName typeNameOpt _ _ _ _ _ _ _ _ =>
             let solTy := match typeNameOpt with
               | .some_type_name _ tn => translateTypeNode ctx tn
               | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-            let outName := if pName.val.isEmpty then "result" else pName.val
+            let outName := if pName.val.isEmpty then
+                (if i == 0 then "result" else s!"result{i}")
+              else pName.val
             pure ({ name := outName, type := solTy.highType } : Parameter)
           | _ => throw (.unsupported "Non-VariableDeclaration in return parameters")
       | _ => throw (.internalError "Expected ParameterList for return parameters")
@@ -199,13 +217,25 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Rewrite state var refs in loop invariants
     let specLocalNames := userParamInfo.map (·.1) ++
       (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-    let rewriteSVGlobal := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+    let rewriteSVGlobal := fun e =>
+      rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
     -- Process old() markers in loop invariants BEFORE rewriting state var refs
     let natspecLoopInvExprs := natspecLoopInvExprs.map
       (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
     let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
+    -- Valued-return desugaring: when the procedure ends up with MULTIPLE
+    -- output parameters (a declared return value plus mapping-state
+    -- outputs), Laurel's EliminateValueReturns rejects `return e`. Record
+    -- the declared return's output name so translateStmt desugars
+    -- `return e` into `<name> := e; return`.
+    let valuedReturnTarget :=
+      if outputs.length > 1 && !isConstructor then
+        baseOutputs.head?.map (·.name.text)
+      else none
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
+                              hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
+                              valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
@@ -225,7 +255,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Parameter names and output names are treated as locals (not rewritten).
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let rewriteSV := fun e =>
+          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
         let specPreExprs := specPreExprs.map rewriteSV
         let specPostExprs := specPostExprs.map rewriteSV
 
@@ -286,15 +317,36 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
             -- Parse comma-separated variable names from modifies annotation.
-            -- Each entry may be "varName" or "varName[keyExpr]".
+            -- Each entry may be "varName" or "varName[keyExpr]". Split on
+            -- commas ONLY at bracket/paren depth 0 — key expressions may
+            -- themselves contain commas (e.g.
+            -- `positions[keccak256(abi.encodePacked(a, b, c))]`).
+            let splitTopLevel (s : String) : List String := Id.run do
+              let mut out : List String := []
+              let mut cur : String := ""
+              let mut depth : Nat := 0
+              for c in s.toList do
+                if c == '[' || c == '(' then
+                  depth := depth + 1; cur := cur.push c
+                else if c == ']' || c == ')' then
+                  depth := depth - 1; cur := cur.push c
+                else if c == ',' && depth == 0 then
+                  out := out ++ [cur]; cur := ""
+                else
+                  cur := cur.push c
+              if !cur.toSlice.trimAscii.isEmpty then out := out ++ [cur]
+              return out
             let modifiedEntries := natspecModifies.foldl (fun acc s =>
-              acc ++ ((s.splitOn ",").map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- Split entries into (baseName, optionalKeyExpr) pairs
+              acc ++ ((splitTopLevel s).map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
+            -- Split entries into (baseName, optionalKeyExpr) pairs. Only the
+            -- FIRST '[' separates base from key; the key runs to the final ']'.
             let parseEntry (entry : String) : String × Option String :=
-              match entry.splitOn "[" with
-              | [base] => (base.trimAscii.toString, none)
-              | [base, keyPart] => (base.trimAscii.toString, some (keyPart.dropEnd 1 |>.trimAscii.toString))  -- strip trailing ]
-              | _ => (entry.trimAscii.toString, none)
+              match entry.toList.findIdx? (· == '[') with
+              | none => (entry.trimAscii.toString, none)
+              | some i =>
+                let base := (entry.take i).trimAscii.toString
+                let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
+                (base, some keyPart.trimAscii.toString)
             let parsedEntries := modifiedEntries.map parseEntry
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
@@ -314,7 +366,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 let keyExprs := entries.filterMap fun (_, k) => k
                 let parsedKeys := keyExprs.filterMap fun keyStr =>
                   match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
-                  | .ok (keyExpr, _) => some (rewriteParamRefs userParamNames keyExpr)
+                  | .ok (keyExpr, _) =>
+                    -- Fold constant state vars (e.g. `modifies roles[DEFAULT_ADMIN_ROLE]`)
+                    -- and resolve scalar state vars in key position; then rename
+                    -- user params to their `_param` form.
+                    let keyExpr := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars
+                      (userParamInfo.map (·.1) ++ ["msg_sender", "msg_value"]) keyExpr ctx.constantDefs
+                    some (rewriteParamRefs userParamNames keyExpr)
                   | .error _ => none
                 if parsedKeys.isEmpty then none
                 else
@@ -358,25 +416,42 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- use Body.Opaque with an empty postconds list — semantically a
         -- procedure with no observable effect, which is what spec-less
         -- functions deserve.
-        -- Tag invariant postconditions with __strata_invariant wrapper for label generation
-        let taggedInvariants := contractInvariants.map fun inv =>
-          mkStmtExprMd (.StaticCall "__strata_invariant" [inv])
-        let allPosts := specPostExprs ++ frameConditions ++ taggedInvariants
+        -- Contract invariants are emitted as plain postcondition expressions
+        -- and tagged via the Condition `summary` field (the designed labeling
+        -- channel — it flows to Core's propertySummary metadata and the SARIF
+        -- `strata/invariant-fail` classifier keys off the substring
+        -- "invariant"). A previous attempt wrapped each invariant in a
+        -- synthetic `StaticCall "__strata_invariant" [inv]` "for label
+        -- generation", but the obligation label is derived from the
+        -- translateChecks labelBase ("postcondition_N"), NOT from the
+        -- expression — so the wrapper never affected any label and instead
+        -- reached Laurel→Core as a call to an undeclared function, failing
+        -- with "Resolution failed: '__strata_invariant' is not defined" for
+        -- every contract carrying an in-contract invariant (ERC20,
+        -- Initializable, ReentrancyGuard, ...).
+        let specAndFramePosts := specPostExprs ++ frameConditions
+        let allPosts := specAndFramePosts ++ contractInvariants
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
         -- Only include self in modifies list when contract has scalar (non-mapping) state vars
-        let modifiesList := if hasNonMappingState && !isConstructor then
+        let modifiesList := if !isPure && hasNonMappingState && !isConstructor then
           [mkStmtExprMd (mkIdentifier "self")]
         else []
-        let allPostsConds : List Condition :=
-          allPosts.map fun p => { condition := p, summary := none }
+        let specAndFrameConds : List Condition :=
+          (specAndFramePosts.map (withSourceRange ctx fnSr)).map fun p =>
+            { condition := p, summary := none }
+        let invariantConds : List Condition :=
+          (contractInvariants.map (withSourceRange ctx fnSr)).map fun p =>
+            { condition := p, summary := some "invariant" }
+        let allPostsConds : List Condition := specAndFrameConds ++ invariantConds
         pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
           modifiesList, contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
         let specLocalNames := userParamInfo.map (·.1) ++
           (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames
+        let rewriteSV := fun e =>
+          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
         let contractInvariants := if isPure || isView then []
           else ctx.contractInvariantNatspec.map rewriteSV
         let invariantsAsConds : List Condition :=

@@ -3,17 +3,21 @@
 Solidity formal verification front-end for the [Strata](https://github.com/strata-org/Strata) framework. Translates annotated Solidity contracts through the Strata pipeline for verification via SMT solving.
 
 ```
-Solidity (.sol) → solc + solast.py → Ion → SolToLaurel → Laurel IR
-  → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
+Solidity (.sol) → solc --standard-json → SolcAstParser (Lean) → SolTranslator
+  → Laurel IR → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
 ```
+
+The entire pipeline lives in the `strataSolidity` binary: it invokes `solc`,
+parses the JSON AST into typed Lean structures, and verifies — no Python,
+no intermediate serialization.
 
 ## Prerequisites
 
-- [Lean 4](https://lean-lang.org/) v4.27.0 (see `lean-toolchain`)
+- [Lean 4](https://lean-lang.org/) (see `lean-toolchain` for the pinned version)
 - [Strata](https://github.com/evertonfraga/Strata/tree/solidity) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
-- Python 3.12+
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
 - z3 or cvc5 SMT solver
+- Python 3.12+ — dev/CI tooling only (SARIF schema check, bench CSV enforcer); not needed to verify contracts
 
 ### Strata submodule
 
@@ -39,13 +43,13 @@ lake build
 
 1. Checks out StrataSolidity with `submodules: recursive` so the Strata submodule is materialized at the recorded SHA
 2. Verifies the submodule layout via `scripts/check-strata.sh`
-3. Installs `solc` (via the `ethereum/ethereum` PPA) and the Python dev dependencies in `Tools/Solidity/requirements-dev.txt`
+3. Installs `solc` (via the `ethereum/ethereum` PPA) and the CI-only Python deps in `Tools/Solidity/requirements-dev.txt`
 4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action) (which handles elan install and `.lake` caching)
 5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)
 6. Runs `python3 bench/check_csv_schema.py bench/results.csv` (REQ-PBT-008 schema enforcer against the committed CSV)
 7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema compliance)
 
-`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow). The primary golden harness `StrataSolidityTest/Solidity/run_sol_analyze_laurel.sh` is also not wired (see `StrataSolidityTest/Solidity/CHECKPOINT_GAP.md`).
+`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow).
 
 ## Quick start
 
@@ -67,7 +71,7 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 |---|---|---|
 | `@custom:strata requires <expr>` | function | Precondition — must hold on entry |
 | `@custom:strata ensures <expr>` | function | Postcondition — must hold on exit; supports `old(expr)` for pre-state values |
-| `@custom:strata invariant <expr>` | contract | Contract invariant — checked after constructor and on entry/exit of public functions |
+| `@custom:strata invariant <expr>` | state variable | Contract invariant (attach to the state variable it constrains) — assumed on entry and checked on exit of every mutating function, and checked after the constructor |
 | `@custom:strata modifies <vars>` | function | Frame condition — only listed state variables may change |
 | `@custom:strata loop-invariant <expr>` | function | Loop invariant — maintained across loop iterations |
 | `@custom:strata forall v : T :: <expr>` | function | Universal quantifier |
@@ -79,36 +83,57 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @custom:strata invariant totalSupply >= 0
 contract Token {
     mapping(address => uint256) public balances;
+
+    /// @custom:strata invariant totalSupply == sum(balances)
     uint256 public totalSupply;
 
-    /// @custom:strata requires balances[to] <= 100000
+    /// @custom:strata modifies balances[to], totalSupply
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
     /// @custom:strata ensures totalSupply == old(totalSupply) + amount
     function mint(address to, uint256 amount) external {
-        require(amount <= 10000, "amount too large");
-        require(totalSupply <= 100000, "supply too large");
         totalSupply += amount;
         balances[to] += amount;
     }
 
-    /// @custom:strata requires balances[msg.sender] >= amount
     /// @custom:strata requires to != msg.sender
-    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
+    /// @custom:strata requires balances[msg.sender] >= amount
+    /// @custom:strata modifies balances[msg.sender], balances[to]
     /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
+    /// @custom:strata ensures balances[to] == old(balances[to]) + amount
     function transfer(address to, uint256 amount) external {
         require(to != msg.sender, "self-transfer disallowed");
         require(balances[msg.sender] >= amount, "insufficient balance");
         balances[msg.sender] -= amount;
         balances[to] += amount;
     }
-
-    /// @custom:strata modifies x
-    /// @custom:strata ensures forall a : address :: balances[a] >= 0
-    function checkInvariant() external view {}
 }
 ```
+
+Every annotation here pulls its weight:
+
+- The **invariant** `totalSupply == sum(balances)` is the central data-structure
+  property of a token — it is checked on every mutating function, and deleting
+  `totalSupply += amount` from `mint` makes verification fail.
+- **`modifies` is key-scoped**: `modifies balances[to], totalSupply` generates a
+  frame condition that *every other holder's balance is unchanged* — the
+  property traditional specs must assert by hand.
+- The **`ensures`** clauses state the exact effect in terms of pre-state.
+
+### Keep specs crisp
+
+Don't state what the type system or the tool already guarantees:
+
+- `uint256` values are non-negative — never write `requires amount >= 0` or
+  `invariant totalSupply >= 0`; the verifier assumes non-negativity for every
+  unsigned integer automatically.
+- State not listed in `modifies` is unchanged — never write
+  `ensures x == old(x)` for a variable the function doesn't modify; the frame
+  condition already asserts it.
+- Prefer `modifies m[k]` over `modifies m` whenever the touched keys are
+  expressible: the narrower frame is both a stronger theorem and free
+  documentation of the function's write-set.
 
 ## Supported Solidity features
 
@@ -143,43 +168,23 @@ Tools/Solidity/scripts/strata-verify.sh <file.sol> [--sarif] [--verbose]
 
 Requires `lake build` to have been run first.
 
-### strata_verify.py
-
-Python wrapper with two modes:
-
-**File mode:**
-```bash
-python3 -m src.strata_verify --file contract.sol [--sarif]
-```
-
-**Standard-JSON mode** (solc-compatible):
-```bash
-echo '{"language":"Solidity","sources":{"file.sol":{"content":"..."}},"settings":{"modelChecker":{"engine":"strata"}}}' \
-  | python3 -m src.strata_verify
-```
-
-Returns solc-compatible JSON with verification results in the `errors` array.
-
 ## Directory layout
 
 ```
 StrataSolidity/             Lean library (dialect, parser, AST → Laurel translation)
 StrataSolidityMain.lean     CLI entry point (strataSolidity executable)
 StrataSolidityTest/         Integration tests (.sol files + expected output)
-Tools/Solidity/             Python parser and verification wrappers
-  src/solast.py             solc JSON AST → Ion serialization
-  src/strata_verify.py      Python verification wrapper
-  scripts/strata-verify.sh  Shell verification wrapper
+Tools/Solidity/
+  scripts/strata-verify.sh  Thin shell wrapper around the binary
+  test/                     SARIF schema check (CI-only Python)
 ```
 
 ## Running tests
 
 ```bash
-cd StrataSolidityTest/Solidity
-bash run_sol_analyze_laurel.sh
+lake test               # Lean unit + characterization tests (#guard suites, JSON/pipeline-JSON shape)
+bash test/run_tests.sh  # golden suite (test/examples/*.sol vs test/expected/) + exit-code contract
 ```
-
-Runs each `tests/test_*.sol` through the full pipeline and diffs against `expected/*.expected`. Tests in `known_failures.txt` are treated as expected failures (XFAIL).
 
 ## License
 

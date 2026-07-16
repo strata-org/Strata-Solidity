@@ -15,7 +15,7 @@ open Laurel
 def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.node SourceRange)
     : Except TranslationError Field := do
   match member with
-  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ _ =>
+  | .VariableDeclaration _ nameAnn typeNameOpt _ constAnn _ _ _ _ _ _ =>
     let solTy ← match typeNameOpt with
       | .some_type_name _ tn => pure (translateTypeNode ctx tn)
       | .missing_type_name _ => throw (.internalError s!"{errCtx} missing type name")
@@ -30,7 +30,7 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
   -- Take statements before the placeholder `_;`
   let preStmts := stmts.takeWhile fun stmt =>
     match stmt with
-    | .ExpressionStatement _ (.Literal _ valAnn _) => valAnn.val != "_"
+    | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val != "_"
     | _ => true
   -- Extract require condition arguments
   preStmts.filterMap fun stmt =>
@@ -46,12 +46,13 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn nodesSeq _contractDocAnn _baseContracts => do
+  | .ContractDefinition _ nameAnn _kindAnn _abstractAnn nodesSeq _contractDocAnn _baseContracts => do
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
+    let mut udvtNames : List String := ctx.udvtNames
     let mut stateVarInvariants : List StrataAnnotation := []
     let mut constantDefs : List (String × StmtExprMd) := []
 
@@ -92,7 +93,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           isFunctional := true
           body := .Abstract postcondsAsConds
         }]
-      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ valueOpt docAnn =>
+      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           -- Collect @custom:strata invariant from state variable NatSpec
           let varAnnotations := parseStrataAnnotations docAnn.val
@@ -117,6 +118,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           | .EnumValue _ nameAnn => some nameAnn.val
           | _ => none
         enumDefs := enumDefs ++ [(eNameAnn.val, memberNames)]
+      | .UserDefinedValueTypeDefinition _ udvtNameAnn _ =>
+        udvtNames := udvtNames ++ [udvtNameAnn.val]
       | _ => pure ()
 
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
@@ -160,7 +163,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut arrayStateVars : List String := []
     for member in nodesSeq.val do
       match member with
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
           | .some_type_name _ (.ArrayTypeName _ _) =>
@@ -170,7 +173,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut nonPureFunctions : List String := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
         let fnIsExternal := fnVisAnn.val == "external"
@@ -189,6 +192,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  arrayStateVars := arrayStateVars
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
+                 udvtNames := udvtNames
                  constantDefs := constantDefs }
     -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
     -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
@@ -204,7 +208,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ bodyOpt _ _ => do
+      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ _ bodyOpt _ _ => do
           -- Skip functions that reference struct-valued mappings (unsupported in Core)
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
@@ -247,9 +251,19 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
 
+    -- Pre-pass: collect top-level user-defined value types (`type Wei is uint256`)
+    -- so contracts can resolve UDVT-typed locals/params/mappings to TInt.
+    let mut topUdvtNames : List String := []
     for node in nodesSeq.val do
       match node with
-      | .ContractDefinition _ _ _ _ _ _ => do
+      | .UserDefinedValueTypeDefinition _ udvtNameAnn _ =>
+        topUdvtNames := topUdvtNames ++ [udvtNameAnn.val]
+      | _ => pure ()
+    let ctx := { ctx with udvtNames := ctx.udvtNames ++ topUdvtNames }
+
+    for node in nodesSeq.val do
+      match node with
+      | .ContractDefinition _ _ _ _ _ _ _ => do
         let (procs, types) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
@@ -289,13 +303,26 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       isFunctional := true
       body := .Abstract []
     }
+    let mkUninterpN (name : String) (n : Nat) : Procedure := {
+      name := name
+      inputs := (List.range n).map fun i =>
+        { name := s!"a{i}", type := mkHighTypeMd .TInt }
+      outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
+      preconditions := []
+      decreases := none
+      isFunctional := true
+      body := .Abstract []
+    }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
       mkUninterpBinary "bit_xor", mkUninterpBinary "bit_shl",
       mkUninterpBinary "bit_shr", mkUninterpUnary "bit_not",
       mkUninterpUnary "keccak256", mkUninterpUnary "sha256",
       mkUninterpUnary "abi_encode", mkUninterpBinary "abi_encode2",
+      mkUninterpN "abi_encode3" 3, mkUninterpN "abi_encode4" 4,
+      mkUninterpN "abi_encode5" 5, mkUninterpN "abi_encode6" 6,
       mkUninterpUnary "abi_encodePacked", mkUninterpBinary "abi_encodePacked2",
+      mkUninterpN "abi_encodePacked3" 3, mkUninterpN "abi_encodePacked4" 4,
       mkUninterpUnary "abi_encodeWithSelector",
       mkUninterpUnary "abi_encodeWithSignature",
       mkUninterpUnary "abi_decode",

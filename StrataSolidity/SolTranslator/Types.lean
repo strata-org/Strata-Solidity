@@ -104,6 +104,17 @@ structure TransCtx where
   -- TODO: Add a debug/trace flag that prints the generated Laurel IR for each function.
   -- This would help catch issues like uninitialized storage refs, missing $heap threading,
   -- and Block wrapper problems during development.
+  /-- Whether the current function has an implicit `self` parameter in scope.
+      True only for non-pure, non-constructor functions that have at least one
+      non-mapping state variable (see translateFunction). Used by the inline
+      assembly havoc to decide whether `self.<field>` references are valid. -/
+  hasSelfParam : Bool := false
+  /-- Labels of the innermost enclosing loop, as (breakLabel, continueLabel).
+      Set when translating a loop body so that `break`/`continue` statements
+      can emit `Exit` to the correct labelled block. `none` outside any loop. -/
+  currentLoopLabels : Option (String × String) := none
+  /-- Monotonic counter used to generate unique loop labels. -/
+  loopLabelCounter : Nat := 0
   /-- Loop invariant expressions parsed from NatSpec `@custom:strata loop-invariant`.
       Applied to loops encountered during function body translation. -/
   loopInvariantExprs : List StmtExprMd := []
@@ -116,6 +127,10 @@ structure TransCtx where
   /-- Enum definitions: maps enum name to ordered list of member names.
       Used to resolve `EnumName.Member` to integer literals. -/
   enumDefs : List (String × List String) := []
+  /-- Names of user-defined value types (`type Wei is uint256`). Resolved to
+      their underlying value type (modeled as TInt, like enums) so local
+      declarations and parameters typed as a UDVT resolve. -/
+  udvtNames : List String := []
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
@@ -126,6 +141,13 @@ structure TransCtx where
   /-- Constant state variable definitions: maps constant name to its
       compile-time value expression for constant folding. -/
   constantDefs : List (String × StmtExprMd) := []
+  /-- When the current function has a declared return value AND additional
+      output parameters (mapping state vars are threaded as outputs), Laurel's
+      EliminateValueReturns cannot handle `return e` ("Valued return is not
+      supported for procedures with multiple output parameters"). In that case
+      this holds the declared return's output-parameter name, and the
+      translator desugars `return e` into `<name> := e; return`. -/
+  valuedReturnTarget : Option String := none
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, source := none }
@@ -261,14 +283,14 @@ def translateTypeName (name : String) : SolType :=
     Requires TransCtx to resolve enum types to TInt. -/
 def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : SolType :=
   match tn with
-  | .ElementaryTypeName _ nameAnn => translateTypeName nameAnn.val
+  | .ElementaryTypeName _ nameAnn _ => translateTypeName nameAnn.val
   | .UserDefinedTypeName _ nameAnn =>
-    -- Enum types are modeled as TInt (uint8 in Solidity)
-    if ctx.enumDefs.any (·.1 == nameAnn.val) then
+    -- Enum types and user-defined value types (UDVT) are modeled as TInt.
+    if ctx.enumDefs.any (·.1 == nameAnn.val) || ctx.udvtNames.contains nameAnn.val then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
     else
       { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
-  | .MappingType _ keyTn valTn =>
+  | .MappingType _ keyTn valTn _ _ =>
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
@@ -278,6 +300,11 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     -- so we use TInt as the key type. This means array indices can be negative in the SMT
     -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
     { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
+  | .FunctionTypeName _ _ _ _ _ =>
+    -- First-class function types are modeled as an opaque user-defined type.
+    -- Verification doesn't reason about function-pointer values; this keeps
+    -- the type well-formed without claiming any structure.
+    { highType := mkHighTypeMd (.UserDefined (mkIdent "function")), solName := "function" }
 
 /-- Is this a Solidity unsigned integer type? -/
 def SolType.isUint (st : SolType) : Bool :=

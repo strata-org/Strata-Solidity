@@ -74,6 +74,12 @@ def tokenize (s : String) : List String :=
       else if c == '!' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 2) (acc' ++ ["!="]) "" (fuel - 1)
+      else if c == '!' then
+        -- Standalone logical-not. Emitted as its own token so the parser's
+        -- unary layer (parseUnary) can pick it up; without this, a bare `!`
+        -- would accumulate into the following identifier (e.g. `!paused`).
+        let acc' := if cur.isEmpty then acc else acc ++ [cur]
+        go (i + 1) (acc' ++ ["!"]) "" (fuel - 1)
       else if c == '>' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
         let acc' := if cur.isEmpty then acc else acc ++ [cur]
         go (i + 2) (acc' ++ [">="]) "" (fuel - 1)
@@ -206,21 +212,39 @@ where
     | _ => return (lhs, tokens)
 
   parseMul (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
-    let (lhs, rest) ← parsePostfix tokens
+    let (lhs, rest) ← parseUnary tokens
     parseMulTail lhs rest
 
   parseMulTail (lhs : StmtExprMd) (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
     match tokens with
     | "*" :: rest =>
-      let (rhs, rest') ← parsePostfix rest
+      let (rhs, rest') ← parseUnary rest
       parseMulTail (mkStmtExprMd (.PrimitiveOp .Mul [lhs, rhs])) rest'
     | "/" :: rest =>
-      let (rhs, rest') ← parsePostfix rest
+      let (rhs, rest') ← parseUnary rest
       parseMulTail (mkStmtExprMd (.PrimitiveOp .Div [lhs, rhs])) rest'
     | "%" :: rest =>
-      let (rhs, rest') ← parsePostfix rest
+      let (rhs, rest') ← parseUnary rest
       parseMulTail (mkStmtExprMd (.PrimitiveOp .Mod [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
+
+  -- Prefix unary layer (`unary ::= ("!" | "-")? postfix` in SpecGrammar.lean).
+  -- Mirrors the body-expression handling in ExprTranslator.lean: `!` becomes a
+  -- logical `Not`, `-` an arithmetic `Neg`. A unary minus directly on an integer
+  -- literal is folded to a negative `LiteralInt` (e.g. tick bounds like `-887272`)
+  -- so the common case never relies on downstream `Neg` handling.
+  parseUnary (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    match tokens with
+    | "!" :: rest =>
+      let (operand, rest') ← parseUnary rest
+      return (mkStmtExprMd (.PrimitiveOp .Not [operand]), rest')
+    | "-" :: rest =>
+      let (operand, rest') ← parseUnary rest
+      let neg := match operand.val with
+        | .LiteralInt n => mkStmtExprMd (.LiteralInt (-n))
+        | _ => mkStmtExprMd (.PrimitiveOp .Neg [operand])
+      return (neg, rest')
+    | _ => parsePostfix tokens
 
   parsePostfix (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
     let (base, rest) ← parseAtom tokens
@@ -266,8 +290,8 @@ where
         match args.head?.map (·.val) with
         | some (.Var (.Local name)) => s!"sum_{name.text}"
         | _ => fname
-      else if args.length == 2 && (fname == "abi_encodePacked" || fname == "abi_encode") then
-        s!"{fname}2"
+      else if args.length > 1 && (fname == "abi_encodePacked" || fname == "abi_encode") then
+        s!"{fname}{args.length}"
       else fname
       let call := mkStmtExprMd (.StaticCall fname' args)
       parsePostfixTail call rest'

@@ -13,7 +13,7 @@ def isStorageRefDecl (n : Solidity.node SourceRange) : Option (String × Solidit
     match declsSeq.val.toList with
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ storageLocAnn _ _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ storageLocAnn _ _) =>
         if storageLocAnn.val == "storage" then some (nameAnn.val, initOpt) else none
       | _ => none
     | _ => none
@@ -25,7 +25,7 @@ def extractStorageRefTypeName (n : Solidity.node SourceRange) : Option String :=
   match n with
   | .VariableDeclarationStatement _ declsSeq _ =>
     match declsSeq.val.toList with
-    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _ _)] =>
+    | [.some_node _ (.VariableDeclaration _ _ typeNameOpt _ _ _ _ _ _ _ _)] =>
       match typeNameOpt with
       | .some_type_name _ (.UserDefinedTypeName _ nameAnn) => some nameAnn.val
       | _ => none
@@ -47,7 +47,7 @@ partial def collectArrayIndexNodes (ctx : TransCtx) (n : Solidity.node SourceRan
       | _ => false
     let idxIsSafe := match indexOpt with
       | .some_node _ (.Identifier _ _) => true
-      | .some_node _ (.Literal _ _ _) => true
+      | .some_node _ (.Literal _ _ _ _) => true
       | .some_node _ (.BinaryOperation _ _ _ _) => true
       | _ => false
     let fromIdx := match indexOpt with
@@ -136,7 +136,7 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 
-  | .Literal _ valueAnn kindAnn =>
+  | .Literal _ valueAnn kindAnn subAnn =>
     match kindAnn.val with
     | "number" =>
       let v := valueAnn.val
@@ -152,7 +152,20 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
             d.map (n * 16 + ·)) (some 0) |>.map Int.ofNat
       else v.toInt?
       match parsed with
-      | some i => return mkStmtExprMd (.LiteralInt i)
+      | some i =>
+        -- Apply subdenomination unit multiplier (Solidity ether/time units).
+        -- e.g. `1 ether` == 10^18 wei, `1 days` == 86400 seconds.
+        let factor : Int := match subAnn.val with
+          | "wei"     => 1
+          | "gwei"    => 1000000000
+          | "ether"   => 1000000000000000000
+          | "seconds" => 1
+          | "minutes" => 60
+          | "hours"   => 3600
+          | "days"    => 86400
+          | "weeks"   => 604800
+          | _         => 1
+        return mkStmtExprMd (.LiteralInt (i * factor))
       | none => throw (.typeError s!"Invalid number literal: {v}")
     | "bool" =>
       return mkStmtExprMd (.LiteralBool (valueAnn.val == "true"))
@@ -232,6 +245,13 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
         let sub' := mkStmtExprMd (.PrimitiveOp .Sub [subExpr, one])
         return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
+
+  -- `new T(args)` parses as FunctionCall(NewExpression(T), args). Contract
+  -- creation is an opaque external effect and dynamic memory arrays
+  -- (`new uint[](n)`) yield a fresh unconstrained value. Model as a Hole.
+  -- Must precede the general FunctionCall arm (matched top-to-bottom).
+  | .FunctionCall _ (.NewExpression _ _) _ _ _ =>
+    return mkStmtExprMd .Hole
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
     -- Check the FunctionCall kind
@@ -333,7 +353,21 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (.StaticCall qualifiedName args)
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val) on array state variables
-      if memberAnn.val == "push" then do
+      -- User-defined value type wrap/unwrap (`Wei.wrap(x)`, `Wei.unwrap(w)`)
+      -- are pure identity on the underlying representation (issue #13).
+      -- Guarded on the base being a KNOWN UDVT name: a plain method that
+      -- happens to be called `wrap`/`unwrap` (e.g. `wstETH.wrap(amount)`,
+      -- which converts at a rate) must NOT be modeled as identity — it falls
+      -- through to the general uninterpreted-call path below.
+      let baseIsUdvt := match baseNode with
+        | .Identifier _ baseNameAnn => ctx.udvtNames.contains baseNameAnn.val
+        | _ => false
+      if (memberAnn.val == "wrap" || memberAnn.val == "unwrap") && baseIsUdvt then do
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        match args with
+        | [x] => return x
+        | _ => throw (.typeError s!"{memberAnn.val}() expects exactly one argument")
+      else if memberAnn.val == "push" then do
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         -- Check if base is an array state variable
         let arrayName := match baseNode with
@@ -561,6 +595,26 @@ partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
       | o => throw (.unsupported s!"Assignment operator: {o}")
     return mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
 
+  -- Call with {value:, gas:} options: the options don't affect verification
+  -- semantics (ETH transfer is external/opaque). Translate the wrapped call.
+  | .FunctionCallOptions _ inner _ _ => translateExpr ctx inner
+
+  -- A bare NewExpression operand (no call args) — also opaque.
+  | .NewExpression _ _ =>
+    return mkStmtExprMd .Hole
+
+  -- Static array literal `[a, b, c]`. A faithful model requires the memory-
+  -- array length-tracking representation the translator uses for other arrays;
+  -- the simple fresh-map encoding conflicts with it. Until that lands, reject
+  -- explicitly (sound: a clean error, never a silent vacuous pass).
+  | .InlineArrayExpression _ _ =>
+    throw (.unsupported "inline array literal [a, b, c] (needs memory-array length tracking)")
+
+  -- Calldata/bytes slice `x[start:end]`. Opaque slice — fresh unconstrained
+  -- value (sound over-approximation).
+  | .IndexRangeAccess _ _ _ _ =>
+    return mkStmtExprMd .Hole
+
   | _ => throw (.unsupported s!"Expression node type")
 
 /-- Translate a list of statements in a block, threading storage alias context.
@@ -622,7 +676,7 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _)] =>
+          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ _ _ _)] =>
             { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
           | _ => ctx
         | _ => ctx
@@ -655,8 +709,34 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts uncheckedCtx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
-  | .ExpressionStatement _ (.Literal _ valAnn kindAnn) =>
-    -- Detect __assembly__ marker from InlineAssembly: havoc all state variables
+  -- Inline assembly: havoc strategy. Any state variable potentially touched
+  -- by the assembly block is treated as unknown afterward (sound
+  -- over-approximation). The Yul payload is preserved in the AST but not
+  -- interpreted here. Without this arm, InlineAssembly falls through to the
+  -- catch-all assume(false), which silently makes post-assembly specs vacuous.
+  | .InlineAssembly _ _ =>
+    let mut havocs : List StmtExprMd := []
+    -- Havoc scalar state vars via self field assigns — only when `self` is in
+    -- scope (non-pure, non-constructor functions with non-mapping state).
+    if ctx.hasSelfParam then
+      for name in ctx.stateVarNames do
+        if !ctx.mappingStateVars.contains name then
+          havocs := havocs ++ [mkStmtExprMd (.Assign
+            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
+            (mkStmtExprMd .Hole))]
+    for name in ctx.mappingStateVars do
+      havocs := havocs ++ [mkStmtExprMd (.Assign
+        [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
+        (mkStmtExprMd .Hole))]
+      if ctx.arrayStateVars.contains name then
+        havocs := havocs ++ [mkStmtExprMd (.Assign
+          [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
+          (mkStmtExprMd .Hole))]
+    return mkStmtExprMd (.Block havocs none)
+
+  | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
+    -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
+    -- compatibility with any Ion produced by an older solast.py.
     if valAnn.val == "__assembly__" && kindAnn.val == "string" then
       let mut havocs : List StmtExprMd := []
       -- Havoc scalar state vars via self field assigns to Hole
@@ -676,7 +756,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
             (mkStmtExprMd .Hole))]
       return mkStmtExprMd (.Block havocs none)
     else
-      translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn))
+      translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
@@ -684,7 +764,16 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     match exprOpt with
     | .some_node _ expr => do
       let e ← translateExpr ctx expr
-      return mkStmtExprMd (.Return (some e))
+      match ctx.valuedReturnTarget with
+      | some outName =>
+        -- The procedure has multiple output parameters (declared return +
+        -- mapping-state outputs); Laurel's EliminateValueReturns rejects a
+        -- valued `return` there. Desugar: `<out> := e; return`.
+        return mkStmtExprMd (.Block [
+          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e),
+          mkStmtExprMd (.Return none)] none)
+      | none =>
+        return mkStmtExprMd (.Return (some e))
     | .missing_node _ =>
       return mkStmtExprMd (.Return none)
 
@@ -700,8 +789,91 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .WhileStatement _ cond body => do
     let condExpr ← translateExpr ctx cond
-    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
-    return mkStmtExprMd (.While condExpr invariants none bodyStmt)
+    -- Labels for break/continue. Nested loops get distinct labels via the counter.
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    -- body wrapped in continue-labelled block; loop wrapped in break-labelled block
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
+    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock)
+    return mkStmtExprMd (.Block [whileStmt] (some breakLbl))
+
+  | .DoWhileStatement _ cond body => do
+    -- Desugar: do { body } while (cond)  →  { body; while (cond) { body } }
+    -- The leading body executes once unconditionally; the while replays it.
+    --
+    -- Label placement: BOTH the first iteration and the while replay live
+    -- inside the break-labelled block, and the first iteration gets its own
+    -- continue-labelled block. This makes `break`/`continue` in the FIRST
+    -- iteration behave correctly:
+    --   break    → Exit break_n    → exits past the while (loop over)
+    --   continue → Exit continue_n → exits firstBody's block, landing at the
+    --              while (i.e. the condition check — do-while continue
+    --              semantics). Labels are lexically scoped in
+    --              StructuredToUnstructured, so the sibling contLbl block
+    --              inside the while does not clash.
+    -- (Previously firstBody sat OUTSIDE the labelled blocks; its Exit was
+    -- uncaught, fell through into the while, and re-ran the loop.)
+    let condExpr ← translateExpr ctx cond
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    let firstBody ← translateStmt bodyCtx body
+    let firstBlock := mkStmtExprMd (.Block [firstBody] (some contLbl))
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
+    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock)
+    return mkStmtExprMd (.Block [firstBlock, whileStmt] (some breakLbl))
+
+  | .BreakStatement _ =>
+    match ctx.currentLoopLabels with
+    | some (breakLbl, _) => return mkStmtExprMd (.Exit breakLbl)
+    | none => throw (.unsupported "break outside of a loop")
+
+  | .ContinueStatement _ =>
+    match ctx.currentLoopLabels with
+    | some (_, contLbl) => return mkStmtExprMd (.Exit contLbl)
+    | none => throw (.unsupported "continue outside of a loop")
+
+  | .TryStatement _ externalCall clausesSeq => do
+    -- Model try/catch as a nondeterministic choice between the success path
+    -- (clause 0, the call's `returns` body) and the catch path(s). The
+    -- external call result and any revert reason are unknown, so each clause's
+    -- parameters are introduced as havoc'd locals and both branches explored.
+    -- Sound over-approximation: any state either branch reaches is reachable.
+    let _ ← translateExpr ctx externalCall
+    let clauses := clausesSeq.val.toList
+    let mut branches : List StmtExprMd := []
+    for clause in clauses do
+      match clause with
+      | .TryCatchClause _ _ paramsOpt block => do
+        -- Introduce clause parameters (e.g. `returns (uint256 val)` or
+        -- `catch Error(string memory reason)`) as havoc'd local declarations.
+        let mut prelude : List StmtExprMd := []
+        match paramsOpt with
+        | .some_node _ (.ParameterList _ paramSeq) =>
+          for p in paramSeq.val.toList do
+            match p with
+            | .VariableDeclaration _ pName pTypeOpt _ _ _ _ _ _ _ _ =>
+              let solTy := match pTypeOpt with
+                | .some_type_name _ tn => translateTypeNode ctx tn
+                | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType (some (mkStmtExprMd .Hole)))]
+            | _ => pure ()
+        | _ => pure ()
+        let b ← translateStmt ctx block
+        branches := branches ++ [mkStmtExprMd (.Block (prelude ++ [b]) none)]
+      | _ => pure ()
+    -- Nondeterministic selection: nest each branch under an `if *` (Hole cond).
+    let nondet := branches.foldr (fun br acc =>
+      mkStmtExprMd (.IfThenElse (mkStmtExprMd .Hole) br (some acc)))
+      (mkStmtExprMd (.Block [] none))
+    return nondet
 
   | .ForStatement _ initOpt condOpt loopOpt body => do
     -- Desugar: for (init; cond; loop) body → { init; while (cond) { body; loop } }
@@ -716,16 +888,24 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let condExpr ← match condOpt with
       | .some_node _ condNode => translateExpr ctx condNode
       | .missing_node _ => pure (mkStmtExprMd (.LiteralBool true))
+    -- Labels for break/continue.
+    let n := ctx.loopLabelCounter
+    let breakLbl := s!"break_{n}"
+    let contLbl := s!"continue_{n}"
+    let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
+                              loopLabelCounter := n + 1 }
     -- Get loop invariants from NatSpec and translate loop body
-    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants ctx body
+    let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    -- `continue` exits the body block but the increment still runs afterward.
+    let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
     -- Loop body + increment
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
-        let loopStmt ← translateStmt ctx loopNode
-        pure (mkStmtExprMd (.Block [bodyStmt, loopStmt] none))
-      | .missing_node _ => pure bodyStmt
+        let loopStmt ← translateStmt bodyCtx loopNode
+        pure (mkStmtExprMd (.Block [contBlock, loopStmt] none))
+      | .missing_node _ => pure contBlock
     let whileStmt := mkStmtExprMd (.While condExpr invariants none loopBody)
-    stmts := stmts ++ [whileStmt]
+    stmts := stmts ++ [mkStmtExprMd (.Block [whileStmt] (some breakLbl))]
     return mkStmtExprMd (.Block stmts none)
 
   | .VariableDeclarationStatement _ declsSeq initOpt => do
@@ -735,7 +915,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | [] => throw (.internalError "Empty VariableDeclarationStatement")
     | [declOpt] =>
       match declOpt with
-      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const storageLocAnn _ _) =>
+      | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _stateVar _const _ _ _ storageLocAnn _ _) =>
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
@@ -756,15 +936,36 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
-      -- Tuple/multi-variable declarations: sound over-approximation
-      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+      -- Tuple/multi-variable declarations `(a, b) = f()`: declare each
+      -- variable with a havoc'd (nondeterministic) initial value. This is
+      -- the sound over-approximation — the values are unknown but the
+      -- names are in scope for subsequent statements.
+      -- (Previously this emitted assume(false), which silently made every
+      -- POST-declaration obligation vacuous — the #26 anti-pattern — and
+      -- left the names undeclared, causing resolution failures.)
+      let mut declStmts : List StmtExprMd := []
+      for declOpt in decls do
+        match declOpt with
+        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+          let solTy := match typeNameOpt with
+            | .some_type_name _ tn => translateTypeNode ctx tn
+            | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+          declStmts := declStmts ++
+            [mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType (some (mkStmtExprMd .Hole)))]
+        | _ => pure ()  -- skipped tuple slot `(, b) = ...`
+      return mkStmtExprMd (.Block declStmts none)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
+  -- Events: emit is a no-op for verification (no state change).
+  | .EmitStatement _ _ => return mkStmtExprMd (.Block [] none)
+
+  -- Revert: unconditional abort — assume(false) makes the path unreachable,
+  -- which is sound (postconditions assume non-reverting execution).
+  | .RevertStatement _ _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops).
-  -- Unrecognized statement nodes (e.g., RevertStatement for custom errors) are
-  -- treated as unconditional aborts: assume(false). This is sound because revert
-  -- is an unconditional abort — no subsequent code is reachable.
+  -- Unrecognized statement nodes are treated as unconditional aborts: assume(false).
   | _ =>
     match translateExpr ctx n with
     | .ok e => return e

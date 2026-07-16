@@ -52,6 +52,13 @@ private def parseFail (s : String) : Bool := !parseOk s
 #guard SpecParser.tokenize "msg.sender" == ["msg", ".", "sender"]
 #guard SpecParser.tokenize "keccak256(abi.encodePacked(a, b))" ==
   ["keccak256", "(", "abi", ".", "encodePacked", "(", "a", ",", "b", ")", ")"]
+-- Standalone `!` tokenizes separately from the following identifier, and is
+-- distinct from `!=`.
+#guard SpecParser.tokenize "!paused" == ["!", "paused"]
+#guard SpecParser.tokenize "!a && b" == ["!", "a", "&&", "b"]
+#guard SpecParser.tokenize "a != b" == ["a", "!=", "b"]
+-- Unary minus on a literal (tick-range pattern).
+#guard SpecParser.tokenize "t >= -887272" == ["t", ">=", "-", "887272"]
 
 /-! ## Expression parsing tests -/
 
@@ -121,6 +128,18 @@ private def parseFail (s : String) : Bool := !parseOk s
 #guard parseOk "balances[msg.sender] == old(balances[msg.sender]) + amount"
 #guard parseOk "totalSupply == sum(balances)"
 #guard parseOk "forall k : address :: k != msg.sender ==> balances[k] == old(balances[k])"
+
+-- Unary operators (parseUnary layer): logical `!` and unary `-`.
+#guard parseOk "!paused"
+#guard parseOk "!initializing"
+#guard parseOk "!done && n != 0"
+#guard parseOk "!(a == b)"
+#guard parseOk "t >= -887272"
+#guard parseOk "t >= -887272 && t <= 887272"
+#guard parseOk "x == -1"
+#guard parseOk "a + -b"
+-- `!=` must still parse as inequality, not `!` followed by `=`.
+#guard parseOk "x != y"
 
 /-! ## Annotation parsing tests -/
 

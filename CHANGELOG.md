@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-07-11 — Python-free pipeline (Solidity + Lean)
+
+The verification pipeline is now entirely Lean: the `strataSolidity`
+binary invokes `solc --standard-json`, parses the JSON AST into typed
+Lean structures (`SolcRunner.lean` + `SolcAstParser.lean`), translates,
+and verifies. `.sol` files are accepted directly.
+
+### Removed
+- `Tools/Solidity/src/solast.py`, `base_dialect.py`,
+  `print_dialect_summary.py`, `strata_verify.py`, `strata_coverage.py`
+- `Tools/Solidity/dialects/Solidity.dialect.st.ion` + `gen_dialect.sh` —
+  the dialect is declared once, in Lean
+  (`StrataSolidity/SolidityDialect.lean`, declarative `#dialect` block +
+  `#strata_gen`); the stale-olean CI hazard is structurally gone
+- The CI dialect-parity gate (single source needs no parity)
+- The dead `run_sol_analyze_laurel.sh` harness + its `expected/` dir
+
+### Fixed
+- do-while + first-iteration `break`/`continue` mistranslation
+- Named constants (`NOT_ENTERED`, `DEFAULT_ADMIN_ROLE`) now fold in spec
+  expressions and key-scoped `modifies` clauses
+- Valued `return` in functions with mapping-state outputs (desugared to
+  output-parameter assignment)
+- Unary `!` and negative literals in spec expressions
+- In-contract invariant fixture placement
+
+### OZ corpus (machine-verified)
+ERC20 30/30 · AccessControl 15/15 · Ownable2Step 16/16 · Initializable
+13+1/14 · Ownable 9/9 · Pausable 4/4 · Nonces 4/4. Golden suite 22/22.
+
+
 ## 2026-05-23 — Upstream Strata Port (Lean 4.29.1 + new Laurel AST)
 
 Ports StrataSolidity onto upstream `strata-org/Strata` HEAD (`349b1cf4`),
