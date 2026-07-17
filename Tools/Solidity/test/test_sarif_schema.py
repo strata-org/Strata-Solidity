@@ -1,4 +1,7 @@
-# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Strata Contributors
+#
+#  SPDX-License-Identifier: Apache-2.0 OR MIT
+
 """Schema-compliance test for ``strata-verify.sh --sarif``.
 
 Realizes REQ-PBT-004 (design §13.4): runs ``strata-verify.sh --sarif`` against

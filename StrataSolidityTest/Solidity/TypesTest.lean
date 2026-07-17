@@ -1,4 +1,10 @@
 /-
+  Copyright Strata Contributors
+
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+-/
+
+/-
   Unit tests for Strata Solidity type translation.
 -/
 import StrataSolidity.SolTranslator.Types

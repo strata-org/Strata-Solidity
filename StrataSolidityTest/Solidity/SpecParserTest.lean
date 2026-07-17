@@ -1,4 +1,10 @@
 /-
+  Copyright Strata Contributors
+
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+-/
+
+/-
   Unit tests and characterization property-based tests for the Strata
   Solidity spec expression parser.
 

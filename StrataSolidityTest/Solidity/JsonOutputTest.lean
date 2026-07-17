@@ -1,4 +1,10 @@
 /-
+  Copyright Strata Contributors
+
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+-/
+
+/-
   Characterization tests for the CLI output shapes of `strataSolidity`.
 
   This module hosts the Lean-side PBT / characterization coverage for

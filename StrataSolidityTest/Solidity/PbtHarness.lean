@@ -1,4 +1,10 @@
 /-
+  Copyright Strata Contributors
+
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+-/
+
+/-
   Shared Plausible property-based testing harness for Strata Solidity tests.
 
   Exposes:

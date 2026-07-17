@@ -1,3 +1,7 @@
+# Copyright Strata Contributors
+#
+#  SPDX-License-Identifier: Apache-2.0 OR MIT
+
 #!/usr/bin/env python3
 """check_csv_schema.py — Validate bench/results.csv against REQ-PBT-008.
 

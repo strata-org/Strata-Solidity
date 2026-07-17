@@ -1,4 +1,7 @@
-# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Strata Contributors
+#
+#  SPDX-License-Identifier: Apache-2.0 OR MIT
+
 """pytest configuration for the Tools/Solidity characterization tests.
 
 Keeping this file empty (aside from the module docstring) is intentional: the
