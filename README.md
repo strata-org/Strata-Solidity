@@ -118,7 +118,7 @@ Every annotation here pulls its weight:
   `totalSupply += amount` from `mint` makes verification fail.
 - **`modifies` is key-scoped**: `modifies balances[to], totalSupply` generates a
   frame condition that *every other holder's balance is unchanged* — the
-  property traditional specs must assert by hand.
+  property that traditional spec-file tools must assert by hand.
 - The **`ensures`** clauses state the exact effect in terms of pre-state.
 
 ### Keep specs crisp

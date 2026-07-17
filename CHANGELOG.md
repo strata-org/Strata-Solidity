@@ -26,8 +26,8 @@ and verifies. `.sol` files are accepted directly.
 - Unary `!` and negative literals in spec expressions
 - In-contract invariant fixture placement
 
-### OZ corpus (machine-verified)
-ERC20 30/30 · AccessControl 15/15 · Ownable2Step 16/16 · Initializable
+### Verification corpus
+Token 30/30 · AccessControl 15/15 · Ownable2Step 16/16 · Initializable
 13+1/14 · Ownable 9/9 · Pausable 4/4 · Nonces 4/4. Golden suite 22/22.
 
 

@@ -57,7 +57,7 @@ private def parseFail (s : String) : Bool := !parseOk s
 #guard SpecParser.tokenize "!paused" == ["!", "paused"]
 #guard SpecParser.tokenize "!a && b" == ["!", "a", "&&", "b"]
 #guard SpecParser.tokenize "a != b" == ["a", "!=", "b"]
--- Unary minus on a literal (tick-range pattern).
+-- Unary minus on a literal (negative tick-bound idiom).
 #guard SpecParser.tokenize "t >= -887272" == ["t", ">=", "-", "887272"]
 
 /-! ## Expression parsing tests -/
