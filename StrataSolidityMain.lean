@@ -291,10 +291,18 @@ def main (args : List String) : IO Unit := do
             -- Try to read the SMT file for this obligation
             let smtContent ← do
               let candidates ← (smtDir.readDir).catchExceptions (fun _ => pure #[])
-              let matching := candidates.filter fun e =>
-                (e.fileName.splitOn r.obligation.label).length > 1 && e.fileName.endsWith ".smt2"
-              match matching.toList.head? with
-              | some entry => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
+              -- Core names each file `<sanitized label>_<counter>.smt2`;
+              -- match that shape exactly (a substring test also matched
+              -- other obligations' files, and nothing once labels gained
+              -- parentheses). Of several paths, take the first.
+              let pre := Core.SMT.sanitizeFilenameCapped r.obligation.label ++ "_"
+              let counterOf (name : String) : Option Nat :=
+                if name.startsWith pre && name.endsWith ".smt2" then
+                  ((name.drop pre.length).dropEnd ".smt2".length).toString.toNat?
+                else none
+              let matching := candidates.filterMap fun e => (counterOf e.fileName).map (·, e)
+              match (matching.qsort (·.1 < ·.1)).toList.head? with
+              | some (_, entry) => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
               | none => pure ""
             let smtResult := if r.isSuccess then "unsat" else if r.isFailure then "sat" else "unknown"
             return Json.mkObj [
