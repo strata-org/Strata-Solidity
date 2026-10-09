@@ -241,7 +241,12 @@ def main (args : List String) : IO Unit := do
             verbose := .quiet,
             solver := "z3",
             solverTimeout := timeoutVal,
-            useArrayTheory := useArrays }
+            useArrayTheory := useArrays,
+            -- z3 abbreviates nested array values (the heap, nested
+            -- mappings) with `let` when they are deep or repeat a large
+            -- subterm, and Core's model reader cannot parse `let`: the
+            -- whole counterexample would be dropped.
+            solverOptions := #[("pp.max_depth", "1000"), ("pp.min_alias_size", "1000000")] }
         let (vcResults, smtDir) ← match dumpVcDir with
           | some dir => do
             IO.FS.createDirAll ⟨dir⟩
