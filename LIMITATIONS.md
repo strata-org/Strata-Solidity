@@ -1,19 +1,29 @@
 # Strata Solidity — Current Limitations
 
-## No Counterexample Generation
+## Counterexamples and `unknown` results
 
-**Status:** Not supported  
-**Tracking:** [Asana P0](https://app.asana.com/1/8442528107068/project/1213978144576593/task/1214145784885275)
+**Status:** Partially supported
 
-When a postcondition is violated, the verifier returns `unknown` (❓) instead of `failed` (❌) with a concrete counterexample showing the bug. This is because z3's model-based quantifier instantiation (mbqi) is disabled — enabling it causes infinite loops on the universally quantified Map axioms.
+Refuted obligations are reported as failed (❌) with a counterexample
+(`a = 0`, `b = 1`, …) whenever z3 can produce a model. Since the 2026-10
+Strata re-pin, mappings are encoded with SMT array theory, each function is
+verified in its own SMT context, and values carry their Solidity type
+ranges, so most false properties come with concrete values.
 
-**User impact:** You know something is wrong (it doesn't pass ✅), but you don't get values like "fails when `amount = 5, balance = 3`."
+An obligation is still reported as `unknown` (❓, exit 0) when its
+verification condition contains a universally quantified assumption, because
+z3's model-based quantifier instantiation (MBQI) is off. The remaining
+sources are:
 
-**Extension UX alternatives (while counterexamples are unavailable):**
-- ❓ decoration with tooltip: "Could not prove. Possible violation — check logic manually."
-- Quick-action: "Simplify spec" — break complex ensures into smaller parts to isolate which sub-property fails
-- Quick-action: "Add requires" — suggest preconditions that might make the property provable
-- Diagnostic message linking to the SMT file (`STRATA_SMT_DIR`) for advanced users
+- `sum(m)` specs: the sum update axiom is quantified (only for mappings that
+  some annotation sums);
+- constructors that zero-initialize a mapping (Core axiomatizes `mapConst`
+  with a quantifier);
+- quantified specs (`forall`) and key-scoped `modifies` frames;
+- nonlinear arithmetic and solver timeouts (`--timeout=<s>`).
+
+`--no-array-theory` restores the older encoding, under which far more
+results are `unknown`.
 
 ---
 

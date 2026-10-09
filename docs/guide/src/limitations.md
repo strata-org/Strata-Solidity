@@ -2,11 +2,9 @@
 
 StrataSolidity is under active development. This page documents known limitations.
 
-## No counterexample generation (GAP-001)
+## `unknown` results (GAP-001)
 
-When a postcondition cannot be proven, the verifier reports `unknown` (❓) instead of `fail` (❌) with a concrete counterexample. You know something is wrong, but you don't get values like "fails when `amount = 5, balance = 3`."
-
-This is because z3's model-based quantifier instantiation (mbqi) is disabled — enabling it causes infinite loops on the universally quantified map axioms.
+A refuted obligation is reported as `fail` (❌) with a counterexample such as `amount = 5, balance = 3` whenever z3 produces a model. With z3's model-based quantifier instantiation (MBQI) off, an obligation whose verification condition contains a universally quantified assumption is reported as `unknown` (❓) instead. The remaining sources are `sum(m)` specs (quantified update axiom), constructors that zero-initialize a mapping (Core's quantified `mapConst` axiom), `forall` specs and key-scoped `modifies` frames, nonlinear arithmetic, and solver timeouts. Each function is verified in its own SMT context, so these only affect the functions that need them.
 
 ## Struct fields through mappings (GAP-002)
 

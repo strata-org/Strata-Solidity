@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10 — Array theory by default; fewer `unknown` results
+
+- **Array theory by default** (`--no-array-theory` restores the quantified
+  select/update encoding). Exit code changes: test_try_catch now fails
+  (its `ensures callFailed == true || lastResult > 0` is false).
+- **One SMT context per function**: axioms one function needs (Core's
+  quantified `mapConst` axiom for zero-initialized mappings) no longer turn
+  unrelated refutations into `unknown`. `--dump-vc` writes one
+  subdirectory per procedure.
+- **Solidity type ranges** are assumed for parameters, state variables,
+  `msg.sender`/`msg.value`, `try` return values and hash results; signed
+  state variables are no longer assumed non-negative (which made
+  `ensures tick >= 0`-style properties verify unsoundly).
+- **Counterexamples** are no longer dropped when z3 prints nested arrays
+  with `let`.
+
 ## 2026-10-08 — Upstream Strata re-pin (Lean 4.31, StrataDDM / StrataLaurel)
 
 Re-pins the Strata submodule from `349b1cf4` (nightly-20260523) to

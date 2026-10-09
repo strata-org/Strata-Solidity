@@ -80,7 +80,7 @@ See `LIMITATIONS.md` for the full supported/unsupported matrix. In summary:
 
 **Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys.
 
-**Not working:** Struct fields through mappings (Core limitation), counterexample generation (z3 mbqi disabled), external calls/reentrancy, inheritance, assembly.
+**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, inheritance, assembly.
 
 ## Why does Solidity need fewer simplification passes than Java?
 

@@ -174,7 +174,7 @@ Requires `lake build` to have been run first.
 | `--verbose` | Also print the generated Laurel and Core programs |
 | `--timeout=<s>` | Per-obligation solver timeout (default 10) |
 | `--no-array-theory` | Encode mappings with quantified select/update axioms instead of SMT arrays (the default since the 2026-10 Strata re-pin; `--array-theory` is accepted and has no effect) |
-| `--dump-vc=<dir>` | Keep the generated `.smt2` files in `<dir>` |
+| `--dump-vc=<dir>` | Keep the generated `.smt2` files in `<dir>/<procedure>/` |
 
 ## Directory layout
 
