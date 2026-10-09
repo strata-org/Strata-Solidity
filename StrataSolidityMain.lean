@@ -6,8 +6,7 @@
 
 -- Standalone CLI for Solidity verification via the Laurel pipeline.
 import StrataSolidity
-import Strata.Languages.Laurel.LaurelToCoreTranslator
-import Strata.Languages.Laurel.LaurelCompilationPipeline
+import StrataLaurel.Implementation.LaurelCompilationPipeline
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Core.Options
 import Strata.DL.Imperative.MetaData
@@ -223,7 +222,7 @@ def main (args : List String) : IO Unit := do
             IO.FS.createDirAll ⟨dir⟩
             let r ← EIO.toIO
               (fun f => IO.Error.userError (toString f))
-              (Core.verify coreProgram ⟨dir⟩ .none
+              (Core.verify coreProgram ⟨dir⟩
                 { VerifyOptions.default with
                   stopOnFirstError := false,
                   verbose := .quiet,
@@ -247,7 +246,7 @@ def main (args : List String) : IO Unit := do
                   IO.FS.removeFile e.path |>.catchExceptions (fun _ => pure ())
               let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
-                (Core.verify coreProgram dir .none
+                (Core.verify coreProgram dir
                   { VerifyOptions.default with
                     stopOnFirstError := false,
                     verbose := .quiet,
@@ -259,7 +258,7 @@ def main (args : List String) : IO Unit := do
               let r ← IO.FS.withTempDir (fun tempDir =>
                 EIO.toIO
                   (fun f => IO.Error.userError (toString f))
-                  (Core.verify coreProgram tempDir .none
+                  (Core.verify coreProgram tempDir
                     { VerifyOptions.default with
                       stopOnFirstError := false,
                       verbose := .quiet,

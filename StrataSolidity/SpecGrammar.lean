@@ -5,7 +5,7 @@
 -/
 module
 
-public import Strata.DDM.AST
+public import StrataDDM.AST
 
 /-!
 # Spec annotation parser — DDM grammar (scaffold)

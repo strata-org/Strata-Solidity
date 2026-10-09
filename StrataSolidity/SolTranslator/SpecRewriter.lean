@@ -32,8 +32,7 @@ partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtE
     if mappingStateVars.contains name.text then
       { expr with val := mkIdentifier (name.text ++ "_in") }
     else expr
-  | .PrimitiveOp op args => { expr with val := .PrimitiveOp op (args.map go) }
-  | .StaticCall callee args => { expr with val := .StaticCall callee (args.map go) }
+  | .StaticCall callee args tys => { expr with val := .StaticCall callee (args.map go) tys }
   | .Var (.Field target f) => { expr with val := mkFieldSelect (go target) f.text }
   | .Quantifier mode p trigger body =>
     { expr with val := .Quantifier mode p trigger (go body) }
@@ -61,10 +60,8 @@ partial def rewriteOldMappingRefs (mappingStateVars : List String) (arrayStateVa
       if isArrayLength then
         { expr with val := mkIdentifier s!"{name.text}_in" }
       else expr
-  | .PrimitiveOp op args =>
-    { expr with val := .PrimitiveOp op (args.map rewrite) }
-  | .StaticCall callee args =>
-    { expr with val := .StaticCall callee (args.map rewrite) }
+  | .StaticCall callee args tys =>
+    { expr with val := .StaticCall callee (args.map rewrite) tys }
   | .Var (.Field target fieldName) =>
     { expr with val := mkFieldSelect (rewrite target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
@@ -85,15 +82,13 @@ partial def processOldMarkers (mappingStateVars : List String) (arrayStateVars :
     (expr : StmtExprMd) : StmtExprMd :=
   let go := processOldMarkers mappingStateVars arrayStateVars scalarStateVars
   match expr.val with
-  | .StaticCall callee args =>
+  | .StaticCall callee args tys =>
     if callee.text == "__old" then
       match args with
       | [inner] => rewriteOldMappingRefs mappingStateVars arrayStateVars scalarStateVars (go inner)
       | _ => expr
     else
-      { expr with val := .StaticCall callee (args.map go) }
-  | .PrimitiveOp op args =>
-    { expr with val := .PrimitiveOp op (args.map go) }
+      { expr with val := .StaticCall callee (args.map go) tys }
   | .Var (.Field target fieldName) =>
     { expr with val := mkFieldSelect (go target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>
@@ -135,10 +130,8 @@ partial def rewriteStateVarRefs (stateVarNames : List String) (mappingStateVars 
     else if stateVarNames.contains name.text then
       mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name.text)
     else expr
-  | .PrimitiveOp op args =>
-    { expr with val := .PrimitiveOp op (args.map go) }
-  | .StaticCall callee args =>
-    { expr with val := .StaticCall callee (args.map go) }
+  | .StaticCall callee args tys =>
+    { expr with val := .StaticCall callee (args.map go) tys }
   | .Var (.Field target fieldName) =>
     { expr with val := mkFieldSelect (go target) fieldName.text }
   | .IfThenElse cond thenBr elseBr =>

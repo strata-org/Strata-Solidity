@@ -53,7 +53,7 @@ avoids a class of "Ion encoder/decoder disagreements" bugs.
 public section
 
 open Lean (Json)
-open Strata (SourceRange)
+open StrataDDM (SourceRange)
 
 namespace Strata.Solidity.SolcAst
 
@@ -143,19 +143,19 @@ open Strata.Solidity (node type_name)
 
 /-- Wrap a `String` field at this node's source range. Mirrors
     `solast.py:_str` (None → empty string). -/
-private def annStr (sr : SourceRange) (s : String) : Strata.Ann String SourceRange :=
+private def annStr (sr : SourceRange) (s : String) : StrataDDM.Ann String SourceRange :=
   ⟨sr, s⟩
 
 /-- Wrap an `Array (node SourceRange)` at this node's source range — the
     shape every "sequence of children" field requires. -/
 private def annNodes (sr : SourceRange) (xs : Array (node SourceRange)) :
-    Strata.Ann (Array (node SourceRange)) SourceRange :=
+    StrataDDM.Ann (Array (node SourceRange)) SourceRange :=
   ⟨sr, xs⟩
 
 /-- Wrap an `Array (Ann String SourceRange)` at this node's source range —
     the shape `FunctionCall.names` and similar use. -/
-private def annStrs (sr : SourceRange) (xs : Array (Strata.Ann String SourceRange)) :
-    Strata.Ann (Array (Strata.Ann String SourceRange)) SourceRange :=
+private def annStrs (sr : SourceRange) (xs : Array (StrataDDM.Ann String SourceRange)) :
+    StrataDDM.Ann (Array (StrataDDM.Ann String SourceRange)) SourceRange :=
   ⟨sr, xs⟩
 
 /-- Read an optional string field, defaulting to `""` if missing or wrong

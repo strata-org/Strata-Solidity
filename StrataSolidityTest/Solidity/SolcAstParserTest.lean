@@ -24,7 +24,7 @@ recursive children:
 -/
 
 open Lean (Json)
-open Strata (SourceRange)
+open StrataDDM (SourceRange)
 open Strata.Solidity (node type_name)
 open Strata.Solidity.SolcAst
 
