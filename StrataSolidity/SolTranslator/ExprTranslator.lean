@@ -167,6 +167,7 @@ def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List 
     about stale mappings after the call. -/
 def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) (sig : FnSig)
     (argNodes : List (Solidity.node SourceRange)) (args : List StmtExprMd)
+    (dests : Option (List (AstNode Variable)) := none)
     : Except TranslationError StmtExprMd := do
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
   -- User arguments, each memory-array argument followed by its length.
@@ -181,7 +182,20 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
         else throw (.unsupported
           s!"array argument `{nameAnn.val}` to `{callee}` has no known length")
       | _ => throw (.unsupported s!"array argument to `{callee}` must be a variable")
-  if sig.isPure then return mkStmtExprMd (mkCall callee userArgs)
+  -- `(a, b) = f(…)`: the declared return values go to `dests`, and a
+  -- mutating callee's state outputs to the caller's state variables.
+  let assignTo (ds : List (AstNode Variable)) (call : StmtExprMd) (stateVars : List String) :
+      Except TranslationError StmtExprMd := do
+    if ds.length != sig.returnTypes.length then
+      throw (.typeError s!"`{callee}` returns {sig.returnTypes.length} value(s), not {ds.length}")
+    let stateTargets : List (AstNode Variable) :=
+      stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
+    return withSourceRange ctx sr (mkStmtExprMd (.Assign (ds ++ stateTargets) call))
+  if sig.isPure then
+    let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee userArgs))
+    match dests with
+    | some ds => return ← assignTo ds call []
+    | none => return call
   let scalars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
   let mut implicitArgs : List StmtExprMd := []
   if !scalars.isEmpty then
@@ -194,6 +208,8 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
     if ctx.arrayStateVars.contains m then [m, s!"{m}_length"] else [m]
   implicitArgs := implicitArgs ++ stateVars.map ident
   let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee (implicitArgs ++ userArgs)))
+  if let some ds := dests then
+    return ← assignTo ds call (if sig.isView then [] else stateVars)
   if sig.isView || stateVars.isEmpty then return call
   -- Mutating callee: bind the declared returns to fresh locals and the
   -- state outputs to the caller's state variables.
@@ -913,6 +929,13 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let rest' ← translateBlockStmts ctx' rest
       return fieldDecls ++ rest'
     | none =>
+      -- A tuple declaration `(uint a, uint b) = f(…);` declares its
+      -- variables in this block (not a nested one), for the statements after.
+      if let .VariableDeclarationStatement sr declsSeq initOpt := stmt then
+        if declsSeq.val.size > 1 then
+          let (stmts, names) ← translateTupleDecl ctx sr declsSeq.val.toList initOpt
+          let rest' ← translateBlockStmts { ctx with localNames := ctx.localNames ++ names } rest
+          return stmts ++ rest'
       -- Track local variable declarations for shadowing
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
@@ -928,6 +951,87 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let s ← translateStmt ctx' stmt
       let rest' ← translateBlockStmts ctx' rest
       return s :: rest'
+
+/-- A tuple declaration `(T1 a, , T3 c) = init;`: the statements that
+    declare and initialize its variables, and their names. The initializer:
+    - a call of an internal function binds its return values to the
+      variables (a skipped slot to a temporary), and a mutating callee's
+      state outputs to the caller's state, as `translateInternalCall`;
+    - a tuple `(e1, e2, e3)` initializes each variable with its component,
+      evaluated in order;
+    - anything else (an external call, `abi.decode`) gives the variables
+      unknown values; an initializer with effects there is rejected rather
+      than dropped. -/
+partial def translateTupleDecl (ctx : TransCtx) (sr : SourceRange)
+    (decls : List (Solidity.opt_node SourceRange)) (initOpt : Solidity.opt_node SourceRange)
+    : Except TranslationError (List StmtExprMd × List String) := do
+  let slots : List (Option (String × HighTypeMd)) := decls.map fun
+    | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+      let solTy := match typeNameOpt with
+        | .some_type_name _ tn => translateTypeNode ctx tn
+        | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+      some (nameAnn.val, solTy.highType)
+    | _ => none
+  let names := slots.filterMap (·.map (·.1))
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  match initOpt with
+  | .some_node _ (.FunctionCall csr (.Identifier _ fnAnn) argsSeq kindAnn namesSeq) =>
+    match kindAnn.val, ctx.functionSigs.lookup fnAnn.val with
+    | "functionCall", some sig =>
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+      let argNames := namesSeq.val.toList.map (·.val)
+      let (argNodes, args) ← if argNames.isEmpty then pure (argsSeq.val.toList, args) else do
+        let named := argNames.zip (argsSeq.val.toList.zip args)
+        let ordered ← sig.paramNames.mapM fun p => match named.lookup p with
+          | some a => pure a
+          | none => throw (.typeError s!"call to `{fnAnn.val}` has no argument named `{p}`")
+        pure (ordered.map (·.1), ordered.map (·.2))
+      let dests : List (AstNode Variable) := (slots.zip sig.returnTypes).zipIdx.map fun ((slot, retTy), i) =>
+        match slot with
+        | some (n, ty) => { val := .Declare { name := n, type := some ty }, source := .unknown }
+        | none => { val := .Declare { name := s!"__ret{csr.start.byteIdx}_{i}", type := some retTy },
+                    source := .unknown }
+      if slots.length != sig.returnTypes.length then
+        throw (.typeError s!"`{fnAnn.val}` returns {sig.returnTypes.length} value(s), not {slots.length}")
+      let assign ← translateInternalCall ctx csr s!"{ctx.contractName}_{fnAnn.val}" sig argNodes args
+        (dests := some dests)
+      return ([assign], names)
+    | _, _ => unknownInit
+  | .some_node _ (.TupleExpression _ compsSeq) =>
+    let comps := compsSeq.val.toList
+    if comps.length != slots.length then
+      throw (.typeError s!"tuple of {comps.length} component(s) for {slots.length} variable(s)")
+    let mut stmts : List StmtExprMd := []
+    for (slot, comp, i) in (slots.zip comps).zipIdx.map (fun ((s, c), i) => (s, c, i)) do
+      let e ← translateExpr ctx comp
+      match slot with
+      | some (n, ty) => stmts := stmts ++ [mkStmtExprMd (mkLocalVar n ty (some e))]
+      | none => if hasEffects e then stmts := stmts ++ [declareLocal s!"__ret{sr.start.byteIdx}_{i}" e]
+    return (stmts, names)
+  | .some_node _ _ => unknownInit
+  | .missing_node _ =>
+    let decls := slots.filterMap (·.map fun (n, ty) =>
+      mkStmtExprMd (mkLocalVar n ty (zeroValue? ty <|> some fresh)))
+    return (decls, names)
+where
+  unknownInit : Except TranslationError (List StmtExprMd × List String) := do
+    match initOpt with
+    | .some_node _ init =>
+      let e ← translateExpr ctx init
+      -- Its value is not modelled; an initializer with effects is rejected
+      -- rather than dropped.
+      if !(e.val matches .Hole ..) && hasEffects e then
+        throw (.unsupported "a tuple declaration whose initializer has effects (other than an internal call)")
+      let slots := decls.filterMap fun
+        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+          some (nameAnn.val, match typeNameOpt with
+            | .some_type_name _ tn => (translateTypeNode ctx tn).highType
+            | .missing_type_name _ => mkHighTypeMd .TInt)
+        | _ => none
+      let decls := slots.map fun (n, ty) =>
+        mkStmtExprMd (mkLocalVar n ty (some (mkStmtExprMd (.Hole (deterministic := false)))))
+      return (decls, slots.map (·.1))
+    | .missing_node _ => return ([], [])
 
 /-- Get loop invariants from context and translate the loop body.
     Returns (invariantExprs, translatedBody). -/
@@ -1169,24 +1273,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
-      -- Tuple/multi-variable declarations `(a, b) = f()`: declare each
-      -- variable with a havoc'd (nondeterministic) initial value. This is
-      -- the sound over-approximation — the values are unknown but the
-      -- names are in scope for subsequent statements.
-      -- (Previously this emitted assume(false), which silently made every
-      -- POST-declaration obligation vacuous — the #26 anti-pattern — and
-      -- left the names undeclared, causing resolution failures.)
-      let mut declStmts : List StmtExprMd := []
-      for declOpt in decls do
-        match declOpt with
-        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
-          let solTy := match typeNameOpt with
-            | .some_type_name _ tn => translateTypeNode ctx tn
-            | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-          declStmts := declStmts ++
-            [mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType (some (mkStmtExprMd .Hole)))]
-        | _ => pure ()  -- skipped tuple slot `(, b) = ...`
-      return mkStmtExprMd (.Block declStmts none)
+      -- A tuple declaration outside a block (translateBlockStmts splices
+      -- the ones in a block, so that later statements see the variables).
+      let (stmts, _) ← translateTupleDecl ctx declSr decls initOpt
+      return mkStmtExprMd (.Block stmts none)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
