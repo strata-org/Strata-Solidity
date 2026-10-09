@@ -363,13 +363,37 @@ def assemblyAssignable (ctx : TransCtx) : List String :=
   let stateNames := ctx.mappingStateVars ++ ctx.arrayStateVars.map (· ++ "_length")
   ctx.localNames.filter (!stateNames.contains ·) |>.eraseDups
 
+/-- Statements giving the contract's state unknown values of their
+    Solidity types: every state variable but the immutables (a scalar is a
+    field of `self`, except in constructors, where it is an output variable
+    like mapping state), the length of each dynamic array, and the locals
+    holding the fields of storage references (`d__value`), which read that
+    state. -/
+def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
+  let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  let assume (c : StmtExprMd) := mkStmtExprMd (mkAssume c)
+  let vars := ctx.stateVarNames.filter (!ctx.immutableNames.contains ·)
+  let state := vars.flatMap fun n =>
+    let v := if ctx.hasSelfParam && !ctx.mappingStateVars.contains n
+      then mkStmtExprMd (mkFieldSelect (ident "self") n) else ident n
+    let len := ident s!"{n}_length"
+    assign v :: (((ctx.fieldSolTypes.lookup n).bind (mkRangeCond · v)).toList.map assume) ++
+    if ctx.arrayStateVars.contains n && (ctx.fixedArrayLengths.lookup n).isNone then
+      [assign len, assume (mkStmtExprMd (mkPrimOp .Geq [len, mkStmtExprMd (.LiteralInt 0)]))]
+    else []
+  state ++ ctx.storageAliases.flatMap fun (a, info) =>
+    info.fields.map fun (f, _) => assign (ident s!"{a}__{f}")
+
 /-- The model of an inline-assembly block with summary `s`. Yul is not
     interpreted: whatever the block may write is unknown afterwards, and
     it may end the function there.
     - The Solidity variables it assigns get fresh values, a memory array
       with its length; so does every variable in memory if it writes memory.
-    - If it may write storage, so does all of the contract's state, where
-      solc lets assembly write it (not in `view` and `pure` functions).
+    - If it may write storage, so does all of the contract's state
+      (`stateHavoc`), where solc lets assembly write it (not in `view` and
+      `pure` functions).
     - If it may end the function, it does so on some paths, with unknown
       return values.
     Fresh values are nondeterministic holes: a deterministic hole is a
@@ -390,15 +414,8 @@ def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError St
   let vars := (assemblyAssignable ctx).filter fun n => s.assigned.contains n || memory.contains n
   let vars := vars.flatMap fun n =>
     if ctx.memoryArrayParams.contains n then [n, s!"{n}_length"] else [n]
-  let state := if !(s.writesStorage && ctx.mayWriteState) then [] else
-    ctx.stateVarNames.flatMap fun n =>
-      if ctx.arrayStateVars.contains n then [n, s!"{n}_length"] else [n]
-  -- Scalar state is a field of `self`, except in constructors, where it
-  -- is an output variable like mapping state.
-  let (fields, stateVars) := state.partition fun n =>
-    ctx.hasSelfParam && ctx.stateVarNames.contains n && !ctx.mappingStateVars.contains n
-  let havocs := (vars ++ stateVars).eraseDups.map (assign ∘ ident) ++
-    fields.map fun n => assign (mkStmtExprMd (mkFieldSelect (ident "self") n))
+  let state := if s.writesStorage && ctx.mayWriteState then stateHavoc ctx else []
+  let havocs := vars.eraseDups.map (assign ∘ ident) ++ state
   let exit := if !s.exits then [] else
     [mkStmtExprMd (.IfThenElse fresh
       (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))

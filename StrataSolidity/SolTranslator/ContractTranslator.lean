@@ -123,6 +123,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut constantDefs : List (String × StmtExprMd) := []
     let mut fieldSolTypes : List (String × String) := []
     let mut stateVarInits : List (String × Solidity.node SourceRange) := []
+    let mut immutableNames : List String := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -160,8 +161,9 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           decreases := none
           body := .Abstract postcondsAsConds
         }]
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn mutAnn _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
+          if mutAnn.val == "immutable" then immutableNames := immutableNames ++ [nameAnn.val]
           -- Collect @custom:strata invariant from state variable NatSpec
           -- (a library's constants are not contract state)
           warnings := warnings ++ annotationWarnings ctx.source
@@ -303,7 +305,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  udvtNames := udvtNames
                  constantDefs := constantDefs
                  fieldSolTypes := fieldSolTypes
-                 stateVarInits := stateVarInits }
+                 stateVarInits := stateVarInits
+                 immutableNames := immutableNames }
     let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
     let natspecInvariantExprs ← natspecInvariantStrs.mapM fun e => do

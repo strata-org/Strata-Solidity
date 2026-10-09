@@ -8,8 +8,12 @@ pragma solidity ^0.8.0;
 // in `view` and `pure` functions). A block that may end the function
 // (`return`, `stop`) does so on some paths, with unknown return values.
 contract AssemblyHavoc {
+    struct Info { uint256 value; }
+
     uint256 public stored;
     mapping(address => uint256) public balances;
+    Info internal info;
+    uint8 public small;
 
     // Fails: the constructor's block may write `stored`.
     /// @custom:strata ensures stored == 0
@@ -68,6 +72,21 @@ contract AssemblyHavoc {
     /// @custom:strata ensures balances[who] == old(balances[who])
     function mutatingHavocsState(address who) external {
         assembly { sstore(0, 1) }
+    }
+
+    // Fails: the block may write the storage `d` refers to.
+    /// @custom:strata ensures ok
+    function storageReference() external returns (bool ok) {
+        Info storage d = info;
+        uint256 before = d.value;
+        assembly { sstore(0, 1) }
+        ok = d.value == before;
+    }
+
+    // Passes: whatever the block writes, `small` reads as a uint8.
+    /// @custom:strata ensures small <= 255
+    function keepsTypes() external {
+        assembly { sstore(small.slot, 1000) }
     }
 
     // Passes: reading storage writes nothing.

@@ -208,6 +208,9 @@ structure TransCtx where
   /-- Names of the contracts and interfaces of the source unit: a value of
       such a type is an address. -/
   contractTypeNames : List String := []
+  /-- The `immutable` state variables, which keep their value once the
+      constructor has run. -/
+  immutableNames : List String := []
 
 /-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
     at `sr`, if known. -/
