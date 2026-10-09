@@ -605,6 +605,14 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- Euclidean ones.
       | "/" => .ok (if common.any (·.signed) then Operation.DivT else Operation.Div)
       | "%" => .ok (if common.any (·.signed) then Operation.ModT else Operation.Mod)
+      | "**" =>
+        -- A constant power (`2 ** 64`) is folded; any other is not modelled.
+        match l.val, r.val with
+        | .LiteralInt b, .LiteralInt n =>
+          if n ≥ 0 && n * (b.natAbs.log2 + 1) ≤ 4096 then
+            return mkStmtExprMd (.LiteralInt (b ^ n.toNat))
+          else throw (.unsupported "a constant power this large")
+        | _, _ => throw (.unsupported "`**` with an operand that is not a constant")
       | "==" => .ok Operation.Eq
       | "!=" => .ok Operation.Neq
       | "<" => .ok Operation.Lt
@@ -615,11 +623,39 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- its effects (calls, checks) happen only on those paths.
       | "&&" => .ok Operation.AndThen
       | "||" => .ok Operation.OrElse
-      | "&" => return mkStmtExprMd (mkCall "bit_and" [l, r])
+      -- Bitwise operations are uninterpreted functions, except a few with
+      -- a constant operand: a shift by a constant (`x >> k` divides by
+      -- `2^k`, rounding down as the EVM's shifts do also for a signed `x`;
+      -- `x << k` multiplies and, checked or not, wraps within `x`'s type),
+      -- and an unsigned `x & (2^n - 1)` (the low `n` bits).
+      | "&" =>
+        let lowBits (m : Int) : Option Nat :=
+          let n := (m + 1).natAbs.log2
+          if m > 0 && 2 ^ n == m + 1 then some n else none
+        match common, r.val, l.val with
+        | some t, .LiteralInt m, _ | some t, _, .LiteralInt m =>
+          match lowBits m, t.signed with
+          | some n, false =>
+            let x := if r.val matches .LiteralInt _ then l else r
+            return mkStmtExprMd (mkCall "$intMod" [x, mkStmtExprMd (.LiteralInt (2 ^ n))])
+          | _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
+        | _, _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
       | "|" => return mkStmtExprMd (mkCall "bit_or" [l, r])
       | "^" => return mkStmtExprMd (mkCall "bit_xor" [l, r])
-      | "<<" => return mkStmtExprMd (mkCall "bit_shl" [l, r])
-      | ">>" => return mkStmtExprMd (mkCall "bit_shr" [l, r])
+      | "<<" =>
+        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        | some t, .LiteralInt k =>
+          if k ≥ 0 && k < 4096 then
+            return wrapTo t (mkStmtExprMd (mkPrimOp .Mul [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))]))
+          else return mkStmtExprMd (mkCall "bit_shl" [l, r])
+        | _, _ => return mkStmtExprMd (mkCall "bit_shl" [l, r])
+      | ">>" =>
+        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        | some _, .LiteralInt k =>
+          if k ≥ 0 && k < 4096 then
+            return mkStmtExprMd (mkCall "$intDiv" [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))])
+          else return mkStmtExprMd (mkCall "bit_shr" [l, r])
+        | _, _ => return mkStmtExprMd (mkCall "bit_shr" [l, r])
       | o => throw (.unsupported s!"Binary operator: {o}")
     let result := mkStmtExprMd (mkPrimOp op [l, r])
     -- In `unchecked`, `+`, `-` and `*` wrap around instead of reverting.
