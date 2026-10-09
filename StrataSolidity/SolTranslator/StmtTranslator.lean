@@ -207,6 +207,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             inputs := inputs ++ [{ name := s!"{lenName}_param", type := mkHighTypeMd .TInt }]
             userParamInfo := userParamInfo ++ [(lenName, mkHighTypeMd .TInt)]
             preconditions := preconditions ++ [mkNonNegPrecond s!"{lenName}_param"]
+            if let some n := solTy.arrayLength then
+              typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
+                [mkStmtExprMd (mkIdentifier s!"{lenName}_param"), mkStmtExprMd (.LiteralInt n)]),
+                s!"length of {baseName} ({n})")]
             memoryArrayParamNames := memoryArrayParamNames ++ [baseName]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
