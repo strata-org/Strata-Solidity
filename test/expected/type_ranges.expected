@@ -1,7 +1,3 @@
-  151)))) (LExpr.op () { name := "TypeRanges.total",
-        total_in@80 = LExpr.const () Lambda.LConst.intConst 21238
-        total_in@77 = LExpr.const () Lambda.LConst.intConst 0
-        total_in@81 = LExpr.const () Lambda.LConst.intConst 0
-        total_in@78 = LExpr.const () Lambda.LConst.intConst 0
+❌ Failures (1):
 ✅ Passed (9):
 9 passed, 1 failed, 0 unknown out of 10 total

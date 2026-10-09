@@ -28,10 +28,13 @@ for sol in "$EXAMPLES_DIR"/*.sol; do
     name=$(basename "$sol" .sol)
     expected="$EXPECTED_DIR/$name.expected"
 
-    # Run verification, extract just the results summary
+    # Run verification, extract just the results summary: the section
+    # headers ("✅ Passed (3):") and the totals line ("3 passed, 0 failed,
+    # ..."). Anchored, so obligation names and counterexample variables
+    # (`ensures totalSupply ...`, `total_in@3 = 0`) do not leak into the
+    # comparison.
     actual=$(bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" 2>&1 | \
-        grep -E "Passed|Failed|Unknown|total|passed" | \
-        grep -v "PANIC\|backtrace" || true)
+        grep -E "^(✅|❌|❓) (Passed|Failures|Unknown) \(|^[0-9]+ passed, [0-9]+ failed" || true)
 
     if [ ! -f "$expected" ]; then
         # No expected file — generate it
