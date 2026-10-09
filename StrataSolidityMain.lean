@@ -158,7 +158,12 @@ def main (args : List String) : IO Unit := do
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
   let pipelineJson := args.contains "--pipeline-json"
-  let useArrays := args.contains "--array-theory"
+  -- Array theory is the default, as in Laurel's own verification entry
+  -- points: maps become SMT arrays instead of quantified select/update
+  -- axioms, which z3 (with MBQI off) often cannot refute. Without it,
+  -- refutable obligations tend to come back `unknown` with no
+  -- counterexample. `--array-theory` is still accepted for compatibility.
+  let useArrays := !args.contains "--no-array-theory"
   let dumpVcDir : Option String := match args.filter (·.startsWith "--dump-vc=") with
     | t :: _ => some (t.drop "--dump-vc=".length).toString
     | _ => none
@@ -168,7 +173,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--pipeline-json", "--from-sol"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
