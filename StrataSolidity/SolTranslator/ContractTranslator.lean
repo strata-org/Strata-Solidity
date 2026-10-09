@@ -123,10 +123,19 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
     let mut udvtNames : List String := ctx.udvtNames
-    let mut stateVarInvariants : List StrataAnnotation := []
-    -- Contract-level NatSpec (above the contract keyword) is not read.
-    warnings := warnings ++ annotationWarnings ctx.source s!"contract `{nameAnn.val}`" []
-      contractDocAnn
+    -- Contract invariants may be attached to the contract itself or to any
+    -- of its state variables; solc attaches each NatSpec block to one
+    -- declaration, so there is no ambiguity between contracts in a file.
+    -- Interfaces and libraries have no state to keep invariant.
+    let isContract := kindAnn.val == "contract"
+    let mut stateVarInvariants : List StrataAnnotation :=
+      if isContract then
+        (parseStrataAnnotations contractDocAnn.val).filter (·.keyword == "invariant")
+      else []
+    warnings := warnings ++ annotationWarnings ctx.source s!"{kindAnn.val} `{nameAnn.val}`"
+      (if isContract then ["invariant"] else []) contractDocAnn
+      (fun _ => if isContract then none else
+        some s!"{if kindAnn.val == "interface" then "an" else "a"} {kindAnn.val} has no state, so it is ignored")
     let mut constantDefs : List (String × StmtExprMd) := []
     let mut fieldSolTypes : List (String × String) := []
     let mut stateVarInits : List (String × Solidity.node SourceRange) := []
@@ -170,13 +179,15 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           -- Collect @custom:strata invariant from state variable NatSpec
+          -- (a library's constants are not contract state)
           warnings := warnings ++ annotationWarnings ctx.source
-            s!"state variable `{nameAnn.val}`" ["invariant"] docAnn
-          let varAnnotations := parseStrataAnnotations docAnn.val
-          for ann in varAnnotations do
-            match ann with
-            | .invariant _ => stateVarInvariants := stateVarInvariants ++ [ann]
-            | _ => pure ()
+            s!"state variable `{nameAnn.val}`" (if isContract then ["invariant"] else []) docAnn
+            (fun _ => if isContract then none else some s!"a {kindAnn.val} has no state, so it is ignored")
+          if isContract then
+            for ann in parseStrataAnnotations docAnn.val do
+              match ann with
+              | .invariant _ => stateVarInvariants := stateVarInvariants ++ [ann]
+              | _ => pure ()
           if constAnn.val == "true" then
             -- Constant state variable: record name→value for constant folding
             match valueOpt with
@@ -301,9 +312,6 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  constantDefs := constantDefs
                  fieldSolTypes := fieldSolTypes
                  stateVarInits := stateVarInits }
-    -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
-    -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
-    -- to avoid ambiguity in files with multiple contracts.
     let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
     let natspecInvariantExprs ← natspecInvariantStrs.mapM fun e => do

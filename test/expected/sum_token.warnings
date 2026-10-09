@@ -1,1 +1,0 @@
-sum_token.sol:4:5: warning: `@custom:strata invariant` has no effect on contract `SumToken` and is ignored

@@ -2,16 +2,13 @@
 pragma solidity ^0.8.0;
 
 /// @title Contract invariant test with scalar state variable.
-/// The invariant `x >= 10` is conjoined with every non-pure function's
-/// pre- and postconditions. The constructor establishes it (x = 10) and
-/// addOne preserves it. NOTE: `x >= 0` would be a tautology on uint256 —
-/// the tool assumes non-negativity for unsigned state; the bound must be
-/// something the type system does NOT give for the fixture to test the
-/// invariant machinery.
-/// (Attached to the state variable — contract-level NatSpec above the
-/// `contract` keyword is intentionally ignored to avoid ambiguity in
-/// multi-contract files; see ContractTranslator "Collect @custom:strata
-/// invariant only from state variable NatSpec".)
+/// The invariant `x >= 10` is assumed on entry to and re-established on
+/// exit from every public/external state-changing function. The
+/// constructor establishes it (x = 10) and addOne preserves it. NOTE:
+/// `x >= 0` would be a tautology on uint256 — the tool assumes
+/// non-negativity for unsigned state; the bound must be something the type
+/// system does NOT give for the fixture to test the invariant machinery.
+/// (Attached to the state variable; NatSpec above `contract` works too.)
 contract ContractInvariant {
 
     /// @custom:strata invariant x >= 10
