@@ -516,6 +516,8 @@ where
       | _ => throw (.typeError "Expected ')' in spec expression")
     | "true" :: rest => return (mkStmtExprMd (.LiteralBool true), rest)
     | "false" :: rest => return (mkStmtExprMd (.LiteralBool false), rest)
+    -- The contract's address: a constant (see `envConstants`)
+    | "this" :: rest => return (mkStmtExprMd (mkCall "this_address" []), rest)
     | "old" :: "(" :: rest =>
       let (inner, rest') ← parseExpr rest
       match rest' with

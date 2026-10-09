@@ -132,18 +132,19 @@ def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val :
 
 
 /-- Whether evaluating a translated expression does more than compute a
-    value: anything but literals, variables, conditionals, map reads and
-    operators without a precondition (so `k++`, an assignment, a call, a
-    division). Laurel lifts such parts out of the expression, evaluating
-    them before it. -/
+    value: anything but literals, variables, conditionals, map reads,
+    transaction constants (`block.timestamp`, `this`) and operators without
+    a precondition (so `k++`, an assignment, a call, a division). Laurel
+    lifts such parts out of the expression, evaluating them before it. -/
 def hasEffects (e : StmtExprMd) : Bool :=
   anyStmtExpr (fun e => match e.val with
     | .LiteralInt _ | .LiteralBool _ | .LiteralString _ | .Var (.Local _) | .Var (.Field ..)
     | .IfThenElse .. => false
-    | .StaticCall callee _ _ =>
+    | .StaticCall callee args _ =>
       match asPrimOp? e.val with
       | some (op, _) => (op matches .Div | .Mod | .DivT | .ModT)
-      | none => !["select", "mapConst"].contains callee.text
+      | none => !["select", "mapConst"].contains callee.text &&
+          !(args.isEmpty && envConstants.any (·.1 == callee.text))
     | _ => true) e
 
 /-- A local `x` declared with the value `e`. -/
@@ -545,6 +546,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if ctx.stateVarNames.contains nameAnn.val then
       return mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) nameAnn.val)
+    else if nameAnn.val == "this" then
+      -- The contract's address: a constant of the transaction
+      return mkStmtExprMd (mkCall "this_address" [])
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 

@@ -205,6 +205,9 @@ structure TransCtx where
   /-- solc's type of each expression (see `SolcAst.ExprTypes`); empty when
       the AST did not come from solc's JSON (the Ion frontend). -/
   exprTypes : Std.HashMap (Nat × Nat × String) String := {}
+  /-- Names of the contracts and interfaces of the source unit: a value of
+      such a type is an address. -/
+  contractTypeNames : List String := []
 
 /-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
     at `sr`, if known. -/
@@ -378,10 +381,15 @@ def translateTypeName (name : String) : SolType :=
 def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : SolType :=
   match tn with
   | .ElementaryTypeName _ nameAnn _ => translateTypeName nameAnn.val
-  | .UserDefinedTypeName _ nameAnn =>
+  | .UserDefinedTypeName sr nameAnn =>
     -- Enum types and user-defined value types (UDVT) are modeled as TInt.
     if ctx.enumDefs.any (·.1 == nameAnn.val) || ctx.udvtNames.contains nameAnn.val then
       { highType := mkHighTypeMd .TInt, solName := nameAnn.val }
+    -- A contract or interface type (possibly imported: solc's type says
+    -- so): its values are addresses.
+    else if ctx.contractTypeNames.contains nameAnn.val ||
+        ((ctx.typeAt? sr "UserDefinedTypeName").map (·.startsWith "contract ")).getD false then
+      { highType := mkHighTypeMd .TInt, solName := "address" }
     else
       { highType := mkHighTypeMd (.UserDefined (mkIdent nameAnn.val)), solName := nameAnn.val }
   | .MappingType _ keyTn valTn _ _ =>
@@ -439,10 +447,10 @@ def mkRangeCond (solName : String) (e : StmtExprMd) : Option StmtExprMd :=
       mkStmtExprMd (mkPrimOp .Leq [mkStmtExprMd (.LiteralInt lo), e]),
       mkStmtExprMd (mkPrimOp .Leq [e, mkStmtExprMd (.LiteralInt hi)])])
 
-/-- Values fixed for the whole transaction, read through `block.*`, `tx.*`
-    and `msg.sig`/`msg.data`: (Laurel constant, Solidity name, Solidity
-    type). As constants, two reads in one transaction agree; each function
-    that reads one assumes it holds a value of its type. -/
+/-- Values fixed for the whole transaction, read through `block.*`, `tx.*`,
+    `msg.sig`/`msg.data` and `this`: (Laurel constant, Solidity name,
+    Solidity type). As constants, two reads in one transaction agree; each
+    function that reads one assumes it holds a value of its type. -/
 def envConstants : List (String × String × String) := [
   ("block_basefee", "block.basefee", "uint256"),
   ("block_blobbasefee", "block.blobbasefee", "uint256"),
@@ -456,11 +464,12 @@ def envConstants : List (String × String × String) := [
   ("tx_gasprice", "tx.gasprice", "uint256"),
   ("tx_origin", "tx.origin", "address"),
   ("msg_sig", "msg.sig", "bytes4"),
-  ("msg_data", "msg.data", "bytes")]
+  ("msg_data", "msg.data", "bytes"),
+  ("this_address", "address(this)", "address")]
 
 /-- Transaction constants assumed positive, as they are in any block a
-    transaction runs in. -/
-def positiveEnvConstants : List String := ["block_number", "block_timestamp"]
+    transaction runs in (and no contract has address 0). -/
+def positiveEnvConstants : List String := ["block_number", "block_timestamp", "this_address"]
 
 /-- Whether `e` reads the constant `name` (a call without arguments). -/
 def readsConstant (name : String) (e : StmtExprMd) : Bool :=

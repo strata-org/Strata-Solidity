@@ -316,7 +316,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       -- Time and block values advance between transactions without any
       -- function running, so an invariant over them is not preserved by
       -- checking the contract's functions.
-      if let some (_, what, _) := envConstants.find? (readsConstant ·.1 parsed) then
+      if let some (_, what, _) := envConstants.find? fun (c, _, _) =>
+          c != "this_address" && readsConstant c parsed then
         throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
       pure parsed
 
@@ -513,6 +514,13 @@ def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
   let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes }
   match cmd with
   | .SourceUnit _ nodesSeq => do
+    -- The contracts and interfaces, whose names are types of addresses.
+    let contractTypeNames := nodesSeq.val.toList.filterMap fun (node : Solidity.node SourceRange) =>
+      match node with
+      | .ContractDefinition _ nameAnn kindAnn .. =>
+        if kindAnn.val == "library" then none else some nameAnn.val
+      | _ => none
+    let ctx := { ctx with contractTypeNames }
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
     let mut allWarnings : List TranslationWarning := []
