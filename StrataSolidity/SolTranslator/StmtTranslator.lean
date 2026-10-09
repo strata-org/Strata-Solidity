@@ -360,7 +360,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               let entries := parsedEntries.filter fun (b, _) => b == name
               if entries.isEmpty then
                 -- Not in modifies list: full frame (var == var_in)
-                some (mkStmtExprMd (mkPrimOp .Eq [
+                some (name, mkStmtExprMd (mkPrimOp .Eq [
                   mkStmtExprMd (mkIdentifier name),
                   mkStmtExprMd (mkIdentifier (name ++ "_in"))]))
               else if entries.any fun (_, k) => k.isNone then
@@ -395,7 +395,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                   let rhs := mkStmtExprMd (mkCall "select" [mkStmtExprMd (mkIdentifier (name ++ "_in")), kVar])
                   let eq := mkStmtExprMd (mkPrimOp .Eq [lhs, rhs])
                   let body := mkStmtExprMd (mkPrimOp .Implies [guard, eq])
-                  some (mkStmtExprMd (mkForall kParam body))
+                  some (name, mkStmtExprMd (mkForall kParam body))
             -- Bug fix: also generate frame conditions for scalar state vars not in modifies.
             -- Scalar vars are heap-allocated, but the heap frame only excludes other objects,
             -- not other fields of self. We need explicit field-level framing.
@@ -411,7 +411,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                 let selfField := mkStmtExprMd
                   (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
                 let inRef := mkStmtExprMd (mkIdentifier s!"{name}_in")
-                some (mkStmtExprMd (mkPrimOp .Eq [selfField, inRef]))
+                some (name, mkStmtExprMd (mkPrimOp .Eq [selfField, inRef]))
             framePosts ++ scalarFramePosts
         -- Always emit Body.Opaque. Upstream PR #1076 (Various Laurel resolver
         -- improvements) disallows Body.Transparent procedures with the error
@@ -433,21 +433,27 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- with "Resolution failed: '__strata_invariant' is not defined" for
         -- every contract carrying an in-contract invariant (ERC20,
         -- Initializable, ReentrancyGuard, ...).
-        let specAndFramePosts := specPostExprs ++ frameConditions
-        let allPosts := specAndFramePosts ++ contractInvariants
+        let allPosts := specPostExprs ++ frameConditions.map (·.2) ++ contractInvariants
         -- Attach function source range to postconditions for SARIF location reporting
         let allPosts := allPosts.map (withSourceRange ctx fnSr)
         -- Only include self in modifies list when contract has scalar (non-mapping) state vars
         let modifiesList := if !isPure && hasNonMappingState && !isConstructor then
           [mkStmtExprMd (mkIdentifier "self")]
         else []
-        let specAndFrameConds : List Condition :=
-          (specAndFramePosts.map (withSourceRange ctx fnSr)).map fun p =>
-            { condition := p, summary := none }
-        let invariantConds : List Condition :=
-          (contractInvariants.map (withSourceRange ctx fnSr)).map fun p =>
-            { condition := p, summary := some "invariant" }
-        let allPostsConds : List Condition := specAndFrameConds ++ invariantConds
+        -- Every postcondition carries a distinct summary. Core merges VC
+        -- results that share (summary, source range), and all postconditions
+        -- of a function share the function's range, so without distinct
+        -- summaries every `ensures` of a function would collapse into one
+        -- reported obligation.
+        let mkPost (summary : String) (p : StmtExprMd) : Condition :=
+          { condition := withSourceRange ctx fnSr p, summary := some summary }
+        let specConds := (specPostExprs.zip natspecPosts).map fun (p, src) =>
+          mkPost s!"ensures {src}" p
+        let frameConds := frameConditions.map fun (name, p) =>
+          mkPost s!"modifies frame ({name})" p
+        let invariantConds := contractInvariants.zipIdx.map fun (p, i) =>
+          mkPost s!"invariant #{i + 1}" p
+        let allPostsConds : List Condition := specConds ++ frameConds ++ invariantConds
         -- One unguarded frame group. An empty target list means "changes
         -- nothing" (`ModifiesGroup.nothingChanges`); Laurel reads an empty
         -- *group* list as unframed, so the group must always be present.
