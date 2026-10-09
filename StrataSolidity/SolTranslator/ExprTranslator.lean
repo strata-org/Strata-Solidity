@@ -107,6 +107,16 @@ def collectIndexChain (n : Solidity.node SourceRange)
     some (go baseNode (idx :: []))
   | _ => none
 
+/-- The storage reference (`Info storage d = data;`) that an assignment
+    target such as `d.value` or `d.items[i]` writes through, if any. Writes
+    through a storage reference are not modelled: its fields are read into
+    locals, and writing those does not write the storage. -/
+def storageRefTarget? (ctx : TransCtx) : Solidity.node SourceRange → Option String
+  | .Identifier _ a => if ctx.storageAliases.any (·.1 == a.val) then some a.val else none
+  | .MemberAccess _ e _ => storageRefTarget? ctx e
+  | .IndexAccess _ e _ => storageRefTarget? ctx e
+  | _ => none
+
 /-- Build a nested map update expression.
     For a single index: `update(root, k, val)`
     For nested indices `[k1, k2]`: `update(root, k1, update(select(root, k1), k2, val))` -/
@@ -495,6 +505,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     return mkStmtExprMd (mkPrimOp op [l, r])
 
   | .UnaryOperation _ sub opAnn prefixAnn => do
+    if ["++", "--", "delete"].contains opAnn.val then
+      if let some d := storageRefTarget? ctx sub then
+        throw (.unsupported s!"writing through the storage reference `{d}`")
     -- Handle delete before translating sub, since mapping delete needs raw AST
     if opAnn.val == "delete" then
       let zero := mkStmtExprMd (.LiteralInt 0)
@@ -846,6 +859,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       throw (.unsupported "tuple expressions with several components are not supported here")
 
   | .Assignment _ lhs rhs opAnn => do
+    if let some d := storageRefTarget? ctx lhs then
+      throw (.unsupported s!"writing through the storage reference `{d}`")
     let rhsExpr ← translateExpr ctx rhs
     -- Solidity evaluates the right-hand side first, then the indices, then
     -- reads the target (for `op=`). If any of them has effects (a call
