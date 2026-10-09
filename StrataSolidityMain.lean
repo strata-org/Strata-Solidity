@@ -70,6 +70,17 @@ private def formatPlainCounterexample (cex : LExprModel) : String :=
       s!"        {name} = {val}"
     "\n" ++ "\n".intercalate entries
 
+/-- A passing obligation located in a non-Solidity file. Laurel's prelude
+    (`CoreDefinitionsForLaurel`) contributes well-formedness checks for its
+    own operator wrappers to every program; they are not about the user's
+    contract, so successful ones are not reported. Failing or inconclusive
+    ones are kept so an upstream regression stays visible. -/
+private def isPassingPreludeVc (vcr : VCResult) : Bool :=
+  vcr.isSuccess &&
+  match Imperative.getFileRange vcr.obligation.metadata with
+  | some { file := .file path, range } => !range.isNone && !path.endsWith ".sol"
+  | none => false
+
 /-- Classify a VCResult into 0=fail, 1=unknown, 2=pass. -/
 private def statusOrder (vcr : VCResult) : Nat :=
   if vcr.isFailure then 0
@@ -266,6 +277,8 @@ def main (args : List String) : IO Unit := do
                       solverTimeout := timeoutVal,
                       useArrayTheory := useArrays }))
               pure (r, ("" : System.FilePath))
+
+        let vcResults := vcResults.filter (!isPassingPreludeVc ·)
 
         -- Print results
         if pipelineJson then
