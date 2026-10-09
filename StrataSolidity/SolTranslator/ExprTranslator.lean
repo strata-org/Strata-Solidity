@@ -584,7 +584,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   -- (`new uint[](n)`) yield a fresh unconstrained value. Model as a Hole.
   -- Must precede the general FunctionCall arm (matched top-to-bottom).
   | .FunctionCall _ (.NewExpression _ _) _ _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
     -- Check the FunctionCall kind
@@ -658,8 +658,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- `envProcedures`).
         return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
-        -- selfdestruct(addr) → deprecated, model as no-op
-        return mkStmtExprMd .Hole
+        -- selfdestruct(addr) ends the execution: an early return, with
+        -- unknown return values (no data is returned)
+        let fresh := mkStmtExprMd (.Hole (deterministic := false))
+        return mkStmtExprMd (.Block (ctx.returnNames.map (fun n =>
+          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier n))] fresh)) ++
+          [mkStmtExprMd (.Return none)]) none)
       | funcName =>
         -- Internal call: prefix with contract name to match procedure declaration
         let qualifiedName := s!"{ctx.contractName}_{funcName}"
@@ -728,7 +732,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- payable(addr).transfer(amount) → no-op for verification; a
         -- contract's `transfer(to, amount)` (ERC-20) → unknown result
         if args.length == 1 then return withArgumentEffects pre args none
-        else return withArgumentEffects pre args (some (mkStmtExprMd .Hole))
+        else return withArgumentEffects pre args (some (mkStmtExprMd (.Hole (deterministic := false))))
       else if memberAnn.val == "send" then do
         -- payable(addr).send(amount) → a fresh bool: whether it succeeded
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
@@ -738,7 +742,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args (some (mkStmtExprMd .Hole))
+        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
+          (some (mkStmtExprMd (.Hole (deterministic := false))))
       else do
         -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
         match baseNode with
@@ -759,7 +764,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | [arg] => return arg  -- identity cast for Phase 1 (all integers are TInt)
       | _ => throw (.typeError s!"Type cast {typeNameAnn.val}() expects exactly one argument")
     | _ =>
-      return mkStmtExprMd .Hole  -- unsupported complex call target
+      throw (.unsupported "a call of this expression")
 
   | .MemberAccess _ exprNode memberAnn => do
     -- msg.sender → Identifier "msg_sender" (implicit parameter)
@@ -972,7 +977,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   -- A bare NewExpression operand (no call args) — also opaque.
   | .NewExpression _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   -- Static array literal `[a, b, c]`. A faithful model requires the memory-
   -- array length-tracking representation the translator uses for other arrays;
@@ -984,7 +989,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   -- Calldata/bytes slice `x[start:end]`. Opaque slice — fresh unconstrained
   -- value (sound over-approximation).
   | .IndexRangeAccess _ _ _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   | _ => throw (.unsupported s!"Expression node type")
 
@@ -1309,7 +1314,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
               let solTy := match pTypeOpt with
                 | .some_type_name _ tn => translateTypeNode ctx tn
                 | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType (some (mkStmtExprMd .Hole)))]
+              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType
+                (some (mkStmtExprMd (.Hole (deterministic := false)))))]
               -- The returned value is a value of its Solidity type.
               if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier pName.val)) then
                 prelude := prelude ++ [mkStmtExprMd (mkAssume c)]
@@ -1320,7 +1326,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | _ => pure ()
     -- Nondeterministic selection: nest each branch under an `if *` (Hole cond).
     let nondet := branches.foldr (fun br acc =>
-      mkStmtExprMd (.IfThenElse (mkStmtExprMd .Hole) br (some acc)))
+      mkStmtExprMd (.IfThenElse (mkStmtExprMd (.Hole (deterministic := false))) br (some acc)))
       (mkStmtExprMd (.Block [] none))
     return nondet
 
