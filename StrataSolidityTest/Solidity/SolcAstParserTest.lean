@@ -788,3 +788,10 @@ private def errIs (j : Json) (pred : ConvertError → Bool) : Bool :=
   (fun | .missingNodeType => true | _ => false)
 
 end SolcAstParserTest.B2_1
+
+/-! #### `$` identifiers are renamed for Laurel -/
+#guard mangleName "$" == "strata$dollar$"
+#guard mangleName "$total" == "strata$dollar$total"
+#guard mangleName "a$b" == "a$b"
+#guard unmangleName (mangleName "$total") == "$total"
+

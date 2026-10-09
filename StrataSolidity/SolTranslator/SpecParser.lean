@@ -5,6 +5,7 @@
 -/
 
 import StrataSolidity.SolTranslator.Types
+import StrataSolidity.SolcAstParser
 
 namespace Strata.Solidity
 open Laurel
@@ -60,6 +61,10 @@ namespace SpecParser
 set_option linter.deprecated false in
 /-- Tokenize a spec expression string into a list of tokens. -/
 def tokenize (s : String) : List String :=
+  -- Identifiers get the same `$` renaming as the AST (`SolcAst.mangleName`).
+  (tokenizeRaw s).map SolcAst.mangleName
+where
+  tokenizeRaw (s : String) : List String :=
   let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=
     if fuel == 0 then (if cur.isEmpty then acc else acc ++ [cur]).reverse
     else if i >= s.length then (if cur.isEmpty then acc else acc ++ [cur])

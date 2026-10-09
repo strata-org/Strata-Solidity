@@ -346,9 +346,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             -- FIRST '[' separates base from key; the key runs to the final ']'.
             let parseEntry (entry : String) : String × Option String :=
               match entry.toList.findIdx? (· == '[') with
-              | none => (entry.trimAscii.toString, none)
+              | none => (SolcAst.mangleName entry.trimAscii.toString, none)
               | some i =>
-                let base := (entry.take i).trimAscii.toString
+                let base := SolcAst.mangleName (entry.take i).trimAscii.toString
                 let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
                 (base, some keyPart.trimAscii.toString)
             let parsedEntries := modifiedEntries.map parseEntry

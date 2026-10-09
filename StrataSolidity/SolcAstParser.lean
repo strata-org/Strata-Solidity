@@ -772,6 +772,30 @@ end
 
 /-! ## Public entry point -/
 
+/-- Solidity identifiers may start with `$` (e.g. OpenZeppelin's ERC-7201
+    storage pointer `$`), but Laurel reserves a leading `$` for
+    compiler-generated names. Such identifiers are renamed by replacing the
+    leading `$` with `dollarPrefix`. -/
+def dollarPrefix : String := "strata$dollar$"
+
+/-- `$x` ↦ `strata$dollar$x`; other names are unchanged. -/
+def mangleName (s : String) : String :=
+  if s.startsWith "$" then dollarPrefix ++ (s.drop 1).toString else s
+
+/-- Inverse of `mangleName`, for messages shown to the user. -/
+def unmangleName (s : String) : String :=
+  s.replace dollarPrefix "$"
+
+/-- Apply `mangleName` to every declared or referenced name in a solc JSON
+    AST (`name` and `memberName` fields). -/
+partial def mangleNames : Json → Json
+  | .obj kvs => Json.mkObj (kvs.toList.map fun (k, v) =>
+      (k, match k, v with
+        | "name", .str s | "memberName", .str s => .str (mangleName s)
+        | _, v => mangleNames v))
+  | .arr xs => .arr (xs.map mangleNames)
+  | j => j
+
 /-- Run solc on `solPath`, then walk the resulting JSON AST into a typed
     `Solidity.Command` — the same shape the Ion path produces, ready for
     `solidityToLaurel`. -/
@@ -780,7 +804,7 @@ def parseFile (solPath : System.FilePath)
   match ← Strata.Solidity.Solc.parseFile solPath with
   | .error e => return .error (toString e)
   | .ok astJson =>
-    match convertSourceUnit astJson with
+    match convertSourceUnit (mangleNames astJson) with
     | .ok cmd => return .ok cmd
     | .error e => return .error (toString e)
 
