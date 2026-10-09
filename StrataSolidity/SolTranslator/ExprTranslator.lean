@@ -334,39 +334,42 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | none =>
         let subExpr ← translateExpr ctx sub
         return mkStmtExprMd (.Assign [toAssignTarget subExpr] zero)
+    -- `++`/`--` on a mapping or array element: write back through
+    -- `update`. Each index is evaluated once (`m[k++]++`), and the
+    -- expression yields the old element (postfix) or the new one (prefix).
+    if opAnn.val == "++" || opAnn.val == "--" then
+      if let some (rootNode, indices) := collectIndexChain sub then
+        let rootExpr ← translateExpr ctx rootNode
+        let idxExprs ← indices.mapM (translateExpr ctx)
+        let off := (exprRange n).start.byteIdx
+        let (binds, keys) := bindInOrder s!"__k{off}" idxExprs
+        let read := keys.foldl (fun acc k => mkStmtExprMd (mkCall "select" [acc, k])) rootExpr
+        let old := s!"__old{off}"
+        let oldVar := mkStmtExprMd (mkIdentifier old)
+        let newVal := mkStmtExprMd (mkPrimOp (if opAnn.val == "++" then .Add else .Sub)
+          [oldVar, mkStmtExprMd (.LiteralInt 1)])
+        let updateExpr ← buildNestedUpdate rootExpr keys newVal
+        return mkStmtExprMd (.Block (binds ++ [
+          declareLocal old read,
+          mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr),
+          if prefixAnn.val == "true" then newVal else oldVar]) none)
     let subExpr ← translateExpr ctx sub
+    -- Laurel's native `++`/`--` (on a variable or field): prefix yields the
+    -- new value and postfix the old one, as in Solidity (`x = i++`).
+    let incrDecr (mode : IncrDecrMode) (op : IncrDecrOp) : StmtExprMd :=
+      mkStmtExprMd (.IncrDecr mode op (toAssignTarget subExpr))
     if prefixAnn.val == "true" then
       match opAnn.val with
       | "!" => return mkStmtExprMd (mkPrimOp .Not [subExpr])
       | "-" => return mkStmtExprMd (mkPrimOp .Neg [subExpr])
       | "~" => return mkStmtExprMd (mkCall "bit_not" [subExpr])
-      | "++" =>
-        -- Prefix ++i: desugar to i = i + 1
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let add := mkStmtExprMd (mkPrimOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
-      | "--" =>
-        -- Prefix --i: desugar to i = i - 1
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let sub' := mkStmtExprMd (mkPrimOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
+      | "++" => return incrDecr .Pre .Incr
+      | "--" => return incrDecr .Pre .Decr
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
     else
-      -- Postfix operators (e.g., i++).
-      -- NOTE: This desugaring produces the *new* value (i + 1), which is correct
-      -- when i++ appears as a standalone statement. In expression context (e.g.,
-      -- x = i++), Solidity evaluates to the *old* value. Phase 1 only supports
-      -- statement-level usage; expression-context semantics require a temp variable
-      -- and are deferred to a later phase.
       match opAnn.val with
-      | "++" =>
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let add := mkStmtExprMd (mkPrimOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
-      | "--" =>
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let sub' := mkStmtExprMd (mkPrimOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
+      | "++" => return incrDecr .Post .Incr
+      | "--" => return incrDecr .Post .Decr
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
   -- `new T(args)` parses as FunctionCall(NewExpression(T), args). Contract
