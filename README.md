@@ -4,7 +4,7 @@ Solidity formal verification front-end for the [Strata](https://github.com/strat
 
 ```
 Solidity (.sol) → solc --standard-json → SolcAstParser (Lean) → SolTranslator
-  → Laurel IR → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
+  → Laurel IR → Laurel compilation pipeline → Strata Core → VCG → SMT solver (z3/cvc5)
 ```
 
 The entire pipeline lives in the `strataSolidity` binary: it invokes `solc`,
@@ -14,17 +14,17 @@ no intermediate serialization.
 ## Prerequisites
 
 - [Lean 4](https://lean-lang.org/) (see `lean-toolchain` for the pinned version)
-- [Strata](https://github.com/evertonfraga/Strata/tree/solidity) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
+- [Strata](https://github.com/strata-org/Strata) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
 - z3 or cvc5 SMT solver
 - Python 3.12+ — dev/CI tooling only (SARIF schema check, bench CSV enforcer); not needed to verify contracts
 
 ### Strata submodule
 
-StrataSolidity vendors the [Strata framework](https://github.com/evertonfraga/Strata) as a git submodule at `./Strata`, wired through `lakefile.lean`'s `[[require]] path = "Strata"` (see `lake-manifest.json`). Clone with submodules so the dependency is materialized before `lake build`:
+StrataSolidity vendors the [Strata framework](https://github.com/strata-org/Strata) as a git submodule at `./Strata`, wired through `lakefile.lean`'s `require Strata from "Strata"` (see `lake-manifest.json`, which also pins Strata's own dependency, [Strata-DDM](https://github.com/strata-org/Strata-DDM)). The submodule is pinned to an explicit upstream `main` commit; see [`docs/upstream-strata-migration-plan.md`](docs/upstream-strata-migration-plan.md) for the current pin and what changed upstream. Clone with submodules so the dependency is materialized before `lake build`:
 
 ```bash
-git clone --recurse-submodules https://github.com/evertonfraga/StrataSolidity.git
+git clone --recurse-submodules https://github.com/strata-org/Strata-Solidity.git
 # or, after a plain clone:
 git submodule update --init --recursive
 ```

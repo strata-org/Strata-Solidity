@@ -53,7 +53,7 @@ JVerify:         Java → javac plugin → Laurel (Java) ─┐
 Strata Solidity: Sol → solc → solast.py → Lean ────────┘
 ```
 
-Shared components: Laurel AST, HeapParameterization, LaurelToCoreTranslator, ModifiesClauses, Core VCG, SMT encoder, solver interface. A bug fix or optimization in any of these benefits both front-ends.
+Shared components: Laurel AST, HeapParameterization, the Laurel-to-Core schema pass, ModifiesClauses, Core VCG, SMT encoder, solver interface. A bug fix or optimization in any of these benefits both front-ends.
 
 ## Which Strata dialect do we target and why?
 
