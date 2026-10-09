@@ -418,12 +418,104 @@ def loopHead (cond : StmtExprMd) (breakLbl : String)
         (mkStmtExprMd (.Exit breakLbl)) none)])
   else (cond, [])
 
+/-- An integer type of solc: `uintN`, `intN`, `address` (as `uint160`). -/
+structure IntType where
+  signed : Bool
+  bits : Nat
+  deriving BEq
+
+/-- The integer type a solc type string names (`uint8`, `int256`,
+    `address payable`), if any: not a literal's `int_const`, `bytesN`, an
+    enum. -/
+def IntType.ofString? (ts : String) : Option IntType :=
+  let base := (ts.splitOn " ").headD ""
+  let bits (rest : String) : Option Nat := if rest.isEmpty then some 256 else rest.toNat?
+  if base == "address" then some ⟨false, 160⟩
+  else if base.startsWith "uint" then (bits (base.drop 4).toString).map (⟨false, ·⟩)
+  else if base.startsWith "int" then (bits (base.drop 3).toString).map (⟨true, ·⟩)
+  else none
+
+/-- The width in bytes of a solc `bytesN` type string (not dynamic `bytes`). -/
+def bytesWidth? (ts : String) : Option Nat :=
+  let base := (ts.splitOn " ").headD ""
+  if base.startsWith "bytes" then (base.drop 5).toString.toNat? else none
+
+/-- `e` truncated to `t` as the EVM does (two's complement): modulo
+    `2^bits`, re-centred for a signed type. `$intMod` is the prelude's
+    unchecked Euclidean modulus (no divisor check for the constant). -/
+def wrapTo (t : IntType) (e : StmtExprMd) : StmtExprMd :=
+  let lit (n : Int) := mkStmtExprMd (.LiteralInt n)
+  let mod (x : StmtExprMd) := mkStmtExprMd (mkCall "$intMod" [x, lit (2 ^ t.bits)])
+  if t.signed then
+    let half : Int := 2 ^ (t.bits - 1)
+    mkStmtExprMd (mkPrimOp .Sub [mod (mkStmtExprMd (mkPrimOp .Add [e, lit half])), lit half])
+  else mod e
+
+/-- The value `e`, of solc type `src?`, converted to the solc type `dst?`
+    as an explicit conversion does. Integers: a conversion that cannot lose
+    a value (to a type of the same signedness and at least the width, or
+    from unsigned to a wider signed type) is the identity, any other one
+    truncates (`uint8(300) == 44`, `int8(uint8(200)) == -56`); with an
+    unknown source, truncating is right for any integer. `bytesN` keeps its
+    high-order bytes: shortening divides, lengthening multiplies. Other
+    conversions (to or from a contract, `bytesN` to `uintN`, address to
+    `uint160`, …) keep the value. -/
+def convertValue (src? dst? : Option String) (e : StmtExprMd) : StmtExprMd :=
+  let lit (n : Int) := mkStmtExprMd (.LiteralInt n)
+  match dst? with
+  | none => e
+  | some dst =>
+    match IntType.ofString? dst, src? with
+    | some t, some src =>
+      match IntType.ofString? src with
+      | some s =>
+        let lossless := s.bits ≤ t.bits && (s.signed == t.signed || (!s.signed && s.bits < t.bits))
+        if lossless then e else wrapTo t e
+      | none => e
+    | some t, none => wrapTo t e
+    | none, _ =>
+      match bytesWidth? dst, src?.bind bytesWidth? with
+      | some n, some m =>
+        if n == m then e
+        else if n < m then mkStmtExprMd (mkCall "$intDiv" [e, lit (2 ^ (8 * (m - n)))])
+        else mkStmtExprMd (mkPrimOp .Mul [e, lit (2 ^ (8 * (n - m)))])
+      | _, _ => e
+
+/-- The kind (solc `nodeType`) of an expression node, as in `ExprTypes`. -/
+def exprKind : Solidity.node SourceRange → String
+  | .BinaryOperation .. => "BinaryOperation" | .UnaryOperation .. => "UnaryOperation"
+  | .FunctionCall .. => "FunctionCall" | .IndexAccess .. => "IndexAccess"
+  | .MemberAccess .. => "MemberAccess" | .Conditional .. => "Conditional"
+  | .Assignment .. => "Assignment" | .TupleExpression .. => "TupleExpression"
+  | .FunctionCallOptions .. => "FunctionCallOptions" | .Identifier .. => "Identifier"
+  | .Literal .. => "Literal" | _ => ""
+
 /-- Source range of an expression node (`none` for other node kinds). -/
 def exprRange : Solidity.node SourceRange → SourceRange
   | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
   | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
   | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
   | _ => .none
+
+/-- The conversion of `arg` (translated: `e`) by the conversion call at
+    `sr`, with solc's types (see `convertValue`). A conversion to an enum
+    reverts when the value is out of its range: the value is assumed in
+    range. -/
+def translateConversion (ctx : TransCtx) (sr : SourceRange) (arg : Solidity.node SourceRange)
+    (e : StmtExprMd) : StmtExprMd :=
+  let dst := ctx.typeAt? sr "FunctionCall"
+  let v := convertValue (ctx.typeAt? (exprRange arg) (exprKind arg)) dst e
+  let enumName := dst.bind fun d =>
+    if d.startsWith "enum " then ((d.drop 5).toString.splitOn ".").getLast? else none
+  match enumName.bind (fun n => ctx.enumDefs.lookup n) with
+  | some members =>
+    let tmp := s!"__enum{sr.start.byteIdx}"
+    let t := mkStmtExprMd (mkIdentifier tmp)
+    let inRange := mkStmtExprMd (mkPrimOp .And [
+      mkStmtExprMd (mkPrimOp .Leq [mkStmtExprMd (.LiteralInt 0), t]),
+      mkStmtExprMd (mkPrimOp .Lt [t, mkStmtExprMd (.LiteralInt members.length)])])
+    mkStmtExprMd (.Block [declareLocal tmp v, mkStmtExprMd (mkAssume inRange), t] none)
+  | none => v
 
 mutual
 
@@ -493,9 +585,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       return mkStmtExprMd (.LiteralString valueAnn.val)
     | k => throw (.unsupported s!"Literal kind: {k}")
 
-  | .BinaryOperation _ left right opAnn => do
+  | .BinaryOperation sr left right opAnn => do
     let l ← translateExpr ctx left
     let r ← translateExpr ctx right
+    -- The operands' type (solc's `commonType`), when it is an integer type.
+    let common := (ctx.typeAt? sr "BinaryOperation.common").bind IntType.ofString?
     -- solc's code generators evaluate the operands of a binary operator in
     -- different orders, so when one writes what the other reads the result
     -- depends on the compiler: rejected. (`&&` and `||` are ordered.)
@@ -505,8 +599,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "+" => .ok Operation.Add
       | "-" => .ok Operation.Sub
       | "*" => .ok Operation.Mul
-      | "/" => .ok Operation.Div
-      | "%" => .ok Operation.Mod
+      -- Solidity rounds a signed division toward zero (`-7 / 2 == -3`)
+      -- and gives `%` the sign of the dividend (`-7 % 2 == -1`): the
+      -- truncating operations. For unsigned operands they agree with the
+      -- Euclidean ones.
+      | "/" => .ok (if common.any (·.signed) then Operation.DivT else Operation.Div)
+      | "%" => .ok (if common.any (·.signed) then Operation.ModT else Operation.Mod)
       | "==" => .ok Operation.Eq
       | "!=" => .ok Operation.Neq
       | "<" => .ok Operation.Lt
@@ -523,9 +621,23 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<<" => return mkStmtExprMd (mkCall "bit_shl" [l, r])
       | ">>" => return mkStmtExprMd (mkCall "bit_shr" [l, r])
       | o => throw (.unsupported s!"Binary operator: {o}")
-    return mkStmtExprMd (mkPrimOp op [l, r])
+    let result := mkStmtExprMd (mkPrimOp op [l, r])
+    -- In `unchecked`, `+`, `-` and `*` wrap around instead of reverting.
+    -- (Checked arithmetic stays unbounded: a result out of range reverts,
+    -- and an execution that continues with it only adds behaviours.)
+    match common with
+    | some t =>
+      if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then return wrapTo t result
+      else return result
+    | none => return result
 
-  | .UnaryOperation _ sub opAnn prefixAnn => do
+  | .UnaryOperation usr sub opAnn prefixAnn => do
+    -- In `unchecked`, `++`, `--` and `-` wrap around within the operand's
+    -- type instead of reverting.
+    let wrap (e : StmtExprMd) : StmtExprMd :=
+      match ctx.isInsideUnchecked, (ctx.typeAt? usr "UnaryOperation").bind IntType.ofString? with
+      | true, some t => wrapTo t e
+      | _, _ => e
     if ["++", "--", "delete"].contains opAnn.val then
       if let some d := storageRefTarget? ctx sub then
         throw (.unsupported s!"writing through the storage reference `{d}`")
@@ -553,8 +665,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let read := keys.foldl (fun acc k => mkStmtExprMd (mkCall "select" [acc, k])) rootExpr
         let old := s!"__old{off}"
         let oldVar := mkStmtExprMd (mkIdentifier old)
-        let newVal := mkStmtExprMd (mkPrimOp (if opAnn.val == "++" then .Add else .Sub)
-          [oldVar, mkStmtExprMd (.LiteralInt 1)])
+        let newVal := wrap (mkStmtExprMd (mkPrimOp (if opAnn.val == "++" then .Add else .Sub)
+          [oldVar, mkStmtExprMd (.LiteralInt 1)]))
         let updateExpr ← buildNestedUpdate rootExpr keys newVal
         return mkStmtExprMd (.Block (binds ++ [
           declareLocal old read,
@@ -562,13 +674,22 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           if prefixAnn.val == "true" then newVal else oldVar]) none)
     let subExpr ← translateExpr ctx sub
     -- Laurel's native `++`/`--` (on a variable or field): prefix yields the
-    -- new value and postfix the old one, as in Solidity (`x = i++`).
+    -- new value and postfix the old one, as in Solidity (`x = i++`). In
+    -- `unchecked`, the same with the new value wrapped.
     let incrDecr (mode : IncrDecrMode) (op : IncrDecrOp) : StmtExprMd :=
-      mkStmtExprMd (.IncrDecr mode op (toAssignTarget subExpr))
+      if ctx.isInsideUnchecked && ((ctx.typeAt? usr "UnaryOperation").bind IntType.ofString?).isSome then
+        let old := s!"__old{usr.start.byteIdx}"
+        let oldVar := mkStmtExprMd (mkIdentifier old)
+        let newVal := wrap (mkStmtExprMd (mkPrimOp (if op matches .Incr then .Add else .Sub)
+          [oldVar, mkStmtExprMd (.LiteralInt 1)]))
+        mkStmtExprMd (.Block [declareLocal old subExpr,
+          mkStmtExprMd (.Assign [toAssignTarget subExpr] newVal),
+          if mode matches .Pre then subExpr else oldVar] none)
+      else mkStmtExprMd (.IncrDecr mode op (toAssignTarget subExpr))
     if prefixAnn.val == "true" then
       match opAnn.val with
       | "!" => return mkStmtExprMd (mkPrimOp .Not [subExpr])
-      | "-" => return mkStmtExprMd (mkPrimOp .Neg [subExpr])
+      | "-" => return wrap (mkStmtExprMd (mkPrimOp .Neg [subExpr]))
       | "~" => return mkStmtExprMd (mkCall "bit_not" [subExpr])
       | "++" => return incrDecr .Pre .Incr
       | "--" => return incrDecr .Pre .Decr
@@ -624,14 +745,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | none => pure args
       return mkStmtExprMd (mkCall (s!"{structName}_constructor") orderedArgs)
     | "typeConversion" =>
-      -- Type conversion: address(0), uint256(x), etc.
-      -- Phase 1: identity cast (all integers are TInt)
-      -- TODO: Preserve target type name as metadata/annotation so Phase 3
-      -- bitvector work can identify conversion sites without re-parsing.
+      -- Type conversion: address(0), uint256(x), uint8(x), … (see
+      -- `translateConversion`).
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-      match args with
-      | [arg] => return arg
-      | _ => throw (.typeError "Type conversion expects exactly one argument")
+      match args, argsSeq.val.toList with
+      | [arg], [argNode] => return translateConversion ctx sr argNode arg
+      | _, _ => throw (.typeError "Type conversion expects exactly one argument")
     | _ =>
     -- Regular function call (kind = "functionCall")
     match fnExpr with
@@ -758,11 +877,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         return mkStmtExprMd (mkCall memberAnn.val (base :: args))
     | .ElementaryTypeNameExpression _ typeNameAnn =>
-      -- Type conversion: address(0), uint256(x), etc. → pass through the argument
+      -- Type conversion: address(0), uint256(x), … (see `translateConversion`)
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-      match args with
-      | [arg] => return arg  -- identity cast for Phase 1 (all integers are TInt)
-      | _ => throw (.typeError s!"Type cast {typeNameAnn.val}() expects exactly one argument")
+      match args, argsSeq.val.toList with
+      | [arg], [argNode] => return translateConversion ctx sr argNode arg
+      | _, _ => throw (.typeError s!"Type cast {typeNameAnn.val}() expects exactly one argument")
     | _ =>
       throw (.unsupported "a call of this expression")
 
@@ -884,7 +1003,30 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- silently make every later obligation on the path hold.
       throw (.unsupported "tuple expressions with several components are not supported here")
 
-  | .Assignment _ lhs rhs opAnn => do
+  | .Assignment asr lhs rhs opAnn => do
+    -- `x op= y`: `x op y`, with the target's type for the signedness of
+    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*`.
+    let target := (ctx.typeAt? asr "Assignment").bind IntType.ofString?
+    let signed := target.any (·.signed)
+    let compound (cur rhs : StmtExprMd) : Except TranslationError StmtExprMd := do
+      let arith (op : Operation) : StmtExprMd :=
+        let e := mkStmtExprMd (mkPrimOp op [cur, rhs])
+        match target with
+        | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then wrapTo t e else e
+        | none => e
+      match opAnn.val with
+      | "=" => pure rhs
+      | "+=" => pure (arith .Add)
+      | "-=" => pure (arith .Sub)
+      | "*=" => pure (arith .Mul)
+      | "/=" => pure (arith (if signed then .DivT else .Div))
+      | "%=" => pure (arith (if signed then .ModT else .Mod))
+      | "&=" => pure (mkStmtExprMd (mkCall "bit_and" [cur, rhs]))
+      | "|=" => pure (mkStmtExprMd (mkCall "bit_or" [cur, rhs]))
+      | "^=" => pure (mkStmtExprMd (mkCall "bit_xor" [cur, rhs]))
+      | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [cur, rhs]))
+      | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [cur, rhs]))
+      | o => throw (.unsupported s!"Assignment operator: {o}")
     if let some d := storageRefTarget? ctx lhs then
       throw (.unsupported s!"writing through the storage reference `{d}`")
     let rhsExpr ← translateExpr ctx rhs
@@ -907,19 +1049,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       let readExpr := idxExprs.foldl (fun acc idx =>
         mkStmtExprMd (mkCall "select" [acc, idx])) rootExpr
       -- Compute the value to store
-      let rhs' ← match opAnn.val with
-        | "=" => pure rhsExpr
-        | "+=" => pure (mkStmtExprMd (mkPrimOp .Add [readExpr, rhsExpr]))
-        | "-=" => pure (mkStmtExprMd (mkPrimOp .Sub [readExpr, rhsExpr]))
-        | "*=" => pure (mkStmtExprMd (mkPrimOp .Mul [readExpr, rhsExpr]))
-        | "/=" => pure (mkStmtExprMd (mkPrimOp .Div [readExpr, rhsExpr]))
-        | "%=" => pure (mkStmtExprMd (mkPrimOp .Mod [readExpr, rhsExpr]))
-        | "&=" => pure (mkStmtExprMd (mkCall "bit_and" [readExpr, rhsExpr]))
-        | "|=" => pure (mkStmtExprMd (mkCall "bit_or" [readExpr, rhsExpr]))
-        | "^=" => pure (mkStmtExprMd (mkCall "bit_xor" [readExpr, rhsExpr]))
-        | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [readExpr, rhsExpr]))
-        | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [readExpr, rhsExpr]))
-        | o => throw (.unsupported s!"Assignment operator: {o}")
+      let rhs' ← compound readExpr rhsExpr
       -- Build nested update: for m[k1][k2] = v, produce
       --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
       let updateExpr ← buildNestedUpdate rootExpr idxExprs rhs'
@@ -954,19 +1084,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- `x op= f()`: the target is read after the right-hand side runs.
     let (binds, rhsExpr) := if opAnn.val == "=" || !hasEffects rhsExpr then ([], rhsExpr) else
       ([declareLocal rhsVar rhsExpr], mkStmtExprMd (mkIdentifier rhsVar))
-    let rhs' ← match opAnn.val with
-      | "=" => pure rhsExpr
-      | "+=" => pure (mkStmtExprMd (mkPrimOp .Add [lhsExpr, rhsExpr]))
-      | "-=" => pure (mkStmtExprMd (mkPrimOp .Sub [lhsExpr, rhsExpr]))
-      | "*=" => pure (mkStmtExprMd (mkPrimOp .Mul [lhsExpr, rhsExpr]))
-      | "/=" => pure (mkStmtExprMd (mkPrimOp .Div [lhsExpr, rhsExpr]))
-      | "%=" => pure (mkStmtExprMd (mkPrimOp .Mod [lhsExpr, rhsExpr]))
-      | "&=" => pure (mkStmtExprMd (mkCall "bit_and" [lhsExpr, rhsExpr]))
-      | "|=" => pure (mkStmtExprMd (mkCall "bit_or" [lhsExpr, rhsExpr]))
-      | "^=" => pure (mkStmtExprMd (mkCall "bit_xor" [lhsExpr, rhsExpr]))
-      | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [lhsExpr, rhsExpr]))
-      | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [lhsExpr, rhsExpr]))
-      | o => throw (.unsupported s!"Assignment operator: {o}")
+    let rhs' ← compound lhsExpr rhsExpr
     let assign := mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
     if binds.isEmpty && lengthAssign.isEmpty then return assign
     return mkStmtExprMd (.Block (binds ++ [assign] ++ lengthAssign) none)

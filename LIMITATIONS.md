@@ -80,9 +80,9 @@ This is not practical for verifying existing contracts but works for new designs
 | Frame conditions (mapping key) | Undeclared writes to other keys caught | ✅ |
 | Function call as mapping key | `data[keccak256(abi.encodePacked(a, b))]` | ✅ |
 | `msg.sender`, `msg.value` | Used as keys or in expressions | ✅ |
-| `address(0)`, type casts | `address(expr)` treated as identity | ✅ |
+| `address(0)`, type conversions | Truncate as the EVM does (`uint8(x)`, `int8(u)`, `bytes4(h)` keeps the high bytes); widening keeps the value | ✅ |
 | `type(uint256).max/min` | Compile-time constants | ✅ |
-| Arithmetic | `+`, `-`, `*`, `/`, `%` in specs | ✅ |
+| Arithmetic | `+`, `-`, `*`, `/`, `%`; `unchecked` wraps; signed `/`, `%` round toward zero; constant `**` folded | ✅ (checked overflow is not modelled as a revert: properties relying on it may not be proven) |
 | Unary operators in specs | `!paused`, negative literals (`-887272`) | ✅ |
 | Named constants in specs | `requires status == NOT_ENTERED`, `modifies roles[DEFAULT_ADMIN_ROLE]` | ✅ |
 | Subdenominations | `1 ether`, `2 days` folded to base units | ✅ |
