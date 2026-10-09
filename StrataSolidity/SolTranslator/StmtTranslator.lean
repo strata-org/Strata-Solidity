@@ -496,7 +496,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       | _ => pure ()
     -- Sum axioms: for each mapping, assume the update axiom as a precondition.
     -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
-    let sumAxioms := if isPure || isView then [] else ctx.mappingStateVars.map fun name =>
+    let sumAxioms := if isPure || isView then [] else
+      (ctx.mappingStateVars.filter ctx.summedMappings.contains).map fun name =>
       let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
       let mVar := mkStmtExprMd (mkIdentifier "m")
       let kVar := mkStmtExprMd (mkIdentifier "k")

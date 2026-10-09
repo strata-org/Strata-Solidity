@@ -75,6 +75,13 @@ private def annotationWarnings (source? : Option String) (declDesc : String)
           "each annotation must fit on one line" }
   unrecognized ++ misplaced ++ continued
 
+/-- Names `m` of every `sum(m)` in the annotations of a NatSpec comment. -/
+private def summedNames (doc : String) : List String :=
+  (strataAnnotationLines doc).flatMap fun line =>
+    let toks := SpecParser.tokenize line
+    (toks.zip (toks.drop 1 |>.zip (toks.drop 2 |>.zip (toks.drop 3)))).filterMap
+      fun (t0, t1, t2, t3) => if t0 == "sum" && t1 == "(" && t3 == ")" then some t2 else none
+
 /-- How warnings name a function. solc gives `receive` and `fallback` an
     empty name. -/
 private def functionDesc (kind name : String) : String :=
@@ -302,7 +309,13 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
+    -- Mappings some annotation of this contract sums.
+    let summed := (contractDocAnn :: nodesSeq.val.toList.filterMap fun
+        | .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _ => some doc
+        | .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc => some doc
+        | _ => none).flatMap (summedNames ·.val)
     let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs,
+                                   summedMappings := summed.eraseDups,
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with

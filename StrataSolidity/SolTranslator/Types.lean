@@ -139,6 +139,10 @@ structure TransCtx where
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
+  /-- Mappings whose `sum(...)` some annotation of the contract uses; only
+      these get the sum axioms (a quantified assumption that otherwise keeps
+      the solver from producing counterexamples). -/
+  summedMappings : List String := []
   /-- Modifier definitions: maps modifier name to its parameter names and
       the raw require statement DDM nodes extracted from the modifier body
       (pre-`_;` only). Translated in each function's context for correct
