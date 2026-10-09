@@ -342,7 +342,13 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       let toks := SpecParser.tokenize e
       if (toks.zip (toks.drop 1)).any (· == ("old", "(")) then
         throw (.unsupported s!"`old(...)` is not allowed in an invariant (`{e}`); use `ensures` for two-state properties")
-      parseSpecExpr e
+      let parsed ← parseSpecExpr e
+      -- Time and block values advance between transactions without any
+      -- function running, so an invariant over them is not preserved by
+      -- checking the contract's functions.
+      if let some (_, what, _) := envConstants.find? (readsConstant ·.1 parsed) then
+        throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
+      pure parsed
 
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
@@ -630,9 +636,43 @@ def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
       mkUninterpUnary "abi_encodeWithSelector",
       mkUninterpUnary "abi_encodeWithSignature",
       mkUninterpUnary "abi_decode",
-      mkUninterpUnary "address_balance",
       mkUninterpUnary "address_code", mkUninterpUnary "address_codehash"
     ]
+    -- Values that may differ at every read (`gasleft()`, balances, whether
+    -- a `send` succeeded): opaque procedures without an implementation,
+    -- so each call returns a fresh value; they change no state.
+    let envProcedure (name : String) (inputs : List Parameter) (type : HighTypeMd)
+        (range : Option (String × String)) : Procedure := {
+      name := name
+      inputs := inputs
+      outputs := [{ name := "result", type }]
+      preconditions := []
+      decreases := none
+      body := .Opaque
+        (match range with
+          | some (what, solName) =>
+            (mkRangeCond solName (mkStmtExprMd (mkIdentifier "result"))).toList.map fun c =>
+              { condition := c, summary := some s!"type range of {what} ({solName})" }
+          | none => [])
+        none [{ targets := [] }]
+    }
+    let envProcedures := [
+      envProcedure "gasleft" [] (mkHighTypeMd .TInt) (some ("gasleft()", "uint256")),
+      envProcedure "this_balance" [] (mkHighTypeMd .TInt) (some ("address(this).balance", "uint256")),
+      envProcedure "address_balance" [{ name := "a", type := mkHighTypeMd .TInt }]
+        (mkHighTypeMd .TInt) (some ("address(a).balance", "uint256")),
+      envProcedure "send_result" [] (mkHighTypeMd .TBool) none]
+    -- Transaction constants (`block.timestamp`, …) that some function reads.
+    let readsVar (name : String) (p : Procedure) : Bool :=
+      p.preconditions.any (readsConstant name ·.condition) ||
+      match p.body with
+      | .Opaque posts impl _ => posts.any (readsConstant name ·.condition) || impl.any (readsConstant name)
+      | .Transparent e => readsConstant name e
+      | .Abstract posts => posts.any (readsConstant name ·.condition)
+      | .External => false
+    let constants : List Constant := envConstants.filterMap fun (c, _, _) =>
+      if allProcedures.any (readsVar c) then some { name := mkIdent c, type := mkHighTypeMd .TInt }
+      else none
 
     -- Declare sum() for each mapping state variable that appears in a sum() call in specs.
     -- sum : Map[int, int] → int, with update axiom:
@@ -677,10 +717,10 @@ def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
       else none
 
     return ({
-      staticProcedures := uninterpFunctions ++ sumFunctions ++ allProcedures
+      staticProcedures := uninterpFunctions ++ envProcedures ++ sumFunctions ++ allProcedures
       staticFields := []
       types := allTypes
-      constants := []
+      constants
     }, allWarnings)
 
 /-- `solidityToLaurelWithWarnings` without the warnings. -/

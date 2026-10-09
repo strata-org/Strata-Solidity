@@ -607,10 +607,24 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc
       else acc ++ [(p, d)]) []
 
+    -- Transaction constants (`block.timestamp`, …) the function reads hold
+    -- values of their Solidity type.
+    let reads (c : String) : Bool :=
+      allPreconditions.any (readsConstant c ·.1) ||
+      match body with
+      | .Opaque posts impl _ => posts.any (readsConstant c ·.condition) || impl.any (readsConstant c)
+      | _ => false
+    let envRanges := envConstants.flatMap fun (c, what, solName) =>
+      if !reads c then [] else
+        let v := mkStmtExprMd (mkCall c [])
+        (mkRangeCond solName v).toList.map (·, s!"type range of {what} ({solName})") ++
+        if positiveEnvConstants.contains c then
+          [(mkStmtExprMd (mkPrimOp .Gt [v, mkStmtExprMd (.LiteralInt 0)]), s!"{what} is positive")]
+        else []
     -- Wrap preconditions in Condition records (new Laurel shape requires this).
     let allPreconditionConds : List Condition :=
       allPreconditions.map (fun (p, d) => { condition := p, summary := some d }) ++
-      typeRanges.map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
+      (typeRanges ++ envRanges).map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
 
     return {
       name := funcName

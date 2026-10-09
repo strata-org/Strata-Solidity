@@ -57,7 +57,6 @@ See [Current Limitations](./limitations.md) for the full list. Major gaps:
 
 - Struct fields accessed through mapping values
 - `old()` in loop invariants
-- `block.timestamp` modeling
 - External calls / cross-contract reasoning
 - Counterexample generation
 - `msg.sender` in constructors

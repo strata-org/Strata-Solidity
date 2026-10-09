@@ -425,6 +425,35 @@ def mkRangeCond (solName : String) (e : StmtExprMd) : Option StmtExprMd :=
       mkStmtExprMd (mkPrimOp .Leq [mkStmtExprMd (.LiteralInt lo), e]),
       mkStmtExprMd (mkPrimOp .Leq [e, mkStmtExprMd (.LiteralInt hi)])])
 
+/-- Values fixed for the whole transaction, read through `block.*`, `tx.*`
+    and `msg.sig`/`msg.data`: (Laurel constant, Solidity name, Solidity
+    type). As constants, two reads in one transaction agree; each function
+    that reads one assumes it holds a value of its type. -/
+def envConstants : List (String × String × String) := [
+  ("block_basefee", "block.basefee", "uint256"),
+  ("block_blobbasefee", "block.blobbasefee", "uint256"),
+  ("block_chainid", "block.chainid", "uint256"),
+  ("block_coinbase", "block.coinbase", "address"),
+  ("block_difficulty", "block.difficulty", "uint256"),
+  ("block_gaslimit", "block.gaslimit", "uint256"),
+  ("block_number", "block.number", "uint256"),
+  ("block_prevrandao", "block.prevrandao", "uint256"),
+  ("block_timestamp", "block.timestamp", "uint256"),
+  ("tx_gasprice", "tx.gasprice", "uint256"),
+  ("tx_origin", "tx.origin", "address"),
+  ("msg_sig", "msg.sig", "bytes4"),
+  ("msg_data", "msg.data", "bytes")]
+
+/-- Transaction constants assumed positive, as they are in any block a
+    transaction runs in. -/
+def positiveEnvConstants : List String := ["block_number", "block_timestamp"]
+
+/-- Whether `e` reads the constant `name` (a call without arguments). -/
+def readsConstant (name : String) (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .StaticCall id [] _ => id.text == name
+    | _ => false) e
+
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=

@@ -503,6 +503,10 @@ where
     | _ => return (base, tokens)
 
   parseAtom (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
+    -- `block.timestamp`, `tx.origin`, …: constants of the transaction
+    if let base :: "." :: member :: rest := tokens then
+      if let some (c, _) := envConstants.find? (·.2.1 == s!"{base}.{member}") then
+        return (mkStmtExprMd (mkCall c []), rest)
     match tokens with
     | [] => throw (.typeError "Unexpected end of spec expression")
     | "(" :: rest =>

@@ -551,8 +551,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (mkCall nameAnn.val args)
       | "gasleft" =>
-        -- gasleft() → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier "gasleft")
+        -- A fresh uint256 at every call (an opaque procedure, see
+        -- `envProcedures`).
+        return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
         -- selfdestruct(addr) → deprecated, model as no-op
         return mkStmtExprMd .Hole
@@ -619,13 +620,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
           | _ => throw (.typeError "push() expects at most one argument")
       else if memberAnn.val == "transfer" then do
-        -- payable(addr).transfer(amount) → no-op for verification
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd .Hole
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        -- payable(addr).transfer(amount) → no-op for verification; a
+        -- contract's `transfer(to, amount)` (ERC-20) → unknown result
+        if args.length == 1 then return mkStmtExprMd (.Block [] none)
+        else return mkStmtExprMd .Hole
       else if memberAnn.val == "send" then do
-        -- payable(addr).send(amount) → nondeterministic bool
+        -- payable(addr).send(amount) → a fresh bool: whether it succeeded
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (mkIdentifier "send_result")
+        return mkStmtExprMd (mkCall "send_result" [])
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
@@ -663,20 +666,17 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (mkIdentifier "msg_sender")
         else if memberAnn.val == "value" then
           return mkStmtExprMd (mkIdentifier "msg_value")
-        else if memberAnn.val == "data" then
-          -- msg.data → nondeterministic value (opaque calldata bytes)
-          return mkStmtExprMd (mkIdentifier "msg_data")
-        else if memberAnn.val == "sig" then
-          -- msg.sig → nondeterministic value (first 4 bytes of calldata)
-          return mkStmtExprMd (mkIdentifier "msg_sig")
+        else if let some (c, _) := envConstants.find? (·.2.1 == s!"msg.{memberAnn.val}") then
+          -- msg.data, msg.sig: constants of the transaction
+          return mkStmtExprMd (mkCall c [])
         else
           throw (.unsupported s!"msg.{memberAnn.val}")
-      else if baseNameAnn.val == "block" then
-        -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier s!"block_{memberAnn.val}")
-      else if baseNameAnn.val == "tx" then
-        -- tx.origin → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier s!"tx_{memberAnn.val}")
+      else if baseNameAnn.val == "block" || baseNameAnn.val == "tx" then
+        -- block.timestamp, tx.origin, …: constants of the transaction
+        let solName := s!"{baseNameAnn.val}.{memberAnn.val}"
+        match envConstants.find? (·.2.1 == solName) with
+        | some (c, _) => return mkStmtExprMd (mkCall c [])
+        | none => throw (.unsupported solName)
       else pure ()
       -- Enum member access: Status.Active → integer literal for position
       match ctx.enumDefs.lookup baseNameAnn.val with
@@ -708,14 +708,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _ => pure ()
       else pure ()
     | .FunctionCall _ (.ElementaryTypeNameExpression _ typeNameAnn) argsSeq _ _ =>
-      -- address(x).balance → StaticCall "address_balance" [x]
-      -- address(this).balance → Identifier "this_balance"
+      -- address(x).balance → address_balance(x), address(this).balance →
+      -- this_balance(): a fresh uint256 at every read (balances change
+      -- with transfers, which are not modelled)
       if typeNameAnn.val == "address" || typeNameAnn.val == "address payable" then
         if memberAnn.val == "balance" then
           match argsSeq.val.toList with
           | [.Identifier _ argAnn] =>
             if argAnn.val == "this" then
-              return mkStmtExprMd (mkIdentifier "this_balance")
+              return mkStmtExprMd (mkCall "this_balance" [])
             else do
               let addrExpr ← translateExpr ctx (.Identifier default argAnn)
               return mkStmtExprMd (mkCall "address_balance" [addrExpr])
