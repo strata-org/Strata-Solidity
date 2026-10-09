@@ -61,6 +61,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut udvtNames : List String := ctx.udvtNames
     let mut stateVarInvariants : List StrataAnnotation := []
     let mut constantDefs : List (String × StmtExprMd) := []
+    let mut fieldSolTypes : List (String × String) := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -98,7 +99,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           decreases := none
           body := .Abstract postcondsAsConds
         }]
-      | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           -- Collect @custom:strata invariant from state variable NatSpec
           let varAnnotations := parseStrataAnnotations docAnn.val
@@ -116,6 +117,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           else
             let field ← translateFieldDecl { ctx with enumDefs } "state variable" member
             fields := fields ++ [field]
+            if let .some_type_name _ tn := typeNameOpt then
+              fieldSolTypes := fieldSolTypes ++ [(nameAnn.val, (translateTypeNode { ctx with enumDefs } tn).solName)]
         else
           pure ()
       | .EnumDefinition _ eNameAnn eMembersSeq =>
@@ -198,7 +201,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
                  udvtNames := udvtNames
-                 constantDefs := constantDefs }
+                 constantDefs := constantDefs
+                 fieldSolTypes := fieldSolTypes }
     -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
     -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
     -- to avoid ambiguity in files with multiple contracts.
@@ -291,7 +295,12 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     -- which Laurel lowers to an uninterpreted function of the inputs. This
     -- gives the solver functional consistency (same inputs → same output)
     -- but no other axioms. A bodiless procedure would instead be havocked
-    -- independently at every call.
+    -- independently at every call. The hole is taken modulo 2^256, so the
+    -- result is a uint256 value like the Solidity result it stands for
+    -- (otherwise the solver could pick negative "hashes").
+    -- `$intMod` is the prelude's unchecked modulus: no `divisor is non-zero`
+    -- obligation for the constant 2^256.
+    let uint256Hole := mkStmtExprMd (mkCall "$intMod" [mkStmtExprMd .Hole, mkStmtExprMd (.LiteralInt (2 ^ 256))])
     let mkUninterpBinary (name : String) : Procedure := {
       name := name
       inputs := [{ name := "a", type := mkHighTypeMd .TInt },
@@ -299,7 +308,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Transparent (mkStmtExprMd (.Hole))
+      body := .Transparent uint256Hole
     }
     let mkUninterpUnary (name : String) : Procedure := {
       name := name
@@ -307,7 +316,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Transparent (mkStmtExprMd (.Hole))
+      body := .Transparent uint256Hole
     }
     let mkUninterpN (name : String) (n : Nat) : Procedure := {
       name := name
@@ -316,7 +325,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Transparent (mkStmtExprMd (.Hole))
+      body := .Transparent uint256Hole
     }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
