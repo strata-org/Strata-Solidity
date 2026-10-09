@@ -413,8 +413,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<=" => .ok Operation.Leq
       | ">" => .ok Operation.Gt
       | ">=" => .ok Operation.Geq
-      | "&&" => .ok Operation.And
-      | "||" => .ok Operation.Or
+      -- Short-circuit: the right operand is evaluated only if needed, so
+      -- its effects (calls, checks) happen only on those paths.
+      | "&&" => .ok Operation.AndThen
+      | "||" => .ok Operation.OrElse
       | "&" => return mkStmtExprMd (mkCall "bit_and" [l, r])
       | "|" => return mkStmtExprMd (mkCall "bit_or" [l, r])
       | "^" => return mkStmtExprMd (mkCall "bit_xor" [l, r])

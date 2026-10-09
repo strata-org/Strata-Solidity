@@ -359,7 +359,7 @@ where
     match rest with
     | "||" :: rest' =>
       let (rhs, rest'') ← parseOr rest'
-      return (mkStmtExprMd (mkPrimOp .Or [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .OrElse [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseAnd (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -367,7 +367,7 @@ where
     match rest with
     | "&&" :: rest' =>
       let (rhs, rest'') ← parseAnd rest'
-      return (mkStmtExprMd (mkPrimOp .And [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .AndThen [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseComparison (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
