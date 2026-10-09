@@ -287,8 +287,11 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     let allMappingNames := allMappingNames.eraseDups
 
     -- Declare uninterpreted functions used by the translator.
-    -- These are abstract procedures with no body, giving the solver
-    -- functional consistency (same inputs → same output) but no other axioms.
+    -- Each is a transparent procedure whose body is a deterministic hole,
+    -- which Laurel lowers to an uninterpreted function of the inputs. This
+    -- gives the solver functional consistency (same inputs → same output)
+    -- but no other axioms. A bodiless procedure would instead be havocked
+    -- independently at every call.
     let mkUninterpBinary (name : String) : Procedure := {
       name := name
       inputs := [{ name := "a", type := mkHighTypeMd .TInt },
@@ -296,7 +299,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let mkUninterpUnary (name : String) : Procedure := {
       name := name
@@ -304,7 +307,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let mkUninterpN (name : String) (n : Nat) : Procedure := {
       name := name
@@ -313,7 +316,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
