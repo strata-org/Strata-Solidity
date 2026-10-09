@@ -646,8 +646,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     match componentsSeq.val.toList with
     | [inner] => translateExpr ctx inner
     | _ =>
-      -- Multi-component tuples (e.g., (a, b)) — model as nondeterministic
-      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+      -- A multi-component tuple as a value (`return (a, b)`, `(a, b) = …`)
+      -- is not supported. It must not become `assume false`, which would
+      -- silently make every later obligation on the path hold.
+      throw (.unsupported "tuple expressions with several components are not supported here")
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
@@ -1084,11 +1086,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .RevertStatement _ _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops).
-  -- Unrecognized statement nodes are treated as unconditional aborts: assume(false).
-  | _ =>
-    match translateExpr ctx n with
-    | .ok e => return e
-    | .error _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+  -- A statement that cannot be translated is an error: treating it as an
+  -- unconditional abort (`assume false`) would silently make every later
+  -- obligation on the path hold.
+  | _ => translateExpr ctx n
 
 end
 

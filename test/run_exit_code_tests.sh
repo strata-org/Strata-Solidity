@@ -51,6 +51,7 @@ FIXTURES=(
   "$SCRIPT_DIR/examples/ignored_annotations.sol|1|ignored annotations under --strict|--strict"
   "$SCRIPT_DIR/examples/loop_invariant.sol|1|unknown under --strict|--strict"
   "$PROJECT_DIR/StrataSolidityTest/Solidity/tests/test_assert_fail.sol|1|fail under --strict --json|--strict --json"
+  "$PROJECT_DIR/StrataSolidityTest/Solidity/tests/test_tuple_value.sol|1|untranslatable tuple is an error, not assume false"
 )
 
 echo "---- Exit-code contract sub-stage (REQ-PBT-007) ----"
