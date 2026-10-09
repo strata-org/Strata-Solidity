@@ -149,6 +149,38 @@ def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List 
     (named.map fun (x, e) => declareLocal x e,
      named.map fun (x, _) => mkStmtExprMd (mkIdentifier x))
 
+/-- The variables a translated expression may write (`x` for a local or
+    mapping, `#f` for the field `f` of the contract, `#*` for any field: a
+    call of a mutating internal function, which takes `self`), and those it
+    reads. Translator temporaries (`__…`) are not counted. -/
+def writesAndReads (ctx : TransCtx) (e : StmtExprMd) : List String × List String :=
+  let target : Variable → List String
+    | .Local id => if id.text.startsWith "__" then [] else [id.text]
+    | .Field _ f => [s!"#{f.text}"]
+    | _ => []
+  foldStmtExpr (fun n (w, r) => match n.val with
+    | .Assign targets _ => (w ++ targets.flatMap (target ·.val), r)
+    | .IncrDecr _ _ t => (w ++ target t.val, r)
+    | .StaticCall callee args _ =>
+      let isSelf (a : StmtExprMd) : Bool := match a.val with
+        | .Var (.Local id) => id.text == "self"
+        | _ => false
+      let readOnly := match ctx.functionSigs.lookup ((callee.text.drop (ctx.contractName.length + 1)).toString) with
+        | some sig => sig.isView || sig.isPure
+        | none => false
+      if args.any isSelf && !readOnly then (w ++ ["#*"], r) else (w, r)
+    | .Var v => (w, r ++ target v)
+    | _ => (w, r)) ([], []) e
+
+/-- Whether one operand writes something the other may read (`f() + x`
+    where `f` writes `x`, `++a + a`). -/
+def operandsConflict (ctx : TransCtx) (l r : StmtExprMd) : Bool :=
+  let (wl, rl) := writesAndReads ctx l
+  let (wr, rr) := writesAndReads ctx r
+  let hits (ws rs : List String) := ws.any fun w =>
+    rs.contains w || (w == "#*" && rs.any (·.startsWith "#")) || (w.startsWith "#" && rs.contains "#*")
+  hits wl rr || hits wr rl
+
 /-- Where an operation is not modelled (an event, an Ether transfer, a
     low-level call), its arguments still run: those with effects (`x++`, an
     internal call), each bound to a local `<pre>_<i>`, in order, before
@@ -182,6 +214,10 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
     (dests : Option (List (AstNode Variable)) := none)
     : Except TranslationError StmtExprMd := do
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  -- The order in which solc evaluates arguments is unspecified too.
+  for (a, i) in args.zipIdx do
+    if (args.drop (i + 1)).any (operandsConflict ctx a ·) then
+      throw (.unsupported s!"the arguments of `{callee}`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
   -- User arguments, each memory-array argument followed by its length.
   let mut userArgs : List StmtExprMd := []
   for ((node, arg), i) in (argNodes.zip args).zipIdx do
@@ -429,6 +465,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .BinaryOperation _ left right opAnn => do
     let l ← translateExpr ctx left
     let r ← translateExpr ctx right
+    -- solc's code generators evaluate the operands of a binary operator in
+    -- different orders, so when one writes what the other reads the result
+    -- depends on the compiler: rejected. (`&&` and `||` are ordered.)
+    if opAnn.val != "&&" && opAnn.val != "||" && operandsConflict ctx l r then
+      throw (.unsupported s!"the operands of `{opAnn.val}`: one changes a variable the other reads, and solc's evaluation order of operands differs between its code generators")
     let op ← match opAnn.val with
       | "+" => .ok Operation.Add
       | "-" => .ok Operation.Sub
