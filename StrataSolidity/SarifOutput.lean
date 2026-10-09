@@ -29,70 +29,95 @@ private def mkRule (id desc : String) : Json :=
     ("shortDescription", Json.mkObj [("text", Json.str desc)])
   ]
 
-private def ruleDefinitions : Array Json := #[
-  mkRule "strata/ensures-fail" "Postcondition violation",
-  mkRule "strata/requires-fail" "Precondition violation",
-  mkRule "strata/invariant-fail" "Contract invariant violation",
-  mkRule "strata/assert-fail" "Assertion violation",
-  mkRule "strata/unknown" "Verification inconclusive"
+/-- Rule ids, in `ruleIndex` order. Indices 0–4 are kept stable for existing
+    consumers; new rules are appended. -/
+private def rules : Array (String × String) := #[
+  ("strata/ensures-fail", "Postcondition violation"),
+  ("strata/requires-fail", "Precondition violation"),
+  ("strata/invariant-fail", "Contract invariant violation"),
+  ("strata/assert-fail", "Assertion violation"),
+  ("strata/unknown", "Verification inconclusive"),
+  ("strata/frame-fail", "Modifies (frame) violation"),
+  ("strata/loop-invariant-fail", "Loop invariant violation"),
+  ("strata/division-by-zero", "Division or modulus by zero")
 ]
 
-private def classifyRule (label : String) : String × Nat :=
-  let l := label.toLower
-  if (l.splitOn "ensures").length > 1 then ("strata/ensures-fail", 0)
-  else if (l.splitOn "requires").length > 1 then ("strata/requires-fail", 1)
-  else if (l.splitOn "invariant").length > 1 then ("strata/invariant-fail", 2)
-  else if (l.splitOn "assert").length > 1 then ("strata/assert-fail", 3)
-  else ("strata/unknown", 4)
+private def ruleDefinitions : Array Json := rules.map fun (id, desc) => mkRule id desc
+
+private def ruleIdx (id : String) : Nat :=
+  (rules.findIdx? (·.1 == id)).getD 4
+
+/-- What kind of property an obligation checks. Uses the property summary
+    the translator and Laurel attach (`ensures …`, `invariant #n`,
+    `modifies frame (…)`, `precondition`, …), falling back to the label for
+    obligations that carry none (loop invariants, user `assert`s). -/
+private def classifyRule (vcr : VCResult) : String × Nat :=
+  let summary := (vcr.obligation.metadata.getPropertySummary.getD "").toLower
+  let label := vcr.obligation.label.toLower
+  let has (s sub : String) := (s.splitOn sub).length > 1
+  let id :=
+    if summary.startsWith "ensures" then "strata/ensures-fail"
+    else if summary.startsWith "invariant" then "strata/invariant-fail"
+    else if summary.startsWith "modifies" then "strata/frame-fail"
+    -- Call-site checks of a callee's preconditions, including those of its
+    -- modifiers and the translator's `axiom`s.
+    else if ["requires", "precondition", "modifier precondition", "axiom"].any (fun (p : String) => summary.startsWith p) then
+      "strata/requires-fail"
+    -- Laurel's checks of its division and modulus.
+    else if summary == "divisor is non-zero" || summary == "modulus is non-zero" then
+      "strata/division-by-zero"
+    else if has label "loopinv" then "strata/loop-invariant-fail"
+    else "strata/assert-fail"
+  (id, ruleIdx id)
 
 private def simpleHash (s : String) : String :=
   let h := s.foldl (fun acc c => acc * 31 + c.toNat) 7
   toString h
 
-/-- Classify a VC outcome into pass | fail | unknown for SARIF reporting.
-    See Core.Verifier predicates for the full pass/fail classification. -/
+/-- Verdict for SARIF reporting. Uses the same predicates as the CLI's text
+    and JSON output (`VCResult.isSuccess` / `isFailure`), so all formats
+    agree. Solver or encoding errors are reported as failures: nothing was
+    proven. -/
 private inductive Verdict where
   | pass
   | fail
   | unknown
+  | error (msg : String)
 
-private def classifyOutcome (out : Except VCError VCOutcome) : Verdict :=
-  match out with
-  | .error _ => .fail  -- encoder/solver errors reported as failures
-  | .ok o =>
-    if VCOutcome.passAndReachable o then .pass
-    else if VCOutcome.alwaysFalseAndReachable o
-         || VCOutcome.canBeTrueOrFalseAndIsReachable o
-         || VCOutcome.canBeFalseAndIsReachable o then .fail
+private def classifyOutcome (vcr : VCResult) : Verdict :=
+  match vcr.outcome with
+  | .error e => .error (toString e)
+  | .ok _ =>
+    if vcr.isSuccess then .pass
+    else if vcr.isFailure then .fail
     else .unknown
 
-private def resultLevel (out : Except VCError VCOutcome) : String :=
-  match classifyOutcome out with
-  | .fail => "error"
+private def resultLevel : Verdict → String
+  | .fail | .error _ => "error"
   | .pass => "none"
   | .unknown => "warning"
 
-private def resultKind (out : Except VCError VCOutcome) : String :=
-  match classifyOutcome out with
-  | .fail => "fail"
+private def resultKind : Verdict → String
+  | .fail | .error _ => "fail"
   | .pass => "pass"
   | .unknown => "open"
 
-private def resultMessage (label : String) (out : Except VCError VCOutcome) : String :=
-  match out with
-  | .error e => s!"{label}: implementation error: {toString e}"
-  | .ok _ =>
-    match classifyOutcome out with
-    | .pass => s!"{label}: pass"
-    | .fail => s!"{label}: fail"
-    | .unknown => s!"{label}: unknown"
+/-- `<summary or label>: <verdict>`. -/
+private def resultMessage (vcr : VCResult) : Verdict → String :=
+  let name := vcr.obligation.metadata.getPropertySummary.getD vcr.obligation.label
+  fun
+  | .pass => s!"{name}: pass"
+  | .fail => s!"{name}: fail"
+  | .unknown => s!"{name}: unknown"
+  | .error e => s!"{name}: implementation error: {e}"
 
 private def vcResultToJson (vcr : VCResult) (sourceOpt : Option (String × String)) : Json :=
   let label := vcr.obligation.label
-  let (ruleId, ruleIdx) := classifyRule label
-  let level := resultLevel vcr.outcome
-  let kind := resultKind vcr.outcome
-  let msg := resultMessage label vcr.outcome
+  let (ruleId, ruleIdx) := classifyRule vcr
+  let verdict := classifyOutcome vcr
+  let level := resultLevel verdict
+  let kind := resultKind verdict
+  let msg := resultMessage vcr verdict
   let base : Array (String × Json) := #[
     ("ruleId", Json.str ruleId),
     ("ruleIndex", toJson ruleIdx),

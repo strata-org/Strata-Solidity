@@ -60,6 +60,8 @@ _SCHEMA_PATH = _THIS_DIR / "schemas" / "sarif-schema-2.1.0.json"
 _FIXTURES = [
     Path("StrataSolidityTest") / "Solidity" / "tests" / "test_require_assert.sol",
     Path("test") / "examples" / "b1_trivial.sol",
+    # Has failing obligations, so counterexample-bearing results are covered.
+    Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol",
 ]
 
 
@@ -170,3 +172,38 @@ def test_sarif_output_validates_against_schema(
 
     # Will raise jsonschema.ValidationError on any schema violation.
     jsonschema.validate(instance=payload, schema=sarif_schema)
+
+
+def _results(payload: dict) -> list[dict]:
+    return payload["runs"][0]["results"]
+
+
+def test_sarif_rule_index_points_at_rule_id() -> None:
+    """Every result's ``ruleIndex`` must name the rule its ``ruleId`` names."""
+    _require_built_binary()
+    _require_solc()
+    payload = _run_sarif(Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol")
+    rules = payload["runs"][0]["tool"]["driver"]["rules"]
+    for r in _results(payload):
+        assert rules[r["ruleIndex"]]["id"] == r["ruleId"], r
+
+
+def test_sarif_verdicts_agree_with_cli() -> None:
+    """Proven obligations are ``pass``, refuted ones ``fail``.
+
+    SARIF used to require a reachability check that is not run by default,
+    so every proven obligation was reported as ``open`` (unknown).
+    """
+    _require_built_binary()
+    _require_solc()
+
+    trivial = _results(_run_sarif(Path("test") / "examples" / "b1_trivial.sol"))
+    assert trivial and all(r["kind"] == "pass" for r in trivial), trivial
+    assert {r["ruleId"] for r in trivial} == {"strata/ensures-fail", "strata/frame-fail"}
+
+    failing = _results(_run_sarif(
+        Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol"))
+    failed = {(r["ruleId"], r["message"]["text"]) for r in failing if r["kind"] == "fail"}
+    assert ("strata/ensures-fail", "ensures res == a + b + 1: fail") in failed, failed
+    assert ("strata/invariant-fail", "invariant #1: fail") in failed, failed
+
