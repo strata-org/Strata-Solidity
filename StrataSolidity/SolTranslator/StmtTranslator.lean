@@ -538,13 +538,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
-        -- No body: use NatSpec invariants (rewrite state var refs)
-        let contractInvariants := if !checksInvariants then [] else
-          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
-        let invariantsAsConds : List Condition :=
-          contractInvariants.map fun p => { condition := p, summary := none }
-        pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
-          else .Abstract invariantsAsConds, contractInvariants)
+        -- No body (a virtual function without an implementation here, or
+        -- an interface's): an implementation may do anything a function of
+        -- its kind may. So no postconditions (its annotations are reported
+        -- as not checked), and a mutating one may change all of the
+        -- contract's state: its fields (`modifies self`) and its mapping
+        -- and array outputs, which are unconstrained.
+        let frame := if !isPure && !isView && hasNonMappingState && !isConstructor then
+            [mkStmtExprMd (mkIdentifier "self")]
+          else []
+        pure ([], [], .Opaque [] none [{ targets := frame }], [])
 
     -- Contract invariants as preconditions (see `isEntryPoint`). They
     -- reference the input state: mapping names are rewritten to `_in` form.
