@@ -206,6 +206,21 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
   | _ => return mkStmtExprMd (.Block [assign] none)
 
+
+/-- The loop condition and the statements to run at the top of each
+    iteration. Laurel lifts the effects of a condition (a call, `k++`, an
+    assignment, a division's check; see `hasEffects`) out of the loop,
+    evaluating them once before the first iteration, so a loop with such a
+    condition is translated as `while (true) { if (!cond) break; … }`,
+    which evaluates the condition at every iteration as Solidity does. -/
+def loopHead (cond : StmtExprMd) (breakLbl : String)
+    : StmtExprMd × List StmtExprMd :=
+  if hasEffects cond then
+    (mkStmtExprMd (.LiteralBool true),
+     [mkStmtExprMd (.IfThenElse (mkStmtExprMd (mkPrimOp .Not [cond]))
+        (mkStmtExprMd (.Exit breakLbl)) none)])
+  else (cond, [])
+
 /-- Source range of an expression node (`none` for other node kinds). -/
 def exprRange : Solidity.node SourceRange → SourceRange
   | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
@@ -914,9 +929,11 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
                               loopLabelCounter := n + 1 }
     let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    let (loopCond, guard) := loopHead condExpr breakLbl
     -- body wrapped in continue-labelled block; loop wrapped in break-labelled block
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock false)
+    let loopBody := if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none)
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     return mkStmtExprMd (.Block [whileStmt] (some breakLbl))
 
   | .DoWhileStatement _ cond body => do
@@ -944,8 +961,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
     let firstBody ← translateStmt bodyCtx body
     let firstBlock := mkStmtExprMd (.Block [firstBody] (some contLbl))
+    let (loopCond, guard) := loopHead condExpr breakLbl
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock false)
+    let loopBody := if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none)
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     return mkStmtExprMd (.Block [firstBlock, whileStmt] (some breakLbl))
 
   | .BreakStatement _ =>
@@ -999,11 +1018,19 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .ForStatement _ initOpt condOpt loopOpt body => do
     -- Desugar: for (init; cond; loop) body → { init; while (cond) { body; loop } }
     let mut stmts : List StmtExprMd := []
-    -- Init
+    -- Init. A variable it declares is a local for the condition, the body
+    -- and the increment (it shadows a state variable of the same name).
+    let mut ctx := ctx
     match initOpt with
     | .some_node _ initNode => do
       let s ← translateStmt ctx initNode
       stmts := [s]
+      match initNode with
+      | .VariableDeclarationStatement _ declsSeq _ =>
+        for d in declsSeq.val.toList do
+          if let .some_node _ (.VariableDeclaration _ nameAnn ..) := d then
+            ctx := { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+      | _ => pure ()
     | .missing_node _ => pure ()
     -- Condition (default to true if missing)
     let condExpr ← match condOpt with
@@ -1020,12 +1047,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- `continue` exits the body block but the increment still runs afterward.
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
     -- Loop body + increment
+    let (loopCond, guard) := loopHead condExpr breakLbl
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
         let loopStmt ← translateStmt bodyCtx loopNode
-        pure (mkStmtExprMd (.Block [contBlock, loopStmt] none))
-      | .missing_node _ => pure contBlock
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none loopBody false)
+        pure (mkStmtExprMd (.Block (guard ++ [contBlock, loopStmt]) none))
+      | .missing_node _ =>
+        pure (if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none))
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     stmts := stmts ++ [mkStmtExprMd (.Block [whileStmt] (some breakLbl))]
     return mkStmtExprMd (.Block stmts none)
 
