@@ -39,7 +39,8 @@ private def rules : Array (String × String) := #[
   ("strata/unknown", "Verification inconclusive"),
   ("strata/frame-fail", "Modifies (frame) violation"),
   ("strata/loop-invariant-fail", "Loop invariant violation"),
-  ("strata/division-by-zero", "Division or modulus by zero")
+  ("strata/division-by-zero", "Division or modulus by zero"),
+  ("strata/not-verified", "Annotation or function not verified")
 ]
 
 private def ruleDefinitions : Array Json := rules.map fun (id, desc) => mkRule id desc
@@ -154,9 +155,38 @@ private def vcResultToJson (vcr : VCResult) (sourceOpt : Option (String × Strin
     else base.push ("locations", Json.arr locations)
   Json.mkObj fields.toList
 
-/-- Convert an array of VCResults to a SARIF 2.1.0 JSON string. -/
-def toSarif (vcResults : Array VCResult) (sourceOpt : Option (String × String)) : String :=
-  let results := vcResults.map (vcResultToJson · sourceOpt)
+/-- A SARIF result for something the translator did not verify (see
+    `Strata.Solidity.TranslationWarning`), located at byte offset `start`. -/
+private def warningToJson (sourceOpt : Option (String × String))
+    (warning : String.Pos.Raw × String) : Json :=
+  let (start, message) := warning
+  let base : List (String × Json) := [
+    ("ruleId", Json.str "strata/not-verified"),
+    ("ruleIndex", toJson (ruleIdx "strata/not-verified")),
+    ("level", Json.str "warning"),
+    ("kind", Json.str "review"),
+    ("message", Json.mkObj [("text", Json.str message)])
+  ]
+  match sourceOpt with
+  | some (srcPath, srcText) =>
+    let pos := (Lean.FileMap.ofString srcText).toPosition start
+    Json.mkObj (base ++ [("locations", Json.arr #[Json.mkObj [
+      ("physicalLocation", Json.mkObj [
+        ("artifactLocation", Json.mkObj [("uri", Json.str srcPath)]),
+        ("region", Json.mkObj [
+          ("startLine", toJson pos.line),
+          ("startColumn", toJson (pos.column + 1))
+        ])
+      ])
+    ]])])
+  | none => Json.mkObj base
+
+/-- Convert an array of VCResults to a SARIF 2.1.0 JSON string. `warnings`
+    are (byte offset, message) pairs for unverified annotations/functions. -/
+def toSarif (vcResults : Array VCResult) (sourceOpt : Option (String × String))
+    (warnings : List (String.Pos.Raw × String) := []) : String :=
+  let results := vcResults.map (vcResultToJson · sourceOpt) ++
+    (warnings.map (warningToJson sourceOpt)).toArray
   let sarif := Json.mkObj [
     ("$schema", Json.str "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"),
     ("version", Json.str "2.1.0"),

@@ -62,6 +62,8 @@ _FIXTURES = [
     Path("test") / "examples" / "b1_trivial.sol",
     # Has failing obligations, so counterexample-bearing results are covered.
     Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol",
+    # Carries `strata/not-verified` results for ignored annotations.
+    Path("test") / "examples" / "ignored_annotations.sol",
 ]
 
 
@@ -207,3 +209,17 @@ def test_sarif_verdicts_agree_with_cli() -> None:
     assert ("strata/ensures-fail", "ensures res == a + b + 1: fail") in failed, failed
     assert ("strata/invariant-fail", "invariant #1: fail") in failed, failed
 
+
+def test_sarif_reports_unverified_annotations() -> None:
+    """Every warning the CLI prints appears as a ``strata/not-verified`` result."""
+    _require_built_binary()
+    _require_solc()
+    fixture = Path("test") / "examples" / "ignored_annotations.sol"
+    payload = _run_sarif(fixture)
+    unverified = [r for r in _results(payload) if r["ruleId"] == "strata/not-verified"]
+    text = subprocess.run(
+        ["bash", str(_STRATA_VERIFY), str((_PROJECT_ROOT / fixture).resolve())],
+        capture_output=True, text=True, cwd=str(_PROJECT_ROOT), check=False)
+    warnings = [l for l in text.stderr.splitlines() if ": warning: " in l]
+    assert warnings and len(unverified) == len(warnings), (unverified, warnings)
+    assert all(r["kind"] == "review" and r["locations"] for r in unverified), unverified

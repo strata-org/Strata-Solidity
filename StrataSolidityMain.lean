@@ -389,7 +389,8 @@ def main (args : List String) : IO Unit := do
           ]
           IO.println (toString pipeline)
         else if sarifMode then
-          IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt)
+          IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt
+            (warnings.map fun w => (w.range.start, w.message)))
         else if jsonMode then
           IO.println (formatJsonResults vcResults solSourceOpt)
         else
