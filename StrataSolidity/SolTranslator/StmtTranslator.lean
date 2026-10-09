@@ -57,9 +57,15 @@ def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtE
     invs.map (rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars [] · ctx.constantDefs)
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
-    Positional argument contract for non-pure functions (must match call site in translateExpr):
-      [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args_as_name_param...]
-    where `self` is present only if there are non-mapping state variables. -/
+    Inputs, in order (internal call sites must match, see
+    `translateInternalCall`): `self` and `<scalar>_in` for each scalar state
+    variable (non-pure functions of contracts with scalar state, not
+    constructors), `msg_sender` and `msg_value` (non-pure), each mapping or
+    array state variable (`<m>_in`, or `<m>` for view functions) with its
+    `_length` (non-pure, not constructors), then `<p>_param` for each user
+    parameter, followed by `<p>_length` for memory arrays. Outputs: the
+    declared returns, then the post-state of each mapping and array state
+    variable (mutating functions) or of every state variable (constructors). -/
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
