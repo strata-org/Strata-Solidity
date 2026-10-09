@@ -63,7 +63,7 @@ def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtE
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
+  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
@@ -71,6 +71,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                     else s!"{ctx.contractName}_{nameAnn.val}"
     let isPure := mutAnn.val == "pure"
     let isView := mutAnn.val == "view"
+    -- Contract invariants hold between transactions, i.e. at external entry
+    -- points: public and external functions, receive and fallback assume
+    -- them on entry (constructors establish them instead) and re-establish
+    -- them on exit (view functions cannot change state). Internal and
+    -- private helpers run in the middle of an entry point, where an
+    -- invariant may be temporarily broken, so they neither assume nor
+    -- re-establish it; the calling entry point checks it on exit.
+    let isEntryPoint := visAnn.val == "public" || visAnn.val == "external" ||
+      kindAnn.val == "receive" || kindAnn.val == "fallback"
+    let checksInvariants := !isPure && !isView && (isConstructor || isEntryPoint)
 
     -- Translate parameters, tracking Solidity types for bounds
     let mut inputs : List Parameter := []
@@ -333,7 +343,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView then [] else
+        let contractInvariants := if !checksInvariants then [] else
           resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         -- Generate frame conditions from @custom:strata modifies
         let natspecModifies := annotations.filterMap fun
@@ -454,19 +464,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
-        let contractInvariants := if isPure || isView then [] else
+        let contractInvariants := if !checksInvariants then [] else
           resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         let invariantsAsConds : List Condition :=
           contractInvariants.map fun p => { condition := p, summary := none }
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract invariantsAsConds, contractInvariants)
 
-    -- Reuse the already-translated contract invariants for preconditions.
-    -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
-    -- (Constructors establish the invariant; they don't assume it.)
-    -- Preconditions reference input state: rewrite mapping names to _in form.
+    -- Contract invariants as preconditions (see `isEntryPoint`). They
+    -- reference the input state: mapping names are rewritten to `_in` form.
     let rewriteMapNamesToIn := (rewriteMappingIdsToIn ctx.mappingStateVars · ctx.arrayStateVars)
-    let applicableInvariantPres := if isPure || isView || isConstructor then []
+    let applicableInvariantPres :=
+      if isPure || isConstructor || !isEntryPoint then []
+      -- View functions read mappings through their plain names (no `_in`).
+      else if isView then resolveInvariants ctx false ctx.contractInvariantNatspec
       else contractInvariants.map rewriteMapNamesToIn
     -- Collect modifier preconditions: for each applied modifier, translate its
     -- pre-_ require statement nodes in this function's context and add as assumes.
