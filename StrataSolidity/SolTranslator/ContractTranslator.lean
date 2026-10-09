@@ -129,6 +129,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       contractDocAnn
     let mut constantDefs : List (String × StmtExprMd) := []
     let mut fieldSolTypes : List (String × String) := []
+    let mut stateVarInits : List (String × Solidity.node SourceRange) := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -188,6 +189,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
             fields := fields ++ [field]
             if let .some_type_name _ tn := typeNameOpt then
               fieldSolTypes := fieldSolTypes ++ [(nameAnn.val, (translateTypeNode { ctx with enumDefs } tn).solName)]
+            if let .some_node _ valNode := valueOpt then
+              stateVarInits := stateVarInits ++ [(nameAnn.val, valNode)]
         else
           pure ()
       | .EnumDefinition _ eNameAnn eMembersSeq =>
@@ -292,7 +295,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  enumDefs := enumDefs
                  udvtNames := udvtNames
                  constantDefs := constantDefs
-                 fieldSolTypes := fieldSolTypes }
+                 fieldSolTypes := fieldSolTypes
+                 stateVarInits := stateVarInits }
     -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
     -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
     -- to avoid ambiguity in files with multiple contracts.

@@ -150,6 +150,9 @@ structure TransCtx where
   modifierDefs : List (String × List String × List (Solidity.node SourceRange)) := []
   /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
   fieldSolTypes : List (String × String) := []
+  /-- Initializers of (non-constant) state variables, in declaration order:
+      Solidity runs them before the constructor body. -/
+  stateVarInits : List (String × Solidity.node SourceRange) := []
   /-- Constant state variable definitions: maps constant name to its
       compile-time value expression for constant folding. -/
   constantDefs : List (String × StmtExprMd) := []

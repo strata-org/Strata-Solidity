@@ -326,6 +326,33 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             if ctx.arrayStateVars.contains field.name.text then
               preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{field.name.text}_length"))]
                 (mkStmtExprMd (.LiteralInt 0)))]
+          -- 2b. State-variable initializers (`uint256 x = 1000;`), in
+          -- declaration order, before the body. One the translator cannot
+          -- express gives the variable an unknown value (a sound
+          -- over-approximation) instead of failing the whole file: one it
+          -- cannot translate, a string or `bytes` value (modelled as an
+          -- integer, so `"Token"` would not type-check), or one reading
+          -- `this`. An array's length is that of an inline array literal,
+          -- unknown for other initializers.
+          let fresh := mkStmtExprMd (.Hole (deterministic := false))
+          for (name, initNode) in ctx.stateVarInits do
+            let opaqueType := ["string", "bytes"].contains ((ctx.fieldSolTypes.lookup name).getD "")
+            let value := match translateExpr bodyCtx initNode with
+              | .ok v =>
+                if opaqueType || anyStmtExpr (fun e => match e.val with
+                    | .LiteralString _ => true
+                    | .Var (.Local id) => id.text == "this"
+                    | _ => false) v then fresh
+                else v
+              | .error _ => fresh
+            preamble := preamble ++
+              [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value)]
+            if ctx.arrayStateVars.contains name then
+              let len := match initNode with
+                | .InlineArrayExpression _ elems => mkStmtExprMd (.LiteralInt elems.val.size)
+                | _ => fresh
+              preamble := preamble ++
+                [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))] len)]
         -- 3. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           for name in ctx.mappingStateVars do
