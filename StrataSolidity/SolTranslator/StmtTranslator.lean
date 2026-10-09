@@ -446,7 +446,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- summaries every `ensures` of a function would collapse into one
         -- reported obligation.
         let mkPost (summary : String) (p : StmtExprMd) : Condition :=
-          { condition := withSourceRange ctx fnSr p, summary := some summary }
+          { condition := withSourceRangeDeep ctx fnSr (withSourceRange ctx fnSr p),
+            summary := some summary }
         let specConds := (specPostExprs.zip natspecPosts).map fun (p, src) =>
           mkPost s!"ensures {src}" p
         let frameConds := frameConditions.map fun (name, p) =>
@@ -457,6 +458,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- One unguarded frame group. An empty target list means "changes
         -- nothing" (`ModifiesGroup.nothingChanges`); Laurel reads an empty
         -- *group* list as unframed, so the group must always be present.
+        let specPreExprs := specPreExprs.zip (natspecPres.map (s!"requires {·}"))
         pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
@@ -510,14 +512,23 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           (mkStmtExprMd (mkForall { name := "v", type := mkHighTypeMd .TInt }
             (mkStmtExprMd (mkPrimOp .Eq [sumUpdated, rhs])))))))
 
-    let allPreconditions := preconditions ++ modifierPres ++ specPres ++ applicableInvariantPres ++ sumAxioms
+    -- Every precondition gets a distinct summary. Laurel names the check
+    -- it emits at each call site after the callee's precondition, and Core
+    -- merges results that share (summary, location): without summaries all
+    -- checks at one call site would collapse into a single "precondition".
+    let described (what : String) (ps : List StmtExprMd) : List (StmtExprMd × String) :=
+      ps.map fun p => (p, s!"{what} {Std.format p}")
+    let allPreconditions :=
+      described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
+      specPres ++ described "invariant" applicableInvariantPres ++ described "axiom" sumAxioms
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
-    let allPreconditions := allPreconditions.foldl (fun acc p =>
-      if acc.any (fun q => toString (repr p.val) == toString (repr q.val)) then acc else acc ++ [p]) []
+    let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
+      if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc
+      else acc ++ [(p, d)]) []
 
     -- Wrap preconditions in Condition records (new Laurel shape requires this).
     let allPreconditionConds : List Condition :=
-      allPreconditions.map fun p => { condition := p, summary := none }
+      allPreconditions.map fun (p, d) => { condition := p, summary := some d }
 
     return {
       name := funcName

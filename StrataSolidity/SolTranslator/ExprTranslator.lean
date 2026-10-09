@@ -121,10 +121,27 @@ def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val :
     return mkStmtExprMd (mkCall "update" [rootExpr, idx, innerUpdate])
 
 
+/-- Source range of an expression node (`none` for other node kinds). -/
+def exprRange : Solidity.node SourceRange → SourceRange
+  | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
+  | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
+  | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
+  | _ => .none
+
 mutual
 
-/-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr. -/
+/-- Translate a Solidity DDM node (expression context) to Laurel StmtExpr.
+    The result carries the node's source range unless the translation chose
+    one itself: Laurel locates the checks it generates for an expression
+    (callee preconditions at a call, `divisor is non-zero` at a division)
+    at that expression's node. -/
 partial def translateExpr (ctx : TransCtx) (n : Solidity.node SourceRange)
+    : Except TranslationError StmtExprMd := do
+  let e ← translateExprAt ctx n
+  if e.source == .unknown then pure (withSourceRange ctx (exprRange n) e) else pure e
+
+/-- `translateExpr` without attaching the node's source range. -/
+partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>

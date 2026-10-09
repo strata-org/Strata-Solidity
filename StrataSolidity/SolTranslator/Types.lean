@@ -5,6 +5,7 @@
 -/
 
 import StrataLaurel.Implementation.LaurelAST
+import StrataLaurel.Implementation.MapStmtExpr
 import StrataLaurel.Implementation.LaurelCompilationPipeline
 import StrataLaurel.Implementation.Grammar.ConcreteToAbstractTreeTranslator
 import Strata.Languages.Core.Verifier
@@ -255,6 +256,13 @@ def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtE
   else match ctx.uri with
   | some uri => { e with source := sourceRangeToFileRange uri sr }
   | none => e
+
+/-- Give every node of `e` without a source location the range `sr`. Used
+    for spec clauses parsed from NatSpec text, whose sub-expressions have no
+    locations of their own, so the checks Laurel generates for them (such as
+    `divisor is non-zero` for a division inside an `ensures`) are located. -/
+def withSourceRangeDeep (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtExprMd :=
+  mapStmtExpr (fun n => if n.source == .unknown then withSourceRange ctx sr n else n) e
 
 /-! ## Translation Error -/
 
