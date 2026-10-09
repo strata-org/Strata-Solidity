@@ -326,7 +326,7 @@ The isolated upstream checkout and its Strata-DDM dependency resolved and built.
 - `c9975ac6` Lean 4.31 support; the toolchain moved v4.29.1 → v4.31.0.
 - `c5f14dff`, `a2c484c3` Laurel moved under a single `StrataLaurel` module root.
 - `6b5b132b` Strata Core decoupled from the Laurel layer.
-- `0dd1b9c7` (breaking) source names may not start with `$` (`validateNoDollarNames`). StrataSolidity emits none today; generated names must stay `$`-free.
+- `0dd1b9c7` (breaking) source names may not start with `$` (`validateNoDollarNames`). Solidity identifiers may (OpenZeppelin v5's ERC-7201 pointer is named `$`), so the frontend renames a leading `$` to `strata$dollar$` in the AST and in specs.
 - `02f873ed` (breaking) every type argument must be inferable at resolution or it is reported. Relevant to `mapConst(...)`, whose key type comes from the expected type.
 - `10914f1f` internal function declarations lowered to lambda values.
 
@@ -371,6 +371,13 @@ Commits on `strata-update`, each building on its own:
 3. `fix`: uninterpreted helpers (`keccak256`, `abi_encode*`, `bit_*`, …) become transparent procedures with a deterministic `Hole` body. A bodiless procedure is now havocked per call, which broke `keccak256(d) == keccak256(d)`.
 4. `fix`: every postcondition gets a distinct summary (`ensures <clause>`, `modifies frame (<var>)`, `invariant #n`). Otherwise the new VC merging collapses all postconditions of a function into one result.
 5. `fix`: passing VCs located in the Laurel prelude (four `$div`/`$mod` wrapper checks) are not reported; failing ones still are.
+6. `docs`: this document.
+7. `fix`: expression nodes carry their solc range, because Laurel now locates callee-precondition and divisor checks at the expression; every precondition gets a distinct summary, because Laurel names call-site checks after it and Core would otherwise merge all checks of one call.
+8. `fix`: prelude VCs are recognized by the prelude's file name, not by a non-`.sol` path (which hid user obligations under `--sol-source`).
+9. `fix`: `--pipeline-json` matches each obligation's `.smt2` file exactly (labels with parentheses never matched).
+10. `fix`: a leading `$` in Solidity identifiers is renamed (see `0dd1b9c7`).
+
+Items 7–10 were found by an adversarial review after the first port; per-fixture counts stayed identical throughout, which is why the corpus comparison alone did not catch them.
 
 Semantic subtleties to keep in mind:
 
