@@ -16,35 +16,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # --strict exits 1 unless every obligation is proven and every
+      # annotation was verified; the SARIF is written either way.
       - name: Run StrataSolidity
         run: |
-          Tools/Solidity/scripts/strata-verify.sh contracts/Token.sol --sarif > results.sarif
+          Tools/Solidity/scripts/strata-verify.sh contracts/Token.sol --sarif --strict > results.sarif
 
       - name: Upload SARIF
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
 ```
 
-Verification failures appear as code scanning alerts on the pull request, with source locations pointing to the failing specification.
+Without `--strict`, `--sarif` exits 0 whatever the results: the
+machine-readable formats leave the verdict to their consumer.
 
-## Standard-JSON mode
+## Results
 
-For integration with existing Solidity toolchains, use the solc-compatible standard-JSON interface:
+Every obligation is one SARIF result, located at the annotation, statement
+or expression it checks:
 
-```bash
-echo '{
-  "language": "Solidity",
-  "sources": {
-    "Token.sol": { "content": "..." }
-  },
-  "settings": {
-    "modelChecker": { "engine": "strata" }
-  }
-}' | python3 -m src.strata_verify
-```
+| Outcome | `kind` | `level` |
+|---|---|---|
+| proven | `pass` | `none` |
+| refuted (with a counterexample when z3 produces one) | `fail` | `error` |
+| unknown — neither proven nor refuted, including solver timeouts | `fail` | `warning` |
+| verification error (encoding error, solver crash), rule `strata/tool-error` | `fail` | `error` |
+| annotation or function not verified, rule `strata/not-verified` | `fail` | `warning` |
 
-Returns solc-compatible JSON with verification results in the `errors` array, making it a drop-in addition to existing build pipelines that already process solc output.
+The rule (`strata/ensures-fail`, `strata/requires-fail`,
+`strata/invariant-fail`, `strata/frame-fail`, `strata/loop-invariant-fail`,
+`strata/division-by-zero`, `strata/assert-fail`, …) names the kind of
+property; the message names the property itself (`ensures totalSupply ==
+old(totalSupply) + amount: fail`). `partialFingerprints.obligationId/v2`
+identifies a result across unrelated edits.
 
 ## VS Code
 
