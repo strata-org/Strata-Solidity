@@ -39,6 +39,14 @@ for sol in "$EXAMPLES_DIR"/*.sol; do
     # ...`, `total_in@3 = 0`) do not leak into the comparison.
     actual=$(grep -E "^(✅|❌|❓) (Passed|Failures|Unknown) \(|^[0-9]+ passed, [0-9]+ failed" \
         "$out_file" || true)
+    # A fixture that does not translate prints no summary, only an
+    # `Exception: …` line (stderr); keep it, so that such a fixture cannot
+    # match a golden recorded without one.
+    exception=$(grep '^Exception: ' "$err_file" | sed -E 's|[^ ]*/([^/ ]+\.sol)|\1|g' || true)
+    if [ -n "$exception" ]; then
+        actual="${actual:+$actual
+}$exception"
+    fi
     # Warnings about unverified annotations (stderr), with the directory
     # stripped from the `<path>:<line>:<col>:` prefix.
     actual_warnings=$(grep ': warning: ' "$err_file" | sed -E 's|^[^ ]*/([^/ ]+\.sol:)|\1|' || true)
