@@ -149,6 +149,18 @@ def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List 
     (named.map fun (x, e) => declareLocal x e,
      named.map fun (x, _) => mkStmtExprMd (mkIdentifier x))
 
+/-- Where an operation is not modelled (an event, an Ether transfer, a
+    low-level call), its arguments still run: those with effects (`x++`, an
+    internal call), each bound to a local `<pre>_<i>`, in order, before
+    `value` (the operation's result, if any). -/
+def withArgumentEffects (pre : String) (args : List StmtExprMd) (value : Option StmtExprMd)
+    : StmtExprMd :=
+  let effects := args.zipIdx.filterMap fun (e, i) =>
+    if hasEffects e then some (declareLocal s!"{pre}_{i}" e) else none
+  match effects, value with
+  | [], some v => v
+  | _, _ => mkStmtExprMd (.Block (effects ++ value.toList) none)
+
 /-- An internal call `f(args)` to a function with signature `sig`.
 
     The arguments follow the callee's input order exactly (see
@@ -637,19 +649,21 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | _ => throw (.typeError "push() expects at most one argument")
       else if memberAnn.val == "transfer" then do
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        let pre := s!"__arg{sr.start.byteIdx}"
         -- payable(addr).transfer(amount) → no-op for verification; a
         -- contract's `transfer(to, amount)` (ERC-20) → unknown result
-        if args.length == 1 then return mkStmtExprMd (.Block [] none)
-        else return mkStmtExprMd .Hole
+        if args.length == 1 then return withArgumentEffects pre args none
+        else return withArgumentEffects pre args (some (mkStmtExprMd .Hole))
       else if memberAnn.val == "send" then do
         -- payable(addr).send(amount) → a fresh bool: whether it succeeded
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (mkCall "send_result" [])
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
+          (some (mkStmtExprMd (mkCall "send_result" [])))
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd .Hole
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args (some (mkStmtExprMd .Hole))
       else do
         -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
         match baseNode with
@@ -1018,10 +1032,18 @@ where
     match initOpt with
     | .some_node _ init =>
       let e ← translateExpr ctx init
-      -- Its value is not modelled; an initializer with effects is rejected
-      -- rather than dropped.
-      if !(e.val matches .Hole ..) && hasEffects e then
-        throw (.unsupported "a tuple declaration whose initializer has effects (other than an internal call)")
+      -- The initializer's effects (a low-level call's arguments) run first;
+      -- its value is not modelled.
+      let unsupported : TranslationError :=
+        .unsupported "a tuple declaration whose initializer has effects (other than an internal call)"
+      let endsInHole (stmts : List StmtExprMd) : Bool :=
+        match stmts.getLast? with
+        | some last => (last.val matches .Hole ..)
+        | none => false
+      let effects ← match e.val with
+        | .Hole .. => pure []
+        | .Block stmts none => if endsInHole stmts then pure stmts.dropLast else throw unsupported
+        | _ => if hasEffects e then throw unsupported else pure []
       let slots := decls.filterMap fun
         | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
           some (nameAnn.val, match typeNameOpt with
@@ -1030,7 +1052,7 @@ where
         | _ => none
       let decls := slots.map fun (n, ty) =>
         mkStmtExprMd (mkLocalVar n ty (some (mkStmtExprMd (.Hole (deterministic := false)))))
-      return (decls, slots.map (·.1))
+      return (effects ++ decls, slots.map (·.1))
     | .missing_node _ => return ([], [])
 
 /-- Get loop invariants from context and translate the loop body.
@@ -1281,6 +1303,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .Assignment _ _ _ _ => translateExpr ctx n
 
   -- Events: emit is a no-op for verification (no state change).
+  -- Its arguments still run (`emit Bumped(nonce++)`).
+  | .EmitStatement sr (.FunctionCall _ _ argsSeq _ _) => do
+    let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+    return withArgumentEffects s!"__arg{sr.start.byteIdx}" args none
   | .EmitStatement _ _ => return mkStmtExprMd (.Block [] none)
 
   -- Revert: unconditional abort — assume(false) makes the path unreachable,
