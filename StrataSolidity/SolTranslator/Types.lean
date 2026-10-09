@@ -139,10 +139,11 @@ structure TransCtx where
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
-  /-- Modifier definitions: maps modifier name to list of raw require statement
-      DDM nodes extracted from the modifier body (pre-`_;` only).
-      Translated in each function's context for correct state var resolution. -/
-  modifierDefs : List (String × List (Solidity.node SourceRange)) := []
+  /-- Modifier definitions: maps modifier name to its parameter names and
+      the raw require statement DDM nodes extracted from the modifier body
+      (pre-`_;` only). Translated in each function's context for correct
+      state var resolution, with the parameters bound to the arguments. -/
+  modifierDefs : List (String × List String × List (Solidity.node SourceRange)) := []
   /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
   fieldSolTypes : List (String × String) := []
   /-- Constant state variable definitions: maps constant name to its

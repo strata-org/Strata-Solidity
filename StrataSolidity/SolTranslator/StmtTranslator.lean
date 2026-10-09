@@ -462,14 +462,27 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       else contractInvariants.map rewriteMapNamesToIn
     -- Collect modifier preconditions: for each applied modifier, translate its
     -- pre-_ require statement nodes in this function's context and add as assumes.
+    -- The modifier's parameters are bound to the invocation's arguments.
+    -- Like the function's own preconditions, these refer to its inputs
+    -- (`x_param`, `m_in`).
     let mut modifierPres : List StmtExprMd := []
     for modNode in modifiersSeq.val do
       match modNode with
-      | .ModifierInvocation _ modNameAnn _ =>
+      | .ModifierInvocation _ modNameAnn argsSeq =>
         match ctx.modifierDefs.lookup modNameAnn.val with
-        | some reqNodes =>
+        | some (params, reqNodes) =>
+          let args ← argsSeq.val.toList.mapM (translateExpr bodyCtx)
+          if args.length != params.length then
+            throw (.typeError s!"modifier `{modNameAnn.val}` takes {params.length} argument(s), given {args.length}")
+          let modCtx := { bodyCtx with localNames := bodyCtx.localNames ++ params }
+          let binding := params.zip args
           for reqNode in reqNodes do
-            let e ← translateExpr bodyCtx reqNode
+            let e ← translateExpr modCtx reqNode
+            let e := mapStmtExpr (fun n => match n.val with
+              | .Var (.Local id) => (binding.lookup id.text).getD n
+              | _ => n) e
+            let e := rewriteParamRefs (userParamInfo.map (·.1)) e
+            let e := if !isPure && !isView && !isConstructor then rewriteMapNamesToIn e else e
             modifierPres := modifierPres ++ [e]
         | none => pure ()
       | _ => pure ()

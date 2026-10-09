@@ -1,0 +1,1 @@
+unmodelled_modifier.sol:39:30: warning: modifier `nonReentrant` is only partly modelled: function `bump` is verified as if the modifier consisted of its `require`s before `_` alone (2 other statement(s) ignored)

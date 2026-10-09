@@ -193,15 +193,36 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
-    let mut modifierRequireNodes : List (String × List (Solidity.node SourceRange)) := []
+    let mut modifierRequireNodes : List (String × List String × List (Solidity.node SourceRange)) := []
+    -- Modifiers with statements that are not modelled, with how many.
+    let mut partialModifiers : List (String × Nat) := []
     for member in nodesSeq.val do
       match member with
-      | .ModifierDefinition _ modNameAnn _ bodyOpt =>
-        let reqStmts := match bodyOpt with
-          | .some_node _ (.Block _ stmtsSeq) =>
-            extractModifierRequires stmtsSeq.val.toList
+      | .ModifierDefinition _ modNameAnn paramsNode bodyOpt =>
+        let stmts := match bodyOpt with
+          | .some_node _ (.Block _ stmtsSeq) => stmtsSeq.val.toList
           | _ => []
-        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, reqStmts)]
+        let reqStmts := extractModifierRequires stmts
+        let params := match paramsNode with
+          | .ParameterList _ ps => ps.val.toList.filterMap fun
+            | .VariableDeclaration _ n .. => some n.val
+            | _ => none
+          | _ => []
+        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, params, reqStmts)]
+        -- Only the top-level `require`s before `_;` become preconditions of
+        -- the functions using the modifier; anything else (state writes,
+        -- statements after `_`, asserts, nested requires) is not modelled.
+        let isPlaceholder : Solidity.node SourceRange → Bool
+          | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val == "_"
+          | _ => false
+        let isRequire : Solidity.node SourceRange → Bool
+          | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) _ _ _) =>
+            nameAnn.val == "require"
+          | _ => false
+        let dropped := (stmts.takeWhile (!isPlaceholder ·)).filter (!isRequire ·) ++
+          (stmts.dropWhile (!isPlaceholder ·)).drop 1
+        if !dropped.isEmpty then
+          partialModifiers := partialModifiers ++ [(modNameAnn.val, dropped.length)]
       | _ => pure ()
 
     -- Pass 2: collect non-pure function names for internal call resolution
@@ -279,8 +300,15 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn _ => do
+      | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn fnModifiers => do
           let fnDesc := functionDesc fnKindAnn.val fnNameAnn.val
+          -- Each use of a partly modelled modifier is reported.
+          for inv in fnModifiers.val do
+            if let .ModifierInvocation invSr modName _ := inv then
+              if let some n := partialModifiers.lookup modName.val then
+                warnings := warnings ++ [{ range := invSr, message :=
+                  s!"modifier `{modName.val}` is only partly modelled: {fnDesc} is verified " ++
+                  s!"as if the modifier consisted of its `require`s before `_` alone ({n} other statement(s) ignored)" }]
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
             | _ => ""
