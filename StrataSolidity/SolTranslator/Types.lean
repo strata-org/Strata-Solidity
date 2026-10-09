@@ -462,6 +462,14 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
   | .TMap _ v => mkStmtExprMd (mkCall "mapConst" [defaultValueForType v])
   | _ => mkStmtExprMd (.LiteralInt 0)
 
+/-- The zero value a Solidity variable of this type starts with, for the
+    types whose zero value Laurel can express: integers, `bool`, mappings
+    and arrays (other types, such as structs, have none here). -/
+def zeroValue? (ty : HighTypeMd) : Option StmtExprMd :=
+  match ty.val with
+  | .TInt | .TBool | .TMap .. => some (defaultValueForType ty)
+  | _ => none
+
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
   let ident := mkStmtExprMd (mkIdentifier paramName)

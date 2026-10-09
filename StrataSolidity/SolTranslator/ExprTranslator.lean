@@ -1158,6 +1158,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         if storageLocAnn.val == "storage" then
           throw (.internalError "storage ref should be handled by translateBlockStmts")
         else
+          -- Without an initializer, a Solidity local starts at zero.
+          let initVal := initVal <|> zeroValue? solTy.highType
           return mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal)
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")

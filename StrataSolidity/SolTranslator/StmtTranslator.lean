@@ -343,6 +343,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let b := mkStmtExprMd (.Block bodyStmts none)
         -- Build preamble: local copies of user params + mapping init assigns
         let mut preamble : List StmtExprMd := []
+        -- 0. Return variables start at their type's zero value, as in
+        -- Solidity (a function that never assigns one returns zero).
+        for out in baseOutputs do
+          if let some v := zeroValue? out.type then
+            preamble := preamble ++ [mkStmtExprMd (.Assign
+              [toAssignTarget (mkStmtExprMd (mkIdentifier out.name.text))] v)]
         -- 1. Local copies of user-provided parameters (Solidity params are mutable)
         for (name, ty) in userParamInfo do
           preamble := preamble ++ [mkStmtExprMd (mkLocalVar name ty
