@@ -12,6 +12,7 @@ import Strata.Languages.Core.Verifier
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
 import Strata.DL.Imperative.MetaData
+import Std.Data.HashMap
 
 /-!
 # Solidity AST → Laurel Translation
@@ -196,6 +197,14 @@ structure TransCtx where
       this holds the declared return's output-parameter name, and the
       translator desugars `return e` into `<name> := e; return`. -/
   valuedReturnTarget : Option String := none
+  /-- solc's type of each expression (see `SolcAst.ExprTypes`); empty when
+      the AST did not come from solc's JSON (the Ion frontend). -/
+  exprTypes : Std.HashMap (Nat × Nat × String) String := {}
+
+/-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
+    at `sr`, if known. -/
+def TransCtx.typeAt? (ctx : TransCtx) (sr : SourceRange) (kind : String) : Option String :=
+  ctx.exprTypes.get? (sr.start.byteIdx, sr.stop.byteIdx, kind)
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, source := .unknown }

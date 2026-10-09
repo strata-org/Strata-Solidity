@@ -224,16 +224,18 @@ def main (args : List String) : IO Unit := do
     -- in-Lean frontend (solc --standard-json → typed AST, no Ion round
     -- trip); `.solidity.st.ion` inputs use the Ion reader.
     let useSolFrontend := args.contains "--from-sol" || filePath.endsWith ".sol"
-    let cmd ←
+    -- solc's JSON also gives the type of every expression; the Ion
+    -- frontend has none.
+    let (cmd, exprTypes) ←
       if useSolFrontend then do
-        match ← Strata.Solidity.SolcAst.parseFile ⟨filePath⟩ with
-        | .ok cmd => pure cmd
+        match ← Strata.Solidity.SolcAst.parseFileWithTypes ⟨filePath⟩ with
+        | .ok r => pure r
         | .error e => failRun sarifMode jsonMode pipelineJson filePath s!"Failed to parse {filePath}: {e}"
       else do
         let cmds ← readSolidityStrata' filePath
         if cmds.size != 1 then
           exitFailure s!"Expected exactly one SourceUnit command, got {cmds.size}"
-        pure cmds[0]!
+        pure (cmds[0]!, {})
     let solSourceOpt ← match solSourcePath with
       | some p => do
         try
@@ -258,7 +260,7 @@ def main (args : List String) : IO Unit := do
 
     -- Translate Solidity AST → Laurel
     match Strata.Solidity.solidityToLaurelWithWarnings cmd (some sourcePathForMetadata)
-        (solSourceOpt.map (·.2)) with
+        (solSourceOpt.map (·.2)) exprTypes with
     | .error e =>
       failRun sarifMode jsonMode pipelineJson filePath s!"Solidity to Laurel translation failed: {e}"
     | .ok (laurelProgram, translationWarnings) =>

@@ -796,6 +796,20 @@ private def errIs (j : Json) (pred : ConvertError → Bool) : Bool :=
   (jsonOf r#"{"src":"0:0:0"}"#)
   (fun | .missingNodeType => true | _ => false)
 
+/-! ### Expression types -/
+
+-- `uint8 a + 1`: the operation's type, its operands' common type, and the
+-- operands' own types, keyed by (start, stop, kind).
+private def binOpTypes : ExprTypes := collectExprTypes (jsonOf r#"{"nodeType":"BinaryOperation","src":"10:5:0",
+  "operator":"+","typeDescriptions":{"typeString":"uint8"},"commonType":{"typeString":"uint8"},
+  "leftExpression":{"nodeType":"Identifier","name":"a","src":"10:1:0","typeDescriptions":{"typeString":"uint8"}},
+  "rightExpression":{"nodeType":"Literal","value":"1","src":"14:1:0","typeDescriptions":{"typeString":"int_const 1"}}}"#)
+#guard binOpTypes.get? (10, 15, "BinaryOperation") == some "uint8"
+#guard binOpTypes.get? (10, 15, "BinaryOperation.common") == some "uint8"
+#guard binOpTypes.get? (10, 11, "Identifier") == some "uint8"
+#guard binOpTypes.get? (14, 15, "Literal") == some "int_const 1"
+#guard binOpTypes.get? (14, 15, "Identifier") == none
+
 end SolcAstParserTest.B2_1
 
 /-! #### `$` identifiers are renamed for Laurel -/

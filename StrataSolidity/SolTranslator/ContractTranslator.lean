@@ -538,8 +538,9 @@ def unattachedAnnotations (cmd : Solidity.Command SourceRange) (source : String)
     Pass `none` to skip metadata construction. -/
 def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
     (solFilePath : Option String := none) (source : Option String := none)
+    (exprTypes : Std.HashMap (Nat × Nat × String) String := {})
     : Except TranslationError (Laurel.Program × List TranslationWarning) := do
-  let ctx : TransCtx := { uri := solFilePath.map .file, source }
+  let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes }
   match cmd with
   | .SourceUnit _ nodesSeq => do
     let mut allProcedures : List Procedure := []
