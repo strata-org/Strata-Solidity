@@ -24,12 +24,16 @@ quantifiers are `StmtExpr.Quantifier mode param trigger body`.
 The match arms below pattern-match on the new shapes. Triggers are preserved
 unchanged through the rewriters. -/
 
-/-- Rewrite mapping identifiers to _in form (for invariant preconditions). -/
-partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtExprMd) : StmtExprMd :=
-  let go := rewriteMappingIdsToIn mappingStateVars
+/-- Rewrite mapping identifiers to _in form (for invariant preconditions),
+    and array lengths `name_length` to `name_length_in`. -/
+partial def rewriteMappingIdsToIn (mappingStateVars : List String) (expr : StmtExprMd)
+    (arrayStateVars : List String := []) : StmtExprMd :=
+  let go := (rewriteMappingIdsToIn mappingStateVars · arrayStateVars)
   match expr.val with
   | .Var (.Local name) =>
     if mappingStateVars.contains name.text then
+      { expr with val := mkIdentifier (name.text ++ "_in") }
+    else if arrayStateVars.any (s!"{·}_length" == name.text) then
       { expr with val := mkIdentifier (name.text ++ "_in") }
     else expr
   | .StaticCall callee args tys => { expr with val := .StaticCall callee (args.map go) tys }

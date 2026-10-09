@@ -42,6 +42,20 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
     { expr with val := mkExists param (rewriteParamRefs shadowed body) }
   | _ => expr
 
+/-- Resolve contract invariants for one function. Invariants are about
+    contract state, so they are resolved with no locals in scope: a
+    parameter or named return that shadows a state variable must not
+    capture the invariant (it would turn into an assumption about an
+    argument). Constructors read and write state through their output
+    parameters, which carry the state variables' names, so only named
+    constants are folded there. -/
+def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtExprMd)
+    : List StmtExprMd :=
+  if isConstructor then
+    invs.map (rewriteStateVarRefs [] [] [] · ctx.constantDefs)
+  else
+    invs.map (rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars [] · ctx.constantDefs)
+
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
     Positional argument contract for non-pure functions (must match call site in translateExpr):
       [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args_as_name_param...]
@@ -319,10 +333,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView then []
-          else if isConstructor then ctx.contractInvariantNatspec else ctx.contractInvariantNatspec.map rewriteSV
-        -- Rewrite invariant expressions: user parameter names → _param names
-        let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
+        let contractInvariants := if isPure || isView then [] else
+          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         -- Generate frame conditions from @custom:strata modifies
         let natspecModifies := annotations.filterMap fun
           | .modifies vars => some vars | _ => none
@@ -442,12 +454,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
-        let specLocalNames := userParamInfo.map (·.1) ++
-          (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := fun e =>
-          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
-        let contractInvariants := if isPure || isView then []
-          else ctx.contractInvariantNatspec.map rewriteSV
+        let contractInvariants := if isPure || isView then [] else
+          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         let invariantsAsConds : List Condition :=
           contractInvariants.map fun p => { condition := p, summary := none }
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
@@ -457,7 +465,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
     -- (Constructors establish the invariant; they don't assume it.)
     -- Preconditions reference input state: rewrite mapping names to _in form.
-    let rewriteMapNamesToIn := rewriteMappingIdsToIn ctx.mappingStateVars
+    let rewriteMapNamesToIn := (rewriteMappingIdsToIn ctx.mappingStateVars · ctx.arrayStateVars)
     let applicableInvariantPres := if isPure || isView || isConstructor then []
       else contractInvariants.map rewriteMapNamesToIn
     -- Collect modifier preconditions: for each applied modifier, translate its

@@ -291,7 +291,13 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- to avoid ambiguity in files with multiple contracts.
     let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
-    let natspecInvariantExprs ← natspecInvariantStrs.mapM parseSpecExpr
+    let natspecInvariantExprs ← natspecInvariantStrs.mapM fun e => do
+      -- An invariant relates the state at every function boundary to itself;
+      -- there is no "old" state to refer to.
+      let toks := SpecParser.tokenize e
+      if (toks.zip (toks.drop 1)).any (· == ("old", "(")) then
+        throw (.unsupported s!"`old(...)` is not allowed in an invariant (`{e}`); use `ensures` for two-state properties")
+      parseSpecExpr e
 
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
