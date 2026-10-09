@@ -328,38 +328,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           | .modifies vars => some vars | _ => none
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
-            -- Parse comma-separated variable names from modifies annotation.
-            -- Each entry may be "varName" or "varName[keyExpr]". Split on
-            -- commas ONLY at bracket/paren depth 0 — key expressions may
-            -- themselves contain commas (e.g.
-            -- `positions[keccak256(abi.encodePacked(a, b, c))]`).
-            let splitTopLevel (s : String) : List String := Id.run do
-              let mut out : List String := []
-              let mut cur : String := ""
-              let mut depth : Nat := 0
-              for c in s.toList do
-                if c == '[' || c == '(' then
-                  depth := depth + 1; cur := cur.push c
-                else if c == ']' || c == ')' then
-                  depth := depth - 1; cur := cur.push c
-                else if c == ',' && depth == 0 then
-                  out := out ++ [cur]; cur := ""
-                else
-                  cur := cur.push c
-              if !cur.toSlice.trimAscii.isEmpty then out := out ++ [cur]
-              return out
-            let modifiedEntries := natspecModifies.foldl (fun acc s =>
-              acc ++ ((splitTopLevel s).map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- Split entries into (baseName, optionalKeyExpr) pairs. Only the
-            -- FIRST '[' separates base from key; the key runs to the final ']'.
-            let parseEntry (entry : String) : String × Option String :=
-              match entry.toList.findIdx? (· == '[') with
-              | none => (SolcAst.mangleName entry.trimAscii.toString, none)
-              | some i =>
-                let base := SolcAst.mangleName (entry.take i).trimAscii.toString
-                let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
-                (base, some keyPart.trimAscii.toString)
-            let parsedEntries := modifiedEntries.map parseEntry
+            let parsedEntries := natspecModifies.flatMap SpecParser.modifiesEntries
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
             -- For key-scoped modifies (e.g., balances[msg.sender]), add:
@@ -376,17 +345,19 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               else
                 -- Collect all key expressions for this mapping
                 let keyExprs := entries.filterMap fun (_, k) => k
+                -- A key that cannot be read leaves the mapping unframed (the
+                -- caller warns about it).
                 let parsedKeys := keyExprs.filterMap fun keyStr =>
                   match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
-                  | .ok (keyExpr, _) =>
+                  | .ok (keyExpr, []) =>
                     -- Fold constant state vars (e.g. `modifies roles[DEFAULT_ADMIN_ROLE]`)
                     -- and resolve scalar state vars in key position; then rename
                     -- user params to their `_param` form.
                     let keyExpr := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars
                       (userParamInfo.map (·.1) ++ ["msg_sender", "msg_value"]) keyExpr ctx.constantDefs
                     some (rewriteParamRefs userParamNames keyExpr)
-                  | .error _ => none
-                if parsedKeys.isEmpty then none
+                  | _ => none
+                if parsedKeys.length != keyExprs.length then none
                 else
                   let kVar := mkStmtExprMd (mkIdentifier "__k")
                   let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }

@@ -60,6 +60,16 @@ private def resolvePosition (vcr : VCResult) (sourceOpt : Option (String × Stri
       | none => none
   | none => none
 
+/-- Print a translation warning to stderr as `<file>:<line>:<col>: warning: …`. -/
+private def printWarning (sourcePath : String) (sourceOpt : Option (String × String))
+    (w : Strata.Solidity.TranslationWarning) : IO Unit := do
+  let loc := match sourceOpt with
+    | some (_, text) =>
+      let pos := (Lean.FileMap.ofString text).toPosition w.range.start
+      s!"{sourcePath}:{pos.line}:{pos.column + 1}"
+    | none => sourcePath
+  IO.eprintln s!"{loc}: warning: {w.message}"
+
 /-- Format counterexample for plain-text output. -/
 private def formatPlainCounterexample (cex : LExprModel) : String :=
   if cex.isEmpty then ""
@@ -158,6 +168,7 @@ def main (args : List String) : IO Unit := do
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
   let pipelineJson := args.contains "--pipeline-json"
+  let strict := args.contains "--strict"
   -- Array theory is the default, as in Laurel's own verification entry
   -- points: maps become SMT arrays instead of quantified select/update
   -- axioms, which z3 (with MBQI off) often cannot refute. Without it,
@@ -173,7 +184,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol", "--strict"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
@@ -214,10 +225,19 @@ def main (args : List String) : IO Unit := do
         | none => filePath
 
     -- Translate Solidity AST → Laurel
-    match Strata.Solidity.solidityToLaurel cmd (some sourcePathForMetadata) with
+    match Strata.Solidity.solidityToLaurelWithWarnings cmd (some sourcePathForMetadata)
+        (solSourceOpt.map (·.2)) with
     | .error e =>
       exitFailure s!"Solidity to Laurel translation failed: {e}"
-    | .ok laurelProgram =>
+    | .ok (laurelProgram, translationWarnings) =>
+      -- Report everything the translator did not verify, so nothing is
+      -- dropped silently. Under `--strict` they make the run fail.
+      let bodyWarnings := match solSourceOpt with
+        | some (_, text) => Strata.Solidity.unattachedAnnotations cmd text
+        | none => []
+      let warnings := (translationWarnings ++ bodyWarnings).toArray.qsort
+        (fun a b => a.range.start.byteIdx < b.range.start.byteIdx) |>.toList
+      for w in warnings do printWarning sourcePathForMetadata solSourceOpt w
       let laurelStr := toString (f!"{laurelProgram}")
       if verbose then
         IO.println "\n==== Laurel Program ===="
@@ -376,7 +396,12 @@ def main (args : List String) : IO Unit := do
           IO.println "\n==== Verification Results ===="
           let (s, hasFailures) := formatVcResultsWithLocation vcResults solSourceOpt
           IO.println s
+          if !warnings.isEmpty then
+            IO.println s!"⚠️  {warnings.length} annotation(s) or function(s) not verified (see warnings)"
           if hasFailures then IO.Process.exit 1
+        if strict && !warnings.isEmpty then
+          IO.eprintln "error: --strict: some annotations or functions were not verified"
+          IO.Process.exit 1
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json]"
+    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json] [--strict]"
     IO.Process.exit 1

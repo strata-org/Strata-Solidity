@@ -69,6 +69,9 @@ structure StorageAlias where
     and struct field orders for argument reordering. -/
 structure TransCtx where
   uri : Option Uri
+  /-- Text of the source file, used to locate individual NatSpec annotation
+      lines (each spec clause then reports its own line). -/
+  source : Option String := none
   /-- Map from struct name to ordered list of (field name, field type) pairs. -/
   structFields : List (String × List (String × HighType)) := []
   /-- Enclosing contract name (for constructor naming). -/
@@ -288,6 +291,13 @@ def TranslationError.toString : TranslationError → String
 
 instance : ToString TranslationError where
   toString := TranslationError.toString
+
+/-- Something in the source that the translator does not verify: an
+    annotation it cannot use, or a function it skips. Reported to the user so
+    that nothing is dropped silently. -/
+structure TranslationWarning where
+  range : SourceRange
+  message : String
 
 /-! ## Type Translation -/
 
