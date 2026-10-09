@@ -336,7 +336,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     -- sum : Map[int, int] → int, with update axiom:
     --   forall m : Map[int,int], k : int, v : int ::
     --     sum(update(m, k, v)) == sum(m) - select(m, k) + v
-    -- Also: sum(const(0)) == 0  (empty mapping has zero sum)
+    -- Also: sum(mapConst(0)) == 0  (empty mapping has zero sum)
     let sumFunctions := allMappingNames.filterMap fun name =>
       if true then  -- declare sum for all mappings; unused ones don't affect z3
         let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
@@ -357,8 +357,8 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
             (mkStmtExprMd (mkForall
               { name := "v", type := mkHighTypeMd .TInt }
               (mkStmtExprMd (mkPrimOp .Eq [sumUpdated, rhs])))))))
-        -- sum(const(0)) == 0
-        let emptyMap := mkStmtExprMd (mkCall "const" [mkStmtExprMd (.LiteralInt 0)])
+        -- sum(mapConst(0)) == 0
+        let emptyMap := mkStmtExprMd (mkCall "mapConst" [mkStmtExprMd (.LiteralInt 0)])
         let sumEmpty := mkStmtExprMd (mkCall s!"sum_{name}" [emptyMap])
         let emptyAxiom := mkStmtExprMd (mkPrimOp .Eq [sumEmpty, mkStmtExprMd (.LiteralInt 0)])
         some {

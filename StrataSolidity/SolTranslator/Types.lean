@@ -336,11 +336,11 @@ def SolType.isBytes (st : SolType) : Bool :=
   st.solName.startsWith "bytes"
 
 /-- Generate the Solidity default (zero) value for a given HighType.
-    Scalars get 0 or false; mappings get `const(defaultVal(valueType))`. -/
+    Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
   match ty.val with
   | .TBool => mkStmtExprMd (.LiteralBool false)
-  | .TMap _ v => mkStmtExprMd (mkCall "const" [defaultValueForType v])
+  | .TMap _ v => mkStmtExprMd (mkCall "mapConst" [defaultValueForType v])
   | _ => mkStmtExprMd (.LiteralInt 0)
 
 /-- Generate a non-negative precondition: param >= 0 -/
