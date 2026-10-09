@@ -971,20 +971,22 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
-  | .Return _ exprOpt =>
+  | .Return sr exprOpt =>
     match exprOpt with
     | .some_node _ expr => do
       let e ← translateExpr ctx expr
+      -- Located at the statement, so that the checks Laurel lifts out of
+      -- the expression (a callee's precondition, a divisor) are too.
       match ctx.valuedReturnTarget with
       | some outName =>
         -- The procedure has multiple output parameters (declared return +
         -- mapping-state outputs); Laurel's EliminateValueReturns rejects a
         -- valued `return` there. Desugar: `<out> := e; return`.
         return mkStmtExprMd (.Block [
-          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e),
+          withSourceRange ctx sr (mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e)),
           mkStmtExprMd (.Return none)] none)
       | none =>
-        return mkStmtExprMd (.Return (some e))
+        return withSourceRange ctx sr (mkStmtExprMd (.Return (some e)))
     | .missing_node _ =>
       return mkStmtExprMd (.Return none)
 
@@ -1136,7 +1138,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     stmts := stmts ++ [mkStmtExprMd (.Block [whileStmt] (some breakLbl))]
     return mkStmtExprMd (.Block stmts none)
 
-  | .VariableDeclarationStatement _ declsSeq initOpt => do
+  | .VariableDeclarationStatement declSr declsSeq initOpt => do
     -- Extract variable declarations
     let decls := declsSeq.val.toList
     match decls with
@@ -1160,7 +1162,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         else
           -- Without an initializer, a Solidity local starts at zero.
           let initVal := initVal <|> zeroValue? solTy.highType
-          return mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal)
+          -- Located at the statement (see `.Return`).
+          return withSourceRange ctx declSr (mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal))
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>

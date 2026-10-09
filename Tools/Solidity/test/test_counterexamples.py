@@ -58,3 +58,36 @@ def test_failures_have_counterexamples(fixture: str) -> None:
     assert failures, f"{fixture}: expected at least one failure\n{proc.stdout}"
     for name, model in failures:
         assert any(" = " in m for m in model), f"{fixture}: `{name}` has no counterexample"
+
+
+_LOCATED = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Loc {
+    uint256 public cap = 1000;
+    /// @custom:strata requires x > 10
+    function helper(uint256 x) internal pure returns (uint256) { return x; }
+    function viaInit(uint256 d) external pure returns (uint256) {
+        uint256 a = helper(2);
+        uint256 b = 10 / d;
+        return a + b;
+    }
+    function viaReturn(uint256 d) external pure returns (uint256) {
+        return helper(3) % d;
+    }
+    function frame() external { cap = 1; }
+}
+"""
+
+
+@pytest.mark.skipif(not _STRATA_BIN.exists(), reason="strataSolidity binary not built")
+def test_every_result_is_located(tmp_path: Path) -> None:
+    """Checks lifted out of initializers and `return` expressions, and heap
+    frames, are reported at a source line."""
+    path = tmp_path / "loc.sol"
+    path.write_text(_LOCATED)
+    proc = subprocess.run([str(_STRATA_BIN), str(path)], capture_output=True, text=True, timeout=600)
+    results = [l.strip() for l in proc.stdout.splitlines()
+               if l.startswith("  ") and not l.startswith("        ")]
+    assert len(results) == 5, proc.stdout
+    unlocated = [r for r in results if " at line " not in r]
+    assert not unlocated, unlocated

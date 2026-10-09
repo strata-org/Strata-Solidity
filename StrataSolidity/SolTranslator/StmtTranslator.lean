@@ -388,8 +388,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                     | _ => false) v then fresh
                 else v
               | .error _ => fresh
+            -- Located at the initializer (its checks too, see `.Return`).
             preamble := preamble ++
-              [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value)]
+              [withSourceRange ctx (exprRange initNode)
+                (mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value))]
             if ctx.arrayStateVars.contains name then
               let len := match initNode with
                 | .InlineArrayExpression _ elems => mkStmtExprMd (.LiteralInt elems.val.size)
@@ -637,7 +639,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       (typeRanges ++ envRanges).map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
 
     return {
-      name := funcName
+      -- Located at the function, which is where Laurel reports the heap
+      -- frame ("only this contract is modified") of the procedure.
+      name := { text := funcName, source := match ctx.uri with
+        | some uri => sourceRangeToFileRange uri fnSr
+        | none => .unknown }
       inputs := inputs
       outputs := outputs
       preconditions := allPreconditionConds
