@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10 — Contract invariants
+
+- `@custom:strata invariant` is honored in the NatSpec above `contract`, not
+  only on state variables (sum_token: `totalSupply == sum(balances)` is now
+  checked; test_spec_failures' `breakInvariant` now fails as intended).
+- Soundness: a contract without a constructor gets an implicit one, so an
+  invariant false at deployment (or unsatisfiable) is reported instead of
+  being assumed by every function; state-variable initializers run before
+  the constructor body; a parameter shadowing a state variable no longer
+  captures an invariant.
+- Invariants are checked at external entry points only (internal helpers
+  neither assume nor re-establish them) and are assumed by view functions.
+- Constructors can establish `sum(...)` invariants (`sum` of an empty mapping
+  is 0); the quantified `sum` axioms are only assumed for mappings a spec
+  sums, which turns many `unknown` results into refutations.
+- `old(...)` in an invariant is rejected with a clear error; `arr.length` and
+  named constants work in constructor invariants.
+
 ## 2026-10 — Array theory by default; fewer `unknown` results
 
 - **Array theory by default** (`--no-array-theory` restores the quantified
