@@ -6,10 +6,10 @@ pragma solidity ^0.8.0;
 contract LoopInvariantFor {
 
     /// Count up to n. Invariant: result == i at each iteration.
+    /// @custom:strata loop-invariant result == i
     function countUp(uint256 n) public pure returns (uint256 result) {
         require(n <= 1000, "n too large");
         result = 0;
-        /// @custom:strata loop-invariant result == i
         for (uint256 i = 0; i < n; i++) {
             result += 1;
         }

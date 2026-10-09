@@ -30,10 +30,10 @@ contract SpecFailures {
     }
 
     /// Loop invariant not maintained: claims sum <= i but body adds 2 each iteration.
+    /// @custom:strata loop-invariant sum <= i
     function badLoopInvariant(uint256 n) public pure returns (uint256 sum) {
         require(n <= 100, "n too large");
         sum = 0;
-        /// @custom:strata loop-invariant sum <= i
         for (uint256 i = 0; i < n; i++) {
             sum += 2;
         }
