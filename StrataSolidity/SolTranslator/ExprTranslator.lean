@@ -206,6 +206,108 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
   | _ => return mkStmtExprMd (.Block [assign] none)
 
+/-- What an inline-assembly block may do, read from solc's Yul AST (the
+    `InlineAssembly` payload). -/
+structure YulSummary where
+  /-- Names the block assigns (`x := …`; the variable of `p.slot := …`).
+      Some are Yul locals. -/
+  assigned : List String
+  /-- Whether it writes memory (`mstore`, a copy, a call's output area). -/
+  writesMemory : Bool
+  /-- Whether it may write this contract's storage: `sstore`, or a call or
+      creation that can run code writing it. -/
+  writesStorage : Bool
+  /-- Whether it may end the function (`return`, `stop`, `selfdestruct`). -/
+  exits : Bool
+
+/-- `yulSummary?` for a block whose Yul AST is unknown: it may do anything
+    to the given variables. -/
+def YulSummary.any (vars : List String) : YulSummary :=
+  { assigned := vars, writesMemory := true, writesStorage := true, exits := true }
+
+/-- The summary of a Yul AST, or `none` if the payload is not one. -/
+partial def yulSummary? (payload : String) : Option YulSummary :=
+  match Lean.Json.parse payload with
+  | .ok j =>
+    if j.getObjValD "nodeType" == .str "YulBlock" then
+      let (assigned, called) := collect j
+      let calls (fs : List String) := called.any fs.contains
+      some { assigned
+             writesMemory := calls ["mstore", "mstore8", "mcopy", "calldatacopy", "codecopy",
+               "extcodecopy", "returndatacopy", "datacopy", "call", "callcode", "delegatecall",
+               "staticcall"]
+             writesStorage := calls ["sstore", "call", "callcode", "delegatecall", "create", "create2"]
+             exits := calls ["return", "stop", "selfdestruct"] }
+    else none
+  | .error _ => none
+where
+  /-- Assigned names and called functions. -/
+  collect : Lean.Json → List String × List String
+    | .obj kvs =>
+      let kvs := kvs.toList
+      let name (v : Lean.Json) : Option String := match v.getObjVal? "name" with
+        | .ok (.str n) => (n.splitOn ".").head?
+        | _ => none
+      let assigned := match kvs.lookup "nodeType", kvs.lookup "variableNames" with
+        | some (.str "YulAssignment"), some (.arr vs) => vs.toList.filterMap name
+        | _, _ => []
+      let called := match kvs.lookup "nodeType", kvs.lookup "functionName" with
+        | some (.str "YulFunctionCall"), some f => (name f).toList
+        | _, _ => []
+      kvs.foldl (fun (a, c) (_, v) => let (a', c') := collect v; (a ++ a', c ++ c'))
+        (assigned, called)
+    | .arr xs => xs.foldl (fun (a, c) x => let (a', c') := collect x; (a ++ a', c ++ c')) ([], [])
+    | _ => ([], [])
+
+/-- The Solidity variables in scope that inline assembly can assign:
+    locals, parameters and named returns, but not the variables carrying
+    mapping and array state, which Yul cannot name (and which are inputs
+    of `view` functions). -/
+def assemblyAssignable (ctx : TransCtx) : List String :=
+  let stateNames := ctx.mappingStateVars ++ ctx.arrayStateVars.map (· ++ "_length")
+  ctx.localNames.filter (!stateNames.contains ·) |>.eraseDups
+
+/-- The model of an inline-assembly block with summary `s`. Yul is not
+    interpreted: whatever the block may write is unknown afterwards, and
+    it may end the function there.
+    - The Solidity variables it assigns get fresh values, a memory array
+      with its length; so does every variable in memory if it writes memory.
+    - If it may write storage, so does all of the contract's state, where
+      solc lets assembly write it (not in `view` and `pure` functions).
+    - If it may end the function, it does so on some paths, with unknown
+      return values.
+    Fresh values are nondeterministic holes: a deterministic hole is a
+    function of the procedure's inputs, so a block in a loop would produce
+    the same value at every iteration. -/
+def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError StmtExprMd := do
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
+  let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  if let some p := s.assigned.find? fun n => ctx.storageAliases.any (·.1 == n) then
+    throw (.unsupported s!"inline assembly that assigns the storage reference `{p}`")
+  if s.writesMemory then
+    if let some (v, _) := ctx.memoryVars.find? (·.2.val matches .UserDefined _) then
+      throw (.unsupported s!"inline assembly that writes memory while the memory struct `{v}` is in scope")
+  if s.exits && ctx.isConstructor then
+    throw (.unsupported "inline assembly that may end the constructor")
+  let memory := if s.writesMemory then ctx.memoryVars.map (·.1) else []
+  let vars := (assemblyAssignable ctx).filter fun n => s.assigned.contains n || memory.contains n
+  let vars := vars.flatMap fun n =>
+    if ctx.memoryArrayParams.contains n then [n, s!"{n}_length"] else [n]
+  let state := if !(s.writesStorage && ctx.mayWriteState) then [] else
+    ctx.stateVarNames.flatMap fun n =>
+      if ctx.arrayStateVars.contains n then [n, s!"{n}_length"] else [n]
+  -- Scalar state is a field of `self`, except in constructors, where it
+  -- is an output variable like mapping state.
+  let (fields, stateVars) := state.partition fun n =>
+    ctx.hasSelfParam && ctx.stateVarNames.contains n && !ctx.mappingStateVars.contains n
+  let havocs := (vars ++ stateVars).eraseDups.map (assign ∘ ident) ++
+    fields.map fun n => assign (mkStmtExprMd (mkFieldSelect (ident "self") n))
+  let exit := if !s.exits then [] else
+    [mkStmtExprMd (.IfThenElse fresh
+      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))
+      none)]
+  return mkStmtExprMd (.Block (havocs ++ exit) none)
 
 /-- The loop condition and the statements to run at the top of each
     iteration. Laurel lifts the effects of a condition (a call, `k++`, an
@@ -812,8 +914,12 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ _ _ _)] =>
-            { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+          | [.some_node _ (.VariableDeclaration _ nameAnn typeOpt _ _ _ _ _ storageLocAnn _ _)] =>
+            let ctx := { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+            match storageLocAnn.val, typeOpt with
+            | "memory", .some_type_name _ tn =>
+              { ctx with memoryVars := ctx.memoryVars ++ [(nameAnn.val, (translateTypeNode ctx tn).highType)] }
+            | _, _ => ctx
           | _ => ctx
         | _ => ctx
       let s ← translateStmt ctx' stmt
@@ -845,52 +951,18 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts uncheckedCtx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
-  -- Inline assembly: havoc strategy. Any state variable potentially touched
-  -- by the assembly block is treated as unknown afterward (sound
-  -- over-approximation). The Yul payload is preserved in the AST but not
-  -- interpreted here. Without this arm, InlineAssembly falls through to the
-  -- catch-all assume(false), which silently makes post-assembly specs vacuous.
-  | .InlineAssembly _ _ =>
-    let mut havocs : List StmtExprMd := []
-    -- Havoc scalar state vars via self field assigns — only when `self` is in
-    -- scope (non-pure, non-constructor functions with non-mapping state).
-    if ctx.hasSelfParam then
-      for name in ctx.stateVarNames do
-        if !ctx.mappingStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
-            (mkStmtExprMd .Hole))]
-    for name in ctx.mappingStateVars do
-      havocs := havocs ++ [mkStmtExprMd (.Assign
-        [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
-        (mkStmtExprMd .Hole))]
-      if ctx.arrayStateVars.contains name then
-        havocs := havocs ++ [mkStmtExprMd (.Assign
-          [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
-          (mkStmtExprMd .Hole))]
-    return mkStmtExprMd (.Block havocs none)
+  -- Inline assembly: see `assemblyModel`. Without this arm, InlineAssembly
+  -- would fall through to the statement catch-all.
+  | .InlineAssembly _ yulAnn =>
+    -- A block whose Yul AST is unreadable may do anything.
+    assemblyModel ctx ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
 
   | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
     -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
-    -- compatibility with any Ion produced by an older solast.py.
+    -- compatibility with any Ion produced by an older solast.py. There is
+    -- no Yul AST, so every Solidity variable in scope may be assigned.
     if valAnn.val == "__assembly__" && kindAnn.val == "string" then
-      let mut havocs : List StmtExprMd := []
-      -- Havoc scalar state vars via self field assigns to Hole
-      for name in ctx.stateVarNames do
-        if !ctx.mappingStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
-            (mkStmtExprMd .Hole))]
-      -- Havoc mapping/array state vars to fresh nondeterministic values
-      for name in ctx.mappingStateVars do
-        havocs := havocs ++ [mkStmtExprMd (.Assign
-          [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
-          (mkStmtExprMd .Hole))]
-        if ctx.arrayStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
-            (mkStmtExprMd .Hole))]
-      return mkStmtExprMd (.Block havocs none)
+      assemblyModel ctx (.any (assemblyAssignable ctx))
     else
       translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 

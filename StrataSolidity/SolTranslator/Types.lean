@@ -134,6 +134,16 @@ structure TransCtx where
       non-mapping state variable (see translateFunction). Used by the inline
       assembly havoc to decide whether `self.<field>` references are valid. -/
   hasSelfParam : Bool := false
+  /-- Whether the current function may modify contract state: not `view`
+      or `pure` (solc rejects state-modifying inline assembly in those). -/
+  mayWriteState : Bool := false
+  /-- Whether the current function is the constructor. -/
+  isConstructor : Bool := false
+  /-- The current function's declared return variables. -/
+  returnNames : List String := []
+  /-- Parameters and locals in memory or calldata, with their types: what
+      inline assembly that writes memory may change. -/
+  memoryVars : List (String × HighTypeMd) := []
   /-- Labels of the innermost enclosing loop, as (breakLabel, continueLabel).
       Set when translating a loop body so that `break`/`continue` statements
       can emit `Exit` to the correct labelled block. `none` outside any loop. -/

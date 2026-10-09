@@ -170,6 +170,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- input parameters are immutable. We rename inputs to `name_param` and create
     -- local variables `name := name_param` at the start of the body.
     let mut userParamInfo : List (String × HighTypeMd) := []
+    -- Parameters in memory or calldata (see `TransCtx.memoryVars`).
+    let mut memoryParams : List (String × HighTypeMd) := []
 
     match params with
     | .ParameterList _ paramsSeq =>
@@ -195,12 +197,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           -- The argument is a value of its Solidity type.
           if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier inputName)) then
             typeRanges := typeRanges ++ [(c, s!"type range of {baseName} ({solTy.solName})")]
-          -- For memory array parameters, add a paired length parameter
+          if storageLocAnn.val == "memory" || storageLocAnn.val == "calldata" then
+            memoryParams := memoryParams ++ [(baseName, solTy.highType)]
+          -- For memory array parameters, add a paired length parameter,
+          -- copied to a local like the array (inline assembly can change it)
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
             let lenName := s!"{baseName}_length"
-            inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
-            preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            inputs := inputs ++ [{ name := s!"{lenName}_param", type := mkHighTypeMd .TInt }]
+            userParamInfo := userParamInfo ++ [(lenName, mkHighTypeMd .TInt)]
+            preconditions := preconditions ++ [mkNonNegPrecond s!"{lenName}_param"]
             memoryArrayParamNames := memoryArrayParamNames ++ [baseName]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
@@ -288,6 +294,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
                               hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
+                              mayWriteState := !isPure && !isView,
+                              isConstructor := isConstructor,
+                              returnNames := baseOutputs.map (·.name.text),
+                              memoryVars := memoryParams,
                               valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with

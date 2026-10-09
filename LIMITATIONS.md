@@ -104,7 +104,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `block.timestamp` | ❌ Not modeled | No time abstraction yet |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ❌ | No cross-contract reasoning |
-| Assembly / inline Yul | ⚠️ Havoc | Parsed; state touched by assembly treated as unknown (sound over-approximation) |
+| Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the function on some paths. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor |
 | Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |
 | Events / errors | First-class ops | `revert` prunes its path; `emit` is a verification no-op |
