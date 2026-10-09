@@ -399,9 +399,15 @@ def main (args : List String) : IO Unit := do
           if !warnings.isEmpty then
             IO.println s!"⚠️  {warnings.length} annotation(s) or function(s) not verified (see warnings)"
           if hasFailures then IO.Process.exit 1
-        if strict && !warnings.isEmpty then
-          IO.eprintln "error: --strict: some annotations or functions were not verified"
-          IO.Process.exit 1
+        -- `--strict`: succeed only if every obligation is proven and nothing
+        -- was left unverified, in every output mode (without it, machine
+        -- modes leave the verdict to the consumer and text mode fails only
+        -- on refuted obligations).
+        if strict then
+          let unproven := (vcResults.filter (!·.isSuccess)).size
+          if unproven > 0 || !warnings.isEmpty then
+            IO.eprintln s!"error: --strict: {unproven} obligation(s) not proven, {warnings.length} annotation(s) or function(s) not verified"
+            IO.Process.exit 1
   | _ =>
     IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json] [--strict]"
     IO.Process.exit 1
