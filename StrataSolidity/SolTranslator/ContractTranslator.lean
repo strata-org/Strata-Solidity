@@ -115,7 +115,7 @@ private def reprHasLoop (astRepr : String) : Bool :=
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition × List TranslationWarning) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn _abstractAnn nodesSeq contractDocAnn _baseContracts => do
+  | .ContractDefinition contractSr nameAnn kindAnn _abstractAnn nodesSeq contractDocAnn _baseContracts => do
     let mut warnings : List TranslationWarning := []
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
@@ -322,7 +322,21 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
         | .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _ => some doc
         | .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc => some doc
         | _ => none).flatMap (summedNames ·.val)
-    let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs,
+    -- A constructor that is not verified (it uses a struct-valued mapping)
+    -- establishes nothing, so the invariants are neither assumed nor
+    -- checked: assuming them would make every obligation that relies on
+    -- them pass.
+    let ctorSkipped := nodesSeq.val.any fun
+      | .FunctionDefinition _ _ k _ _ _ _ _ bodyOpt _ _ =>
+        k.val == "constructor" && match bodyOpt with
+          | .some_node _ _ => structMappingNames.any (reprMentions (toString (repr bodyOpt)) ·)
+          | _ => false
+      | _ => false
+    if ctorSkipped && !natspecInvariantExprs.isEmpty then
+      warnings := warnings ++ [{ range := contractSr, message :=
+        s!"the invariants of contract `{nameAnn.val}` are not verified: its constructor, which must establish them, is not verified" }]
+    let invariants := if ctorSkipped then [] else natspecInvariantExprs
+    let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
                                    summedMappings := summed.eraseDups,
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
@@ -375,6 +389,26 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
             let proc ← translateFunction fnCtx member
             procedures := procedures ++ [proc]
       | _ => pure ()
+
+    -- Without an explicit constructor, deployment runs only the default
+    -- initialization and the state-variable initializers. Check that this
+    -- initial state satisfies the invariants with an implicit, empty
+    -- constructor; otherwise every function would assume invariants that
+    -- nothing establishes (an unsatisfiable invariant would make every
+    -- obligation pass). An abstract contract is checked the same way, as
+    -- the initial state of the contracts that derive from it.
+    let hasCtor := nodesSeq.val.any fun
+      | .FunctionDefinition _ _ k _ _ _ _ _ _ _ _ => k.val == "constructor"
+      | _ => false
+    if !invariants.isEmpty && !hasCtor && kindAnn.val == "contract" then
+      let str (v : String) : StrataDDM.Ann String SourceRange := ⟨contractSr, v⟩
+      let noParams : Solidity.node SourceRange := .ParameterList contractSr ⟨contractSr, #[]⟩
+      let implicitCtor : Solidity.node SourceRange :=
+        .FunctionDefinition contractSr (str "") (str "constructor") (str "nonpayable")
+          (str "public") (str "false") noParams noParams
+          (.some_node contractSr (.Block contractSr ⟨contractSr, #[]⟩)) (str "")
+          ⟨contractSr, #[]⟩
+      procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
 
     -- Contract invariants are checked via injection into public functions'
     -- pre/postconditions. No separate invariant procedure is needed.
