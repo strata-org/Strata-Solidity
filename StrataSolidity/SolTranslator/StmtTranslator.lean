@@ -488,7 +488,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let frameConds := frameConditions.map fun (name, p) =>
           mkPost s!"modifies frame ({name})" p
         let invariantConds := contractInvariants.zipIdx.map fun (p, i) =>
-          mkPost s!"invariant #{i + 1}" p
+          mkPost s!"invariant {ctx.contractInvariantTexts.getD i s!"#{i + 1}"}" p
         let allPostsConds : List Condition := specConds ++ frameConds ++ invariantConds
         -- One unguarded frame group. An empty target list means "changes
         -- nothing" (`ModifiesGroup.nothingChanges`); Laurel reads an empty

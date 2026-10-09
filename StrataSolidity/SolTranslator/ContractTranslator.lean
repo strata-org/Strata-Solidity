@@ -346,6 +346,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let invariants := if ctorSkipped then [] else natspecInvariantExprs
     let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
                                    summedMappings := summed.eraseDups,
+                                   contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with

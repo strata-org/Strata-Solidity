@@ -8,20 +8,12 @@ import Lean.Data.Json
 import Strata.Languages.Core.Verifier
 import Strata.DL.Imperative.MetaData
 import StrataSolidity.SolcAstParser
+import StrataSolidity.Obligations
 
 open Lean (Json toJson)
 open Core (VCResult VCOutcome VCError)
 
 namespace StrataSolidity.Sarif
-
-/-- Strip internal suffixes from variable names for readability. -/
-def cleanVarName (name : String) : String :=
-  let s := name
-  let s := if s.startsWith "self." then (s.drop 5).toString else s
-  let s := if s.endsWith "_param" then (s.dropEnd 6).toString else s
-  let s := if s.endsWith "_in" then (s.dropEnd 3).toString else s
-  let s := s.replace "__" "."
-  Strata.Solidity.SolcAst.unmangleName s
 
 private def mkRule (id desc : String) : Json :=
   Json.mkObj [
@@ -102,9 +94,9 @@ private def kindAndLevel : Verdict → String × String
   | .unknown => ("fail", "warning")
   | .error _ => ("fail", "error")
 
-/-- `<summary or label>: <verdict>`. -/
-private def resultMessage (vcr : VCResult) : Verdict → String :=
-  let name := vcr.obligation.metadata.getPropertySummary.getD vcr.obligation.label
+/-- `<obligation name>: <verdict>`. -/
+private def resultMessage (vcr : VCResult) (sourceOpt : Option (String × String)) : Verdict → String :=
+  let name := StrataSolidity.Obligations.name vcr sourceOpt
   fun
   | .pass => s!"{name}: pass"
   | .fail => s!"{name}: fail"
@@ -173,7 +165,7 @@ private def vcResultToJson (vcr : VCResult) (procName : String)
     ("ruleIndex", toJson (ruleIdx ruleId)),
     ("level", Json.str level),
     ("kind", Json.str kind),
-    ("message", Json.mkObj [("text", Json.str (resultMessage vcr v))]),
+    ("message", Json.mkObj [("text", Json.str (resultMessage vcr sourceOpt v))]),
     ("partialFingerprints", Json.mkObj [("obligationId/v2", Json.str fingerprint)])
   ]
   -- Every result gets a location (code scanning drops results without one):

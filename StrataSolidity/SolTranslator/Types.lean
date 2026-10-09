@@ -146,6 +146,9 @@ structure TransCtx where
       these get the sum axioms (a quantified assumption that otherwise keeps
       the solver from producing counterexamples). -/
   summedMappings : List String := []
+  /-- Source text of each contract invariant, parallel to
+      `contractInvariantNatspec`; used to name its obligations. -/
+  contractInvariantTexts : List String := []
   /-- Modifier definitions: maps modifier name to its parameter names and
       the raw require statement DDM nodes extracted from the modifier body
       (pre-`_;` only). Translated in each function's context for correct

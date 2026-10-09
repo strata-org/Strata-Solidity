@@ -207,7 +207,7 @@ def test_sarif_verdicts_agree_with_cli() -> None:
         Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol"))
     failed = {(r["ruleId"], r["message"]["text"]) for r in failing if r["kind"] == "fail"}
     assert ("strata/ensures-fail", "ensures res == a + b + 1: fail") in failed, failed
-    assert ("strata/invariant-fail", "invariant #1: fail") in failed, failed
+    assert ("strata/invariant-fail", "invariant counter <= 100: fail") in failed, failed
 
 
 def test_sarif_reports_unverified_annotations() -> None:
