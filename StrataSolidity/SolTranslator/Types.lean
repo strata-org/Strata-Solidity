@@ -476,6 +476,20 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
   | .TMap _ v => mkStmtExprMd (mkCall "mapConst" [defaultValueForType v])
   | _ => mkStmtExprMd (.LiteralInt 0)
 
+/-- The zero value storage of type `ty` starts with: `defaultValueForType`,
+    and for a struct (with fields `structs`), the one its constructor
+    (`S_constructor`) builds from its fields' zero values; unknown for
+    other types. -/
+partial def storageZero (structs : List (String × List (String × HighType))) (ty : HighTypeMd)
+    : StmtExprMd :=
+  match ty.val with
+  | .UserDefined id =>
+    match structs.lookup id.text with
+    | some fields => mkStmtExprMd (mkCall s!"{id.text}_constructor"
+        (fields.map fun (_, t) => storageZero structs (mkHighTypeMd t)))
+    | none => mkStmtExprMd (.Hole (deterministic := false))
+  | _ => defaultValueForType ty
+
 /-- The zero value a Solidity variable of this type starts with, for the
     types whose zero value Laurel can express: integers, `bool`, mappings
     and arrays (other types, such as structs, have none here). -/

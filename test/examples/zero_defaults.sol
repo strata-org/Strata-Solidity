@@ -37,3 +37,18 @@ contract ZeroDefaults {
         r = x;
     }
 }
+
+// State starts at zero too, struct fields included.
+contract ZeroState {
+    struct Info { uint256 value; bool flag; }
+
+    Info internal info;
+    uint256 public count;
+
+    // Passes: the constructor starts from zeroed state.
+    /// @custom:strata ensures count == 1
+    /// @custom:strata ensures info.value == 0 && !info.flag
+    constructor() {
+        count = 1;
+    }
+}

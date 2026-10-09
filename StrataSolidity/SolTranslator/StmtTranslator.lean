@@ -417,7 +417,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- 2. Constructor default storage initialization (Solidity zero-inits all state)
         if isConstructor then
           for field in ctx.contractFields do
-            let defaultVal := defaultValueForType field.type
+            let defaultVal := storageZero ctx.structFields field.type
             preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier field.name.text))]
               defaultVal)]
             -- For array state vars, also initialize the length: 0, or the
