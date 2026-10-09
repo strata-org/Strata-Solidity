@@ -230,18 +230,20 @@ def main (args : List String) : IO Unit := do
           IO.print coreStr
 
         -- Verify using Core verifier
+        let verifyOpts : VerifyOptions :=
+          { VerifyOptions.default with
+            stopOnFirstError := false,
+            verbose := .quiet,
+            solver := "z3",
+            solverTimeout := timeoutVal,
+            useArrayTheory := useArrays }
         let (vcResults, smtDir) ← match dumpVcDir with
           | some dir => do
             IO.FS.createDirAll ⟨dir⟩
             let r ← EIO.toIO
               (fun f => IO.Error.userError (toString f))
               (Core.verify coreProgram ⟨dir⟩
-                { VerifyOptions.default with
-                  stopOnFirstError := false,
-                  verbose := .quiet,
-                  solver := "z3",
-                  solverTimeout := timeoutVal,
-                  useArrayTheory := useArrays })
+                verifyOpts)
             pure (r, (⟨dir⟩ : System.FilePath))
           | none =>
             let smtDirEnv ← IO.getEnv "STRATA_SMT_DIR"
@@ -260,24 +262,14 @@ def main (args : List String) : IO Unit := do
               let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
                 (Core.verify coreProgram dir
-                  { VerifyOptions.default with
-                    stopOnFirstError := false,
-                    verbose := .quiet,
-                    solver := "z3",
-                    solverTimeout := timeoutVal,
-                    useArrayTheory := useArrays })
+                  verifyOpts)
               pure (result, dir)
             else
               let r ← IO.FS.withTempDir (fun tempDir =>
                 EIO.toIO
                   (fun f => IO.Error.userError (toString f))
                   (Core.verify coreProgram tempDir
-                    { VerifyOptions.default with
-                      stopOnFirstError := false,
-                      verbose := .quiet,
-                      solver := "z3",
-                      solverTimeout := timeoutVal,
-                      useArrayTheory := useArrays }))
+                    verifyOpts))
               pure (r, ("" : System.FilePath))
 
         let vcResults := vcResults.filter (!isPassingPreludeVc ·)
