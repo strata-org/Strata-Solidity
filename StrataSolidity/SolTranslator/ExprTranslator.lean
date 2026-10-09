@@ -240,6 +240,27 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
         else throw (.unsupported
           s!"array argument `{nameAnn.val}` to `{callee}` has no known length")
       | _ => throw (.unsupported s!"array argument to `{callee}` must be a variable")
+  -- A memory array of the caller is passed by reference: the callee may
+  -- write its elements, which are unknown afterwards.
+  let memArgs := argNodes.zipIdx.filterMap fun (node, i) =>
+    if !sig.memArrayParams.getD i false then none else match node with
+      | .Identifier _ a => if ctx.memoryArrayParams.contains a.val then some a.val else none
+      | _ => none
+  let havocs := memArgs.map fun a => mkStmtExprMd (.Assign [toAssignTarget (ident a)]
+    (mkStmtExprMd (.Hole (deterministic := false))))
+  -- The call's statements, then the havocs, then its value (if any).
+  let finish (stmts : List StmtExprMd) (value : Option StmtExprMd) : StmtExprMd :=
+    match stmts, havocs, value with
+    | [], [], some v => v
+    | [s], [], none => s
+    | _, _, _ => mkStmtExprMd (.Block (stmts ++ havocs ++ value.toList) none)
+  -- A call used as a value, with the havocs after it.
+  let asValue (call : StmtExprMd) : StmtExprMd :=
+    if havocs.isEmpty then call
+    else if sig.returnTypes.isEmpty then finish [call] none
+    else
+      let tmp := s!"__ret{sr.start.byteIdx}_0"
+      finish [declareLocal tmp call] (some (ident tmp))
   -- `(a, b) = f(…)`: the declared return values go to `dests`, and a
   -- mutating callee's state outputs to the caller's state variables.
   let assignTo (ds : List (AstNode Variable)) (call : StmtExprMd) (stateVars : List String) :
@@ -248,12 +269,12 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
       throw (.typeError s!"`{callee}` returns {sig.returnTypes.length} value(s), not {ds.length}")
     let stateTargets : List (AstNode Variable) :=
       stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
-    return withSourceRange ctx sr (mkStmtExprMd (.Assign (ds ++ stateTargets) call))
+    return finish [withSourceRange ctx sr (mkStmtExprMd (.Assign (ds ++ stateTargets) call))] none
   if sig.isPure then
     let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee userArgs))
     match dests with
     | some ds => return ← assignTo ds call []
-    | none => return call
+    | none => return asValue call
   let scalars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
   let mut implicitArgs : List StmtExprMd := []
   if !scalars.isEmpty then
@@ -268,7 +289,7 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee (implicitArgs ++ userArgs)))
   if let some ds := dests then
     return ← assignTo ds call (if sig.isView then [] else stateVars)
-  if sig.isView || stateVars.isEmpty then return call
+  if sig.isView || stateVars.isEmpty then return asValue call
   -- Mutating callee: bind the declared returns to fresh locals and the
   -- state outputs to the caller's state variables.
   let temps := sig.returnTypes.zipIdx.map fun (ty, i) => (s!"__ret{sr.start.byteIdx}_{i}", ty)
@@ -277,8 +298,8 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
     stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
   let assign := withSourceRange ctx sr (mkStmtExprMd (.Assign targets call))
   match temps with
-  | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
-  | _ => return mkStmtExprMd (.Block [assign] none)
+  | [(n, _)] => return finish [assign] (some (ident n))
+  | _ => return finish [assign] none
 
 /-- What an inline-assembly block may do, read from solc's Yul AST (the
     `InlineAssembly` payload). -/
@@ -901,7 +922,30 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       if binds.isEmpty then return assign
       return mkStmtExprMd (.Block (binds ++ [assign]) none)
     | none =>
+    -- A memory array is a reference: `a = b` would make `a` and `b` the
+    -- same array, which the translation (arrays as values) cannot express.
+    let isMemArray (n : Solidity.node SourceRange) : Bool := match n with
+      | .Identifier _ a => ctx.memoryArrayParams.contains a.val ||
+          (ctx.memoryVars.lookup a.val).any (·.val matches .TMap ..)
+      | _ => false
+    if opAnn.val == "=" && isMemArray lhs && isMemArray rhs then
+      throw (.unsupported "assigning a memory array to another (they would alias)")
     let lhsExpr ← translateExpr ctx lhs
+    -- Assigning a whole array assigns its length too: the other array's, or
+    -- an unknown one.
+    let lengthOf (n : Solidity.node SourceRange) : Option String := match n with
+      | .Identifier _ a =>
+        if ctx.arrayStateVars.contains a.val || ctx.memoryArrayParams.contains a.val then
+          some s!"{a.val}_length" else none
+      | _ => none
+    let lengthAssign : List StmtExprMd := if opAnn.val != "=" then [] else
+      match lengthOf lhs with
+      | some lhsLen =>
+        [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier lhsLen))]
+          (match lengthOf rhs with
+            | some rhsLen => mkStmtExprMd (mkIdentifier rhsLen)
+            | none => mkStmtExprMd (.Hole (deterministic := false))))]
+      | none => []
     -- `x op= f()`: the target is read after the right-hand side runs.
     let (binds, rhsExpr) := if opAnn.val == "=" || !hasEffects rhsExpr then ([], rhsExpr) else
       ([declareLocal rhsVar rhsExpr], mkStmtExprMd (mkIdentifier rhsVar))
@@ -919,8 +963,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
     let assign := mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
-    if binds.isEmpty then return assign
-    return mkStmtExprMd (.Block (binds ++ [assign]) none)
+    if binds.isEmpty && lengthAssign.isEmpty then return assign
+    return mkStmtExprMd (.Block (binds ++ [assign] ++ lengthAssign) none)
 
   -- Call with {value:, gas:} options: the options don't affect verification
   -- semantics (ETH transfer is external/opaque). Translate the wrapped call.
@@ -1065,7 +1109,10 @@ partial def translateTupleDecl (ctx : TransCtx) (sr : SourceRange)
         throw (.typeError s!"`{fnAnn.val}` returns {sig.returnTypes.length} value(s), not {slots.length}")
       let assign ← translateInternalCall ctx csr s!"{ctx.contractName}_{fnAnn.val}" sig argNodes args
         (dests := some dests)
-      return ([assign], names)
+      -- Spliced, so that the declarations are in the enclosing block.
+      return (match assign.val with
+        | .Block stmts none => stmts
+        | _ => [assign], names)
     | _, _ => unknownInit
   | .some_node _ (.TupleExpression _ compsSeq) =>
     let comps := compsSeq.val.toList
@@ -1331,6 +1378,13 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+        -- A memory array is a reference: `T[] memory a = b` would make `a`
+        -- and `b` the same array (see `.Assignment`).
+        if storageLocAnn.val == "memory" then
+          if let .some_node _ (.Identifier _ b) := initOpt then
+            if ctx.memoryArrayParams.contains b.val ||
+                (ctx.memoryVars.lookup b.val).any (·.val matches .TMap ..) then
+              throw (.unsupported s!"declaring `{nameAnn.val}` as the memory array `{b.val}` (they would alias)")
         let initVal ← match initOpt with
           | .some_node _ initNode => do
             let e ← translateExpr ctx initNode
