@@ -262,13 +262,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- We re-scan the DDM nodes to distinguish ArrayTypeName from MappingType,
     -- since both translate to TMap in HighType.
     let mut arrayStateVars : List String := []
+    let mut fixedArrayLengths : List (String × Nat) := []
     for member in nodesSeq.val do
       match member with
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
-          | .some_type_name _ (.ArrayTypeName _ _) =>
+          | .some_type_name _ (.ArrayTypeName _ _ lengthAnn) =>
             arrayStateVars := arrayStateVars ++ [nameAnn.val]
+            if let some n := lengthAnn.val.toNat? then
+              fixedArrayLengths := fixedArrayLengths ++ [(nameAnn.val, n)]
           | _ => pure ()
       | _ => pure ()
     let mut nonPureFunctions : List String := []
@@ -291,6 +294,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  stateVarNames := activeStateVarNames
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
+                 fixedArrayLengths := fixedArrayLengths
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
                  udvtNames := udvtNames

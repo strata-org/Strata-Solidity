@@ -151,6 +151,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                            else s!"{field.name.text}_length_in"
             inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
             preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            -- A fixed-size array always has its declared length.
+            if let some n := ctx.fixedArrayLengths.lookup field.name.text then
+              typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
+                [mkStmtExprMd (mkIdentifier lenName), mkStmtExprMd (.LiteralInt n)]),
+                s!"length of {field.name.text} ({n})")]
 
     -- Track memory array parameters for paired length params
     let mut memoryArrayParamNames : List String := []
@@ -322,10 +327,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             let defaultVal := defaultValueForType field.type
             preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier field.name.text))]
               defaultVal)]
-            -- For array state vars, also initialize length to 0
+            -- For array state vars, also initialize the length: 0, or the
+            -- declared length of a fixed-size array
             if ctx.arrayStateVars.contains field.name.text then
+              let len := (ctx.fixedArrayLengths.lookup field.name.text).getD 0
               preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{field.name.text}_length"))]
-                (mkStmtExprMd (.LiteralInt 0)))]
+                (mkStmtExprMd (.LiteralInt len)))]
           -- 2b. State-variable initializers (`uint256 x = 1000;`), in
           -- declaration order, before the body. One the translator cannot
           -- express gives the variable an unknown value (a sound

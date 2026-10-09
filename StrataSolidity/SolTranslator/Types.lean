@@ -95,6 +95,9 @@ structure TransCtx where
   /-- Names of array-typed state variables (subset of mappingStateVars).
       These get an additional `name_length` parameter for tracking length. -/
   arrayStateVars : List String := []
+  /-- The fixed-size array state variables (`uint256[3] a`), with their
+      length, which never changes. -/
+  fixedArrayLengths : List (String × Nat) := []
   /-- Names of memory array parameters in the current function.
       These get a paired `name_length` parameter for `.length` access. -/
   memoryArrayParams : List String := []
@@ -314,6 +317,8 @@ structure SolType where
   highType : HighTypeMd
   /-- Original Solidity type name for bounds generation. -/
   solName : String
+  /-- The length of a fixed-size array (`uint256[3]`). -/
+  arrayLength : Option Nat := none
 deriving Inhabited
 
 /-- Translate a Solidity type name string to Laurel HighType.
@@ -339,12 +344,13 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
-  | .ArrayTypeName _ baseTn =>
+  | .ArrayTypeName _ baseTn lengthAnn =>
     let elem := (translateTypeNode ctx baseTn).highType
     -- NOTE: Design doc specifies `TMap Nat T` but Laurel's HighType has no TNat variant,
     -- so we use TInt as the key type. This means array indices can be negative in the SMT
     -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
-    { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
+    { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array",
+      arrayLength := lengthAnn.val.toNat? }
   | .FunctionTypeName _ _ _ _ _ =>
     -- First-class function types are modeled as an opaque user-defined type.
     -- Verification doesn't reason about function-pointer values; this keeps

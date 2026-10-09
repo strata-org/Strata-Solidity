@@ -754,13 +754,21 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
     | _, .error _ => throw (.missingField "Mapping" "valueType")
 
   | "ArrayTypeName" =>
-    -- solc: { nodeType: "ArrayTypeName", baseType: <type-name node>, src: ... }
-    -- The optional `length` field (for fixed-size arrays) is intentionally
-    -- ignored — matches solast.py.
+    -- solc: { nodeType: "ArrayTypeName", baseType: <type-name node>,
+    --        length?: <expression>, typeDescriptions: { typeString: "uint256[3]" } }
+    -- The length of a fixed-size array is read from the type string, which
+    -- has it evaluated (`uint256[N]` with a constant `N`); empty if dynamic.
     match j.getObjVal? "baseType" with
     | .ok baseJ =>
       let baseTy ← convertTypeName baseJ
-      return type_name.ArrayTypeName sr baseTy
+      let typeStr := match (j.getObjVal? "typeDescriptions").toOption with
+        | some td => getStrOr td "typeString"
+        | none => ""
+      -- The last `[…]` of e.g. `uint256[3] storage ref`.
+      let length := match (typeStr.splitOn "[").getLast?.bind (·.splitOn "]" |>.head?) with
+        | some n => if !n.isEmpty && n.all Char.isDigit then n else ""
+        | none => ""
+      return type_name.ArrayTypeName sr baseTy (annStr sr length)
     | .error _ => throw (.missingField "ArrayTypeName" "baseType")
 
   | "FunctionTypeName" =>

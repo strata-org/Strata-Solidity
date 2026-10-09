@@ -1,0 +1,1 @@
+fixed_arrays.sol:7:5: warning: `@custom:strata invariant` has no effect on contract `FixedArrays` and is ignored

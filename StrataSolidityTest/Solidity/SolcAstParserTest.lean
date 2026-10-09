@@ -128,14 +128,23 @@ private def errIsTypeName (j : Json) (pred : ConvertError → Bool) : Bool :=
 
 /-! ### ArrayTypeName (B2.2) -/
 
-private def isArrayOfElementary (j : Json) (expectedBaseName : String) : Bool :=
+private def isArrayOfElementary (j : Json) (expectedBaseName : String)
+    (expectedLength : String := "") : Bool :=
   match convertTypeName j with
-  | .ok (type_name.ArrayTypeName _ (type_name.ElementaryTypeName _ name _)) =>
-    name.val == expectedBaseName
+  | .ok (type_name.ArrayTypeName _ (type_name.ElementaryTypeName _ name _) length) =>
+    name.val == expectedBaseName && length.val == expectedLength
   | _ => false
 
 #guard isArrayOfElementary
   (jsonOf r#"{"nodeType":"ArrayTypeName","baseType":{"nodeType":"ElementaryTypeName","name":"uint256","src":"60:7:0"},"src":"60:9:0"}"#)
+  "uint256"
+
+-- A fixed-size array's length, from the type string (`N` evaluated).
+#guard isArrayOfElementary
+  (jsonOf r#"{"nodeType":"ArrayTypeName","baseType":{"nodeType":"ElementaryTypeName","name":"uint256","src":"60:7:0"},"length":{"nodeType":"Identifier","name":"N","src":"68:1:0"},"typeDescriptions":{"typeString":"uint256[3]"},"src":"60:10:0"}"#)
+  "uint256" "3"
+#guard isArrayOfElementary
+  (jsonOf r#"{"nodeType":"ArrayTypeName","baseType":{"nodeType":"ElementaryTypeName","name":"uint256","src":"60:7:0"},"typeDescriptions":{"typeString":"uint256[] storage ref"},"src":"60:9:0"}"#)
   "uint256"
 
 #guard errIsTypeName
