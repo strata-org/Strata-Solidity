@@ -7,7 +7,7 @@ StrataSolidity supports a substantial subset of Solidity. Support is being expan
 **Core constructs:**
 - Contracts, functions (public/external/internal/private), state variables, constructors
 - Inheritance (single and diamond)
-- Modifiers (with arguments and `_` placeholder inlining)
+- Modifiers, inlined with their arguments (`_` stands for the rest of the function; not modifiers of an imported base contract)
 
 **Types:**
 - `uint`/`int` (all sizes 8–256), `bool`, `address`, `bytes32`

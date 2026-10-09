@@ -93,6 +93,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `requires` / `ensures` | Pre/postconditions | ✅ |
 | `invariant` | Contract-level invariants checked on all functions | ✅ |
 | `modifies` | Field-level and key-scoped frame conditions | ✅ |
+| Modifiers | Inlined into each function using them, with arguments; `return` in the body still runs the code after `_` | ✅ (not modifiers of an imported base contract, which are reported) |
 
 ## Not Yet Supported
 

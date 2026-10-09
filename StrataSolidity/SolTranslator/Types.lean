@@ -177,11 +177,16 @@ structure TransCtx where
   /-- Source text of each contract invariant, parallel to
       `contractInvariantNatspec`; used to name its obligations. -/
   contractInvariantTexts : List String := []
-  /-- Modifier definitions: maps modifier name to its parameter names and
-      the raw require statement DDM nodes extracted from the modifier body
-      (pre-`_;` only). Translated in each function's context for correct
-      state var resolution, with the parameters bound to the arguments. -/
-  modifierDefs : List (String × List String × List (Solidity.node SourceRange)) := []
+  /-- Modifier definitions: name, parameters (name and type) and body
+      statements. A modifier is inlined into each function using it (see
+      `translateFunction`). -/
+  modifierDefs : List (String × List (String × HighTypeMd) × List (Solidity.node SourceRange)) := []
+  /-- The label of the block a `return` exits, when not the whole
+      procedure: in a function body under modifiers (the code after `_`
+      still runs) and in a modifier body. -/
+  returnLabel : Option String := none
+  /-- While translating a modifier body: the code its `_` stands for. -/
+  placeholder : Option StmtExprMd := none
   /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
   fieldSolTypes : List (String × String) := []
   /-- Initializers of (non-constant) state variables, in declaration order:

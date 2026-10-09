@@ -1349,10 +1349,15 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     assemblyModel ctx ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
 
   | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
+    -- `_` in a modifier body: the code it stands for.
+    if valAnn.val == "_" then
+      match ctx.placeholder with
+      | some p => return p
+      | none => throw (.unsupported "`_` outside a modifier")
     -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
     -- compatibility with any Ion produced by an older solast.py. There is
     -- no Yul AST, so every Solidity variable in scope may be assigned.
-    if valAnn.val == "__assembly__" && kindAnn.val == "string" then
+    else if valAnn.val == "__assembly__" && kindAnn.val == "string" then
       assemblyModel ctx (.any (assemblyAssignable ctx))
     else
       translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
@@ -1360,6 +1365,29 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return sr exprOpt =>
+    -- Under modifiers (`ctx.returnLabel`), `return` ends the function body
+    -- or the modifier, not the procedure: the code after `_` still runs.
+    if let some lbl := ctx.returnLabel then
+      let assigns ← match exprOpt with
+        | .missing_node _ => pure []
+        | .some_node _ (.TupleExpression _ compsSeq) =>
+          if compsSeq.val.size == ctx.returnNames.length && compsSeq.val.size > 1 then
+            -- `return (a, b)`: the components first, then the outputs.
+            let comps ← compsSeq.val.toList.mapM (translateExpr ctx)
+            let temps := comps.zipIdx.map fun (c, i) => (s!"__retv{sr.start.byteIdx}_{i}", c)
+            pure (temps.map (fun (t, c) => declareLocal t c) ++
+              (ctx.returnNames.zip temps).map fun (out, (t, _)) =>
+                mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))]
+                  (mkStmtExprMd (mkIdentifier t))))
+          else do
+            let e ← translateExpr ctx (.TupleExpression sr compsSeq)
+            pure (ctx.returnNames.take 1 |>.map fun out =>
+              mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
+        | .some_node _ expr => do
+          let e ← translateExpr ctx expr
+          pure (ctx.returnNames.take 1 |>.map fun out =>
+            mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
+      return withSourceRange ctx sr (mkStmtExprMd (.Block (assigns ++ [mkStmtExprMd (.Exit lbl)]) none))
     match exprOpt with
     | .some_node _ expr => do
       let e ← translateExpr ctx expr

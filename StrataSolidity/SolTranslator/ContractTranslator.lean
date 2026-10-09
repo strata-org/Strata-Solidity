@@ -28,23 +28,6 @@ def translateFieldDecl (ctx : TransCtx) (errCtx : String) (member : Solidity.nod
     return { name := nameAnn.val, isMutable := constAnn.val != "true", type := solTy.highType }
   | _ => throw (.internalError s!"Expected VariableDeclaration for {errCtx}")
 
-/-- Extract require condition expressions from a modifier body's pre-`_;` statements.
-    Walks the Block statements until a PlaceholderStatement (serialized as
-    a Literal "_") is found, collecting the first argument of require() calls. -/
-private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
-    : List (Solidity.node SourceRange) :=
-  -- Take statements before the placeholder `_;`
-  let preStmts := stmts.takeWhile fun stmt =>
-    match stmt with
-    | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val != "_"
-    | _ => true
-  -- Extract require condition arguments
-  preStmts.filterMap fun stmt =>
-    match stmt with
-    | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) argsSeq _ _) =>
-      if nameAnn.val == "require" then argsSeq.val.toList.head? else none
-    | _ => none
-
 /-- Warnings for `@custom:strata` lines in `doc` that are not verified:
     unrecognized keywords, recognized ones that have no effect on the
     declaration `doc` is attached to (`allowed` lists the keywords that do;
@@ -115,7 +98,8 @@ private def reprHasLoop (astRepr : String) : Bool :=
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     : Except TranslationError (List Procedure × List TypeDefinition × List TranslationWarning) := do
   match contract with
-  | .ContractDefinition contractSr nameAnn kindAnn _abstractAnn nodesSeq contractDocAnn _baseContracts => do
+  | .ContractDefinition contractSr nameAnn kindAnn _abstractAnn nodesSeq contractDocAnn baseContracts => do
+    let baseNames := baseContracts.val.toList.map (·.val)
     let mut warnings : List TranslationWarning := []
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
@@ -214,36 +198,22 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
-    let mut modifierRequireNodes : List (String × List String × List (Solidity.node SourceRange)) := []
-    -- Modifiers with statements that are not modelled, with how many.
-    let mut partialModifiers : List (String × Nat) := []
+    -- Modifiers, inlined into the functions that use them.
+    let mut modifierDefs : List (String × List (String × HighTypeMd) × List (Solidity.node SourceRange)) := []
     for member in nodesSeq.val do
       match member with
       | .ModifierDefinition _ modNameAnn paramsNode bodyOpt =>
         let stmts := match bodyOpt with
           | .some_node _ (.Block _ stmtsSeq) => stmtsSeq.val.toList
           | _ => []
-        let reqStmts := extractModifierRequires stmts
         let params := match paramsNode with
           | .ParameterList _ ps => ps.val.toList.filterMap fun
-            | .VariableDeclaration _ n .. => some n.val
+            | .VariableDeclaration _ n (.some_type_name _ tn) .. =>
+              some (n.val, (translateTypeNode { ctx with enumDefs, udvtNames } tn).highType)
+            | .VariableDeclaration _ n .. => some (n.val, mkHighTypeMd .TInt)
             | _ => none
           | _ => []
-        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, params, reqStmts)]
-        -- Only the top-level `require`s before `_;` become preconditions of
-        -- the functions using the modifier; anything else (state writes,
-        -- statements after `_`, asserts, nested requires) is not modelled.
-        let isPlaceholder : Solidity.node SourceRange → Bool
-          | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val == "_"
-          | _ => false
-        let isRequire : Solidity.node SourceRange → Bool
-          | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) _ _ _) =>
-            nameAnn.val == "require"
-          | _ => false
-        let dropped := (stmts.takeWhile (!isPlaceholder ·)).filter (!isRequire ·) ++
-          (stmts.dropWhile (!isPlaceholder ·)).drop 1
-        if !dropped.isEmpty then
-          partialModifiers := partialModifiers ++ [(modNameAnn.val, dropped.length)]
+        modifierDefs := modifierDefs ++ [(modNameAnn.val, params, stmts)]
       | _ => pure ()
 
     -- Pass 2: collect non-pure function names for internal call resolution
@@ -375,18 +345,18 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
                                    summedMappings := summed.eraseDups,
                                    contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
-                                   modifierDefs := modifierRequireNodes }
+                                   modifierDefs := modifierDefs }
     for member in nodesSeq.val do
       match member with
       | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn fnModifiers => do
           let fnDesc := functionDesc fnKindAnn.val fnNameAnn.val
-          -- Each use of a partly modelled modifier is reported.
+          -- A modifier defined elsewhere (an imported base contract's) is
+          -- not inlined. (A base constructor call, `Base(x)`, is fine.)
           for inv in fnModifiers.val do
             if let .ModifierInvocation invSr modName _ := inv then
-              if let some n := partialModifiers.lookup modName.val then
+              if !modifierDefs.any (·.1 == modName.val) && !baseNames.contains modName.val then
                 warnings := warnings ++ [{ range := invSr, message :=
-                  s!"modifier `{modName.val}` is only partly modelled: {fnDesc} is verified " ++
-                  s!"as if the modifier consisted of its `require`s before `_` alone ({n} other statement(s) ignored)" }]
+                  s!"modifier `{modName.val}` is not defined in this contract: {fnDesc} is verified without it" }]
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
             | _ => ""
