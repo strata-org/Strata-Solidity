@@ -126,17 +126,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           let selfField := mkStmtExprMd
             (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) field.name.text)
           let inRef := mkStmtExprMd (mkIdentifier inName)
-          preconditions := preconditions ++
-            [mkStmtExprMd (mkPrimOp .Eq [selfField, inRef])]
+          -- Free: an internal call passes exactly `self#<name>`.
+          typeRanges := typeRanges ++
+            [(mkStmtExprMd (mkPrimOp .Eq [selfField, inRef]), s!"old({field.name.text}) is the entry value")]
 
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       if let some c := mkRangeCond "address" (mkStmtExprMd (mkIdentifier "msg_sender")) then
         typeRanges := typeRanges ++ [(c, "type range of msg.sender (address)")]
-      -- msg.sender is always > 0 (zero address cannot send transactions)
-      preconditions := preconditions ++ [mkStmtExprMd (mkPrimOp .Gt [
-        mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
+      -- msg.sender is always > 0 (zero address cannot send transactions).
+      -- Free: an internal call passes its caller's msg.sender.
+      typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Gt [
+        mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)]),
+        "msg.sender is not the zero address")]
       inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
       if let some c := mkRangeCond "uint256" (mkStmtExprMd (mkIdentifier "msg_value")) then
         typeRanges := typeRanges ++ [(c, "type range of msg.value (uint256)")]
@@ -610,10 +613,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- checks at one call site would collapse into a single "precondition".
     let described (what : String) (ps : List StmtExprMd) : List (StmtExprMd × String) :=
       ps.map fun p => (p, s!"{what} {Std.format p}")
+    -- An invariant is named as written (`invariant total == sum(bal)`).
+    let invariantPres := if applicableInvariantPres.length == ctx.contractInvariantTexts.length then
+        applicableInvariantPres.zip (ctx.contractInvariantTexts.map (s!"invariant {·}"))
+      else described "invariant" applicableInvariantPres
     let allPreconditions :=
       described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
-      specPres ++ described "invariant" applicableInvariantPres ++
-      described "axiom" (sumAxioms ++ sumEmptyAxioms)
+      specPres ++ invariantPres
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
     let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
       if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc
@@ -633,10 +639,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         if positiveEnvConstants.contains c then
           [(mkStmtExprMd (mkPrimOp .Gt [v, mkStmtExprMd (.LiteralInt 0)]), s!"{what} is positive")]
         else []
+    -- The sum() axioms are facts about the uninterpreted `sum_<m>`: free,
+    -- like the type ranges (nothing for a caller to check).
+    let axioms := (sumAxioms ++ sumEmptyAxioms).map fun p => (p, s!"axiom {Std.format p}")
     -- Wrap preconditions in Condition records (new Laurel shape requires this).
     let allPreconditionConds : List Condition :=
       allPreconditions.map (fun (p, d) => { condition := p, summary := some d }) ++
-      (typeRanges ++ envRanges).map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
+      (typeRanges ++ envRanges ++ axioms).map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
 
     return {
       -- Located at the function, which is where Laurel reports the heap
