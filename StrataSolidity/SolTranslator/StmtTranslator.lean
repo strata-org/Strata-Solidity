@@ -558,6 +558,14 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           (mkStmtExprMd (mkForall { name := "v", type := mkHighTypeMd .TInt }
             (mkStmtExprMd (mkPrimOp .Eq [sumUpdated, rhs])))))))
 
+    -- A constructor starts from empty mappings, whose sum is zero; without
+    -- this, no constructor could establish a `sum(...)` invariant.
+    let sumEmptyAxioms := if !isConstructor then [] else
+      (ctx.mappingStateVars.filter ctx.summedMappings.contains).map fun name =>
+        mkStmtExprMd (mkPrimOp .Eq [
+          mkStmtExprMd (mkCall s!"sum_{name}" [mkStmtExprMd (mkCall "mapConst" [mkStmtExprMd (.LiteralInt 0)])]),
+          mkStmtExprMd (.LiteralInt 0)])
+
     -- Every precondition gets a distinct summary. Laurel names the check
     -- it emits at each call site after the callee's precondition, and Core
     -- merges results that share (summary, location): without summaries all
@@ -566,7 +574,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       ps.map fun p => (p, s!"{what} {Std.format p}")
     let allPreconditions :=
       described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
-      specPres ++ described "invariant" applicableInvariantPres ++ described "axiom" sumAxioms
+      specPres ++ described "invariant" applicableInvariantPres ++
+      described "axiom" (sumAxioms ++ sumEmptyAxioms)
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
     let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
       if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc

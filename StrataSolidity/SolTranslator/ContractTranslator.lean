@@ -534,13 +534,18 @@ def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
 
     -- Collect all mapping state variable names from procedure parameters.
     -- Mapping state vars appear as "<name>_in : Map[int, ...]" inputs of
-    -- mutating functions and "<name>" inputs of view functions.
+    -- mutating functions, "<name>" inputs of view functions, and "<name>"
+    -- outputs (a constructor has only the latter).
     let allMappingNames := allProcedures.foldl (fun acc proc =>
       acc ++ (proc.inputs.filterMap fun param =>
         match param.type.val with
         | .TMap _ _ =>
           let n := param.name.text
           some (if n.endsWith "_in" then (n.dropEnd 3).toString else n)
+        | _ => none) ++
+      (proc.outputs.filterMap fun param =>
+        match param.type.val with
+        | .TMap _ _ => some param.name.text
         | _ => none)) ([] : List String)
     let allMappingNames := allMappingNames.eraseDups
 
