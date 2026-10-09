@@ -219,18 +219,8 @@ private def ordinals {α} (xs : Array α) (key : α → String) : Array (α × N
     out := out.push (x, n)
   return out
 
-/-- Convert VCResults, each with the name of its procedure (`""` if
-    unknown), to a SARIF 2.1.0 JSON string. `warnings` are (byte offset,
-    message) pairs for unverified annotations/functions. -/
-def toSarif (vcResults : Array (VCResult × String)) (sourceOpt : Option (String × String))
-    (warnings : List (String.Pos.Raw × String) := []) : String :=
-  let ruleOf (vcr : VCResult) := match verdict vcr with
-    | .error _ => "strata/tool-error"
-    | _ => classifyRule vcr
-  let results :=
-    (ordinals vcResults (fun (vcr, p) => identity (ruleOf vcr) p vcr sourceOpt)).map
-      (fun ((vcr, p), n) => vcResultToJson vcr p sourceOpt n) ++
-    (ordinals warnings.toArray (·.2)).map (fun (w, n) => warningToJson sourceOpt w n)
+/-- A SARIF 2.1.0 document with the given results. -/
+private def sarifDocument (results : Array Json) : String :=
   let sarif := Json.mkObj [
     ("$schema", Json.str "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"),
     ("version", Json.str "2.1.0"),
@@ -248,3 +238,30 @@ def toSarif (vcResults : Array (VCResult × String)) (sourceOpt : Option (String
     ]])
   ]
   sarif.pretty
+
+/-- Convert VCResults, each with the name of its procedure (`""` if
+    unknown), to a SARIF 2.1.0 JSON string. `warnings` are (byte offset,
+    message) pairs for unverified annotations/functions. -/
+def toSarif (vcResults : Array (VCResult × String)) (sourceOpt : Option (String × String))
+    (warnings : List (String.Pos.Raw × String) := []) : String :=
+  let ruleOf (vcr : VCResult) := match verdict vcr with
+    | .error _ => "strata/tool-error"
+    | _ => classifyRule vcr
+  sarifDocument <|
+    (ordinals vcResults (fun (vcr, p) => identity (ruleOf vcr) p vcr sourceOpt)).map
+      (fun ((vcr, p), n) => vcResultToJson vcr p sourceOpt n) ++
+    (ordinals warnings.toArray (·.2)).map (fun (w, n) => warningToJson sourceOpt w n)
+
+/-- The SARIF document for a run that could not verify `path` at all (it
+    did not parse or translate): one `strata/tool-error` result, so that a
+    CI upload still shows why. -/
+def failureSarif (path message : String) : String :=
+  sarifDocument #[Json.mkObj [
+    ("ruleId", Json.str "strata/tool-error"),
+    ("ruleIndex", toJson (ruleIdx "strata/tool-error")),
+    ("level", Json.str "error"),
+    ("kind", Json.str "fail"),
+    ("message", Json.mkObj [("text", Json.str message)]),
+    ("partialFingerprints", Json.mkObj [
+      ("obligationId/v2", Json.str (fnv1a64 s!"strata/tool-error|{message}"))]),
+    ("locations", Json.arr #[physicalLocation path none])]]

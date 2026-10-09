@@ -18,6 +18,20 @@ private def exitFailure {α} (message : String) : IO α := do
   IO.eprintln s!"Exception: {message}"
   IO.Process.exit 1
 
+/-- Exit with an error. In the machine-readable modes, a document with the
+    error is printed first, so that CI uploads (`if: always()`) and scripts
+    see why nothing was verified. -/
+private def failRun {α} (sarif json pipeline : Bool) (path message : String) : IO α := do
+  if sarif then IO.println (StrataSolidity.Sarif.failureSarif path message)
+  else if json then
+    IO.println (Json.arr #[Json.mkObj [("name", "translation-error"),
+      ("description", Json.str message), ("status", "implementation_error")]]).pretty
+  else if pipeline then
+    IO.println (toString (Json.mkObj [("error", Json.str message), ("obligations", Json.arr #[]),
+      ("summary", Json.mkObj [("total", (0 : Nat)), ("passed", (0 : Nat)), ("failed", (0 : Nat)),
+        ("unknown", (0 : Nat)), ("errors", (1 : Nat))])]))
+  exitFailure message
+
 /-- Read a Solidity Ion file, converting IO errors to a clean exit. -/
 private def readSolidityStrata' (strataPath : String)
     : IO (Array (Strata.Solidity.Command Strata.SourceRange)) := do
@@ -148,9 +162,19 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
   s := s ++ s!"\n{nPass} passed, {nFail} failed, {nUnknown} unknown{errors} out of {vcResults.size} total"
   (s, nFail > 0 || nError > 0)
 
-/-- Produce flat JSON array of results for scripting. -/
+/-- Line and (1-based) column of a translation warning. -/
+private def warningPosition (sourceOpt : Option (String × String))
+    (w : Strata.Solidity.TranslationWarning) : Option (Nat × Nat) :=
+  sourceOpt.map fun (_, text) =>
+    let pos := (Lean.FileMap.ofString text).toPosition w.range.start
+    (pos.line, pos.column + 1)
+
+/-- Produce flat JSON array of results for scripting: one entry per
+    obligation, then one per annotation or function that is not verified
+    (`"status": "not_verified"`, the warnings). -/
 private def formatJsonResults (vcResults : Array Core.VCResult)
-    (sourceOpt : Option (String × String)) : String :=
+    (sourceOpt : Option (String × String))
+    (warnings : List Strata.Solidity.TranslationWarning) : String :=
   let arr := vcResults.map fun vcr =>
     let baseFields : Array (String × Json) := #[
       ("name", Json.str vcr.obligation.label),
@@ -162,7 +186,13 @@ private def formatJsonResults (vcResults : Array Core.VCResult)
       baseFields.push ("line", toJson line) |>.push ("col", toJson (col + 1))
     | none => baseFields
     Json.mkObj fields.toList
-  (Json.arr arr).pretty
+  let notVerified := warnings.toArray.map fun w =>
+    let base : List (String × Json) :=
+      [("name", "not-verified"), ("description", Json.str w.message), ("status", "not_verified")]
+    match warningPosition sourceOpt w with
+    | some (line, col) => Json.mkObj (base ++ [("line", toJson line), ("col", toJson col)])
+    | none => Json.mkObj base
+  (Json.arr (arr ++ notVerified)).pretty
 
 /-- Main entry point: `strataSolidity <file> [--verbose] [--sarif] [--json]` -/
 def main (args : List String) : IO Unit := do
@@ -198,7 +228,7 @@ def main (args : List String) : IO Unit := do
       if useSolFrontend then do
         match ← Strata.Solidity.SolcAst.parseFile ⟨filePath⟩ with
         | .ok cmd => pure cmd
-        | .error e => exitFailure s!"Failed to parse {filePath}: {e}"
+        | .error e => failRun sarifMode jsonMode pipelineJson filePath s!"Failed to parse {filePath}: {e}"
       else do
         let cmds ← readSolidityStrata' filePath
         if cmds.size != 1 then
@@ -230,7 +260,7 @@ def main (args : List String) : IO Unit := do
     match Strata.Solidity.solidityToLaurelWithWarnings cmd (some sourcePathForMetadata)
         (solSourceOpt.map (·.2)) with
     | .error e =>
-      exitFailure s!"Solidity to Laurel translation failed: {e}"
+      failRun sarifMode jsonMode pipelineJson filePath s!"Solidity to Laurel translation failed: {e}"
     | .ok (laurelProgram, translationWarnings) =>
       -- Report everything the translator did not verify, so nothing is
       -- dropped silently. Under `--strict` they make the run fail.
@@ -249,7 +279,7 @@ def main (args : List String) : IO Unit := do
       let (coreOpt, translateDiags) ← Strata.Laurel.translate {} laurelProgram
       match coreOpt with
       | none =>
-        exitFailure s!"Laurel to Core translation failed: {translateDiags}"
+        failRun sarifMode jsonMode pipelineJson filePath s!"Laurel to Core translation failed: {translateDiags}"
       | some coreProgram =>
         let coreStr := toString (f!"{coreProgram}")
         if verbose then
@@ -356,7 +386,8 @@ def main (args : List String) : IO Unit := do
             let status := match verdict r with
               | .pass => "pass"
               | .fail => "fail"
-              | _ => "unknown"
+              | .unknown => "unknown"
+              | .error _ => "error"
             -- Try to read the SMT file for this obligation
             let smtContent ← do
               let candidates ← (smtDir.readDir).catchExceptions (fun _ => pure #[])
@@ -373,7 +404,11 @@ def main (args : List String) : IO Unit := do
               match (matching.qsort (·.1 < ·.1)).toList.head? with
               | some (_, entry) => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
               | none => pure ""
-            let smtResult := if r.isSuccess then "unsat" else if r.isFailure then "sat" else "unknown"
+            let smtResult := match verdict r with
+              | .pass => "unsat"
+              | .fail => "sat"
+              | .unknown => "unknown"
+              | .error _ => "error"
             return Json.mkObj [
               ("label", r.obligation.label),
               ("status", status),
@@ -388,18 +423,26 @@ def main (args : List String) : IO Unit := do
               ("total", vcResults.size),
               ("passed", (vcResults.filter (verdict · matches .pass)).size),
               ("failed", (vcResults.filter (verdict · matches .fail)).size),
-              -- Not proven and not refuted: timeouts and errors included,
-              -- so that total = passed + failed + unknown.
-              ("unknown", (vcResults.filter fun r =>
-                !(verdict r matches .pass) && !(verdict r matches .fail)).size)
-            ])
+              -- Neither proven nor refuted, timeouts included; `errors` are
+              -- obligations nothing checked (total = passed + failed +
+              -- unknown + errors).
+              ("unknown", (vcResults.filter (verdict · matches .unknown)).size),
+              ("errors", (vcResults.filter (verdict · matches .error _)).size),
+              ("notVerified", warnings.length)
+            ]),
+            -- Annotations and functions that are not verified (the warnings).
+            ("warnings", Json.arr (warnings.toArray.map fun w =>
+              Json.mkObj ([("message", Json.str w.message)] ++
+                match warningPosition solSourceOpt w with
+                | some (line, col) => [("line", toJson line), ("col", toJson col)]
+                | none => [])))
           ]
           IO.println (toString pipeline)
         else if sarifMode then
           IO.println (StrataSolidity.Sarif.toSarif (located.map fun (r, _, p) => (r, p)) solSourceOpt
             (warnings.map fun w => (w.range.start, w.message)))
         else if jsonMode then
-          IO.println (formatJsonResults vcResults solSourceOpt)
+          IO.println (formatJsonResults vcResults solSourceOpt warnings)
         else
           IO.println "\n==== Verification Results ===="
           let inputs := Std.HashSet.ofList (laurelProgram.staticProcedures.flatMap
