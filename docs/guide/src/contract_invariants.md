@@ -84,6 +84,12 @@ A constructor's calls cannot re-enter (the contract has no code yet), and a
 returned by external calls are unknown values of their type. `immutable`
 variables never change.
 
+`--assume-no-reentrancy` trusts that no call re-enters the contract: calls
+other than `delegatecall` then leave its state unchanged, and the
+invariants need not hold at a call. Results obtained with it hold only if
+that is true, for example because every function that changes state is
+guarded by a reentrancy lock.
+
 ## The `sum()` Aggregate
 
 `sum(mapping)` represents the sum of all values in a mapping. This is the standard way to express token supply conservation:

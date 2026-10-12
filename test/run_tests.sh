@@ -32,7 +32,11 @@ for sol in "$EXAMPLES_DIR"/*.sol; do
     expected="$EXPECTED_DIR/$name.expected"
     expected_warnings="$EXPECTED_DIR/$name.warnings"
 
-    bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" >"$out_file" 2>"$err_file" || true
+    # Extra command-line flags for a fixture, from `<name>.flags` if present.
+    flags=""
+    if [ -f "$EXAMPLES_DIR/$name.flags" ]; then flags=$(cat "$EXAMPLES_DIR/$name.flags"); fi
+    # shellcheck disable=SC2086
+    bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" $flags >"$out_file" 2>"$err_file" || true
     # Extract just the results summary: the section headers ("✅ Passed
     # (3):") and the totals line ("3 passed, 0 failed, ..."). Anchored, so
     # obligation names and counterexample variables (`ensures totalSupply

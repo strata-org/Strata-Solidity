@@ -477,7 +477,7 @@ def externalCallKind? (fnType? : Option String) (member? : Option String) : Opti
       contract's external functions keep its invariants: at an entry point
       (which assumes them), the invariants are checked before the call and
       assumed after it. Nothing changes in a constructor (nothing can call
-      a contract that has no code yet);
+      a contract that has no code yet), nor under `--assume-no-reentrancy`;
     - `delegate`: the code works on the contract's storage, which is
       unknown afterwards, invariants included.
     State changes only where solc lets the function change it (not in
@@ -486,7 +486,7 @@ def externalCallModel (ctx : TransCtx) (sr : SourceRange) (kind : ExternalCallKi
     : List StmtExprMd :=
   let changesState := ctx.mayWriteState && match kind with
     | .static => false
-    | .call => !ctx.isConstructor
+    | .call => !ctx.isConstructor && !ctx.assumeNoReentrancy
     | .delegate => true
   if !changesState then []
   else if kind == .delegate then stateHavoc ctx

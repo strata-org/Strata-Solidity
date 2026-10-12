@@ -513,8 +513,9 @@ def unattachedAnnotations (cmd : Solidity.Command SourceRange) (source : String)
 def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
     (solFilePath : Option String := none) (source : Option String := none)
     (exprTypes : Std.HashMap (Nat × Nat × String) String := {})
+    (assumeNoReentrancy : Bool := false)
     : Except TranslationError (Laurel.Program × List TranslationWarning) := do
-  let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes }
+  let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes, assumeNoReentrancy }
   match cmd with
   | .SourceUnit _ nodesSeq => do
     -- The contracts and interfaces, whose names are types of addresses.

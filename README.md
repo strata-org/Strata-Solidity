@@ -175,6 +175,7 @@ Requires `lake build` to have been run first.
 | `--timeout=<s>` | Per-obligation solver timeout (default 10) |
 | `--no-array-theory` | Encode mappings with quantified select/update axioms instead of SMT arrays (the default since the 2026-10 Strata re-pin; `--array-theory` is accepted and has no effect) |
 | `--dump-vc=<dir>` | Keep the generated `.smt2` files in `<dir>/<procedure>/` |
+| `--assume-no-reentrancy` | Trust that external calls do not call back into the contract, so they leave its state unchanged (see [Contract Invariants](docs/guide/src/contract_invariants.md#external-calls-and-reentrancy)) |
 
 ## Directory layout
 

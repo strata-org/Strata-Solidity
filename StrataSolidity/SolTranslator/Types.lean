@@ -216,6 +216,9 @@ structure TransCtx where
       state: a call that may re-enter the contract checks them before and
       assumes them after (see `externalCallModel`). -/
   reentryInvariants : List (StmtExprMd × String) := []
+  /-- `--assume-no-reentrancy`: external calls are assumed not to call back
+      into the contract, so they leave its state unchanged. -/
+  assumeNoReentrancy : Bool := false
 
 /-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
     at `sr`, if known. -/
