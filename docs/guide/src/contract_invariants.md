@@ -114,17 +114,20 @@ This is enough for z3 to prove that `mint` (which increases both `totalSupply` a
 Constructors **establish** invariants — they must make the invariant true, but they don't assume it was true before (there is no "before" for a constructor). Mappings start empty, so `sum(m)` is 0 at the start of a constructor:
 
 ```solidity
-contract Counter {
-    /// @custom:strata invariant count >= 0
-    uint256 public count;
+contract Token {
+    mapping(address => uint256) public balances;
+    /// @custom:strata invariant totalSupply == sum(balances)
+    uint256 public totalSupply;
 
-    constructor() {
-        count = 10;  // ✅ establishes count >= 0
+    constructor(address treasury, uint256 initialSupply) {
+        balances[treasury] = initialSupply;
+        totalSupply = initialSupply;  // ✅ establishes totalSupply == sum(balances)
     }
 }
 ```
 
-If the constructor set `count` to a value that violates the invariant, verification would fail.
+If the constructor forgot to credit `treasury`, or set `totalSupply` to a
+different amount, the invariant would not be proven.
 
 ## Example: Supply Cap
 

@@ -70,11 +70,17 @@ function mint(address to, uint256 amount) external { ... }
 ## Automatic Assumptions
 
 The verifier automatically assumes:
-- All `uint` state variables and parameters are `>= 0`
-- `msg.sender > 0` (zero address cannot send transactions)
-- `msg.value >= 0`
+- Parameters, state variables (on entry), `msg.sender` and `msg.value` hold
+  values of their Solidity types: an unsigned integer is never negative, a
+  `uint8` is at most 255, an address fits in 160 bits
+- `msg.sender != address(0)` (the zero address cannot send transactions)
 - `emit` statements have no verification effect
-- `revert` statements are no-ops (postconditions apply to non-reverting path)
+- `revert` and a failing `require` end the path: postconditions are checked
+  only on the paths that do not revert
+
+Never restate these in a specification: `requires amount >= 0` or
+`invariant totalSupply >= 0` on a `uint256` is true by its type and adds
+nothing.
 
 ## Full Example
 
@@ -83,8 +89,10 @@ contract Token {
     mapping(address => uint256) public balances;
     mapping(address => mapping(address => uint256)) public allowance;
     /// @custom:strata invariant totalSupply == sum(balances)
-    /// @custom:strata invariant totalSupply >= 0
     uint256 public totalSupply;
+    uint256 public collectedFees;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
 
     /**
      * @notice Transfers tokens from sender to recipient.

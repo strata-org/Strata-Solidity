@@ -4,7 +4,8 @@ pragma solidity ^0.8.0;
 // Bench 3: Mapping + multiple functions + invariant
 contract B3_Token {
     mapping(address => uint256) public balances;
-    /// @custom:strata invariant totalSupply >= 0
+
+    /// @custom:strata invariant totalSupply == sum(balances)
     uint256 public totalSupply;
 
     /// @custom:strata requires amount > 0

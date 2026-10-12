@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 /// @title SafeToken
-/// @custom:strata invariant totalSupply <= type(uint256).max
+/// @custom:strata invariant totalSupply == sum(balances)
 contract SafeToken {
     mapping(address => uint256) public balances;
     uint256 public totalSupply;
@@ -19,15 +19,17 @@ contract SafeToken {
     function mint(address to, uint256 amount) external {
         require(msg.sender == owner, "Not owner");
         require(amount > 0 && amount <= 1000000000000000000000000, "Bad amount");
-        require(totalSupply + amount >= totalSupply, "Overflow");
         totalSupply += amount;
         balances[to] += amount;
-        balances[address(0x4275696c6465724E657420466c617368626F7473)] += 1;
-    }    /// @custom:strata requires amount <= balances[msg.sender]
+    }
+
+    /// @custom:strata requires to != msg.sender
+    /// @custom:strata requires amount <= balances[msg.sender]
     /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
     /// @custom:strata ensures balances[to] == old(balances[to]) + amount
     /// @custom:strata modifies balances[msg.sender], balances[to]
     function transfer(address to, uint256 amount) external {
+        require(to != msg.sender, "Self-transfer");
         require(amount <= balances[msg.sender], "Insufficient");
         balances[msg.sender] -= amount;
         balances[to] += amount;
