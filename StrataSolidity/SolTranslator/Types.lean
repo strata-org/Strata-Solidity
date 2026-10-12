@@ -211,6 +211,11 @@ structure TransCtx where
   /-- The `immutable` state variables, which keep their value once the
       constructor has run. -/
   immutableNames : List String := []
+  /-- The contract invariants in the current state, with their source text,
+      when the current function is an external entry point that may change
+      state: a call that may re-enter the contract checks them before and
+      assumes them after (see `externalCallModel`). -/
+  reentryInvariants : List (StmtExprMd × String) := []
 
 /-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
     at `sr`, if known. -/
@@ -407,10 +412,11 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array",
       arrayLength := lengthAnn.val.toNat? }
   | .FunctionTypeName _ _ _ _ _ =>
-    -- First-class function types are modeled as an opaque user-defined type.
-    -- Verification doesn't reason about function-pointer values; this keeps
-    -- the type well-formed without claiming any structure.
-    { highType := mkHighTypeMd (.UserDefined (mkIdent "function")), solName := "function" }
+    -- A function value is an opaque integer: verification does not reason
+    -- about which function it is. A call through an external function
+    -- value is an external call (see `translateExternalCall?`); one
+    -- through an internal function value is not supported.
+    { highType := mkHighTypeMd .TInt, solName := "function" }
 
 /-- Is this a Solidity unsigned integer type? -/
 def SolType.isUint (st : SolType) : Bool :=

@@ -105,7 +105,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants: they change between transactions |
 | `gasleft()`, balances, `send` | ⚠️ Unknown | A fresh value of the result type at every read or call |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
-| External calls / reentrancy | ❌ | No cross-contract reasoning |
+| External calls / reentrancy | ⚠️ Havoc | A call of another contract (through an interface, `this.f()`, an external function value), a low-level `call`, or `new C(…)` may call back into the contract: its state is unknown after the call, except for the contract invariants, which an external function checks before the call and assumes after it. `view` calls and `staticcall` change nothing; nor do `send` and `transfer` (too little gas to). `delegatecall` may change all state, invariants included. Results are unknown values of their type. Constructors cannot be re-entered |
 | Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state (of its type) if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the function on some paths. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor |
 | Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |

@@ -315,7 +315,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       if outputs.length > 1 && !isConstructor then
         baseOutputs.head?.map (·.name.text)
       else none
+    -- An entry point that may change state keeps the invariants across a
+    -- call that may re-enter the contract (see `externalCallModel`).
+    let reentryInvariants := if !checksInvariants || isConstructor then [] else
+      (resolveInvariants ctx false ctx.contractInvariantNatspec).zip ctx.contractInvariantTexts
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
+                              reentryInvariants := reentryInvariants,
                               memoryArrayParams := memoryArrayParamNames,
                               hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
                               mayWriteState := !isPure && !isView,

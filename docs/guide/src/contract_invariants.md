@@ -37,6 +37,52 @@ StrataSolidity checks that:
 4. Internal and private functions neither assume nor re-establish it: they run
    in the middle of an entry point, where the invariant may be temporarily
    broken. The entry point that calls them checks it on exit.
+5. In an external function, the invariant holds **before each external
+   call** that may re-enter the contract (see below).
+
+## External calls and reentrancy
+
+Code outside the contract is not interpreted. A call that runs it may call
+back into the contract (re-enter it) and change its state through its
+external functions, so the state is unknown after the call:
+
+| Call | State after the call |
+|---|---|
+| A mutating function of another contract (through an interface, a contract-typed variable or an external function value), `this.f()`, `addr.call(…)`, `new C(…)` | Unknown, except that the invariants hold |
+| A `view` or `pure` function, `addr.staticcall(…)`, `send`, `transfer` | Unchanged |
+| `addr.delegatecall(…)` | Unknown, invariants included |
+
+The contract's external functions maintain its invariants, so the
+invariants still hold after a re-entrant call, provided they held when the
+contract was re-entered: an external function checks them before each such
+call (`invariant … holds before the external call`) and assumes them after
+it. This is the checks-effects-interactions discipline: finish updating
+state, so that the invariants hold again, before calling out.
+
+```solidity
+/// @custom:strata invariant fee <= 100
+contract Bank {
+    IToken token;
+    uint256 fee;
+
+    /// @custom:strata ensures fee <= 100      // ✅ the invariant holds after the call
+    /// @custom:strata ensures fee == old(fee) // ❌ a re-entrant call may change fee
+    function pay(address to, uint256 amount) external {
+        require(token.transfer(to, amount));
+    }
+
+    function unsafePay(address to) external {
+        fee = 200;
+        require(token.transfer(to, 1));        // ❌ the invariant does not hold here
+        fee = 50;
+    }
+}
+```
+
+A constructor's calls cannot re-enter (the contract has no code yet), and a
+`try` whose call reverts leaves the state as it was before the call. Values
+returned by external calls are unknown values of their type. `immutable`
+variables never change.
 
 ## The `sum()` Aggregate
 

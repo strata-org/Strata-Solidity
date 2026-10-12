@@ -57,7 +57,8 @@ See [Current Limitations](./limitations.md) for the full list. Major gaps:
 
 - Struct fields accessed through mapping values
 - `old()` in loop invariants
-- External calls / cross-contract reasoning
+- Cross-contract reasoning: an external call's effects and results are
+  unknown (see [Contract Invariants](./contract_invariants.md#external-calls-and-reentrancy))
 - Counterexample generation
 - `msg.sender` in constructors
 
