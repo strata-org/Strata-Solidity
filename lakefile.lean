@@ -10,9 +10,13 @@ require Strata from "Strata"
 
 @[default_target] lean_lib StrataSolidity
 
-lean_lib StrataSolidityTest where globs := #[`StrataSolidityTest.+]
-
 @[default_target] lean_exe strataSolidity where root := `StrataSolidityMain
+
+lean_lib StrataSolidityTest where
+  globs := #[`StrataSolidityTest.+]
+  -- `JsonOutputTest` runs the binary: build it first, and run the tests
+  -- again whenever it changes (otherwise Lake replays their cached result).
+  needs := #[strataSolidity]
 
 /--
 Group A step 2: print a structural summary of the Lean-built Solidity DDM
