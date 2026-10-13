@@ -50,10 +50,9 @@ mapping(bytes32 => bool) public paymentCaptured;
 |---|---|
 | Struct fields through mappings (GAP-002) | Blocked on Strata Core heap parameterization |
 | `old()` in loop invariants (GAP-003) | `__old` marker not resolved in loop context |
-| `block.timestamp` (GAP-005) | No time abstraction yet |
 | `msg.sender` in constructors (GAP-006) | Constructor handling incomplete |
 | External calls / reentrancy (GAP-007) | No cross-contract reasoning |
-| Assembly / inline Yul | Not parsed |
+| Assembly / inline Yul | Not interpreted: what a block may write (the variables it assigns, memory variables, contract state) is unknown afterwards, and a block that may `return` or `stop` ends the function on some paths |
 | Dynamic arrays (`push`/`pop`) (GAP-008) | `.length` works, `push`/`pop` not modeled |
 | Inheritance (GAP-009) | Single contract only, no virtual dispatch |
 | Lemmas (`@custom:strata lemma`) (GAP-004) | Needs Laurel grammar extension |

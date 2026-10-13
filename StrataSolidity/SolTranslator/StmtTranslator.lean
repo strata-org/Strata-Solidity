@@ -126,17 +126,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           let selfField := mkStmtExprMd
             (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) field.name.text)
           let inRef := mkStmtExprMd (mkIdentifier inName)
-          preconditions := preconditions ++
-            [mkStmtExprMd (mkPrimOp .Eq [selfField, inRef])]
+          -- Free: an internal call passes exactly `self#<name>`.
+          typeRanges := typeRanges ++
+            [(mkStmtExprMd (mkPrimOp .Eq [selfField, inRef]), s!"old({field.name.text}) is the entry value")]
 
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
       if let some c := mkRangeCond "address" (mkStmtExprMd (mkIdentifier "msg_sender")) then
         typeRanges := typeRanges ++ [(c, "type range of msg.sender (address)")]
-      -- msg.sender is always > 0 (zero address cannot send transactions)
-      preconditions := preconditions ++ [mkStmtExprMd (mkPrimOp .Gt [
-        mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
+      -- msg.sender is always > 0 (zero address cannot send transactions).
+      -- Free: an internal call passes its caller's msg.sender.
+      typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Gt [
+        mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)]),
+        "msg.sender is not the zero address")]
       inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
       if let some c := mkRangeCond "uint256" (mkStmtExprMd (mkIdentifier "msg_value")) then
         typeRanges := typeRanges ++ [(c, "type range of msg.value (uint256)")]
@@ -170,6 +173,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- input parameters are immutable. We rename inputs to `name_param` and create
     -- local variables `name := name_param` at the start of the body.
     let mut userParamInfo : List (String × HighTypeMd) := []
+    -- Parameters in memory or calldata (see `TransCtx.memoryVars`).
+    let mut memoryParams : List (String × HighTypeMd) := []
 
     match params with
     | .ParameterList _ paramsSeq =>
@@ -195,12 +200,20 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           -- The argument is a value of its Solidity type.
           if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier inputName)) then
             typeRanges := typeRanges ++ [(c, s!"type range of {baseName} ({solTy.solName})")]
-          -- For memory array parameters, add a paired length parameter
+          if storageLocAnn.val == "memory" || storageLocAnn.val == "calldata" then
+            memoryParams := memoryParams ++ [(baseName, solTy.highType)]
+          -- For memory array parameters, add a paired length parameter,
+          -- copied to a local like the array (inline assembly can change it)
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
             let lenName := s!"{baseName}_length"
-            inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
-            preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            inputs := inputs ++ [{ name := s!"{lenName}_param", type := mkHighTypeMd .TInt }]
+            userParamInfo := userParamInfo ++ [(lenName, mkHighTypeMd .TInt)]
+            preconditions := preconditions ++ [mkNonNegPrecond s!"{lenName}_param"]
+            if let some n := solTy.arrayLength then
+              typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
+                [mkStmtExprMd (mkIdentifier s!"{lenName}_param"), mkStmtExprMd (.LiteralInt n)]),
+                s!"length of {baseName} ({n})")]
             memoryArrayParamNames := memoryArrayParamNames ++ [baseName]
         | _ => throw (.unsupported "Non-VariableDeclaration in parameter list")
     | _ => throw (.internalError "Expected ParameterList for parameters")
@@ -288,6 +301,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
                               memoryArrayParams := memoryArrayParamNames,
                               hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
+                              mayWriteState := !isPure && !isView,
+                              isConstructor := isConstructor,
+                              returnNames := baseOutputs.map (·.name.text),
+                              memoryVars := memoryParams,
                               valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
@@ -333,6 +350,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let b := mkStmtExprMd (.Block bodyStmts none)
         -- Build preamble: local copies of user params + mapping init assigns
         let mut preamble : List StmtExprMd := []
+        -- 0. Return variables start at their type's zero value, as in
+        -- Solidity (a function that never assigns one returns zero).
+        for out in baseOutputs do
+          if let some v := zeroValue? out.type then
+            preamble := preamble ++ [mkStmtExprMd (.Assign
+              [toAssignTarget (mkStmtExprMd (mkIdentifier out.name.text))] v)]
         -- 1. Local copies of user-provided parameters (Solidity params are mutable)
         for (name, ty) in userParamInfo do
           preamble := preamble ++ [mkStmtExprMd (mkLocalVar name ty
@@ -368,8 +391,10 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                     | _ => false) v then fresh
                 else v
               | .error _ => fresh
+            -- Located at the initializer (its checks too, see `.Return`).
             preamble := preamble ++
-              [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value)]
+              [withSourceRange ctx (exprRange initNode)
+                (mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value))]
             if ctx.arrayStateVars.contains name then
               let len := match initNode with
                 | .InlineArrayExpression _ elems => mkStmtExprMd (.LiteralInt elems.val.size)
@@ -588,22 +613,46 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- checks at one call site would collapse into a single "precondition".
     let described (what : String) (ps : List StmtExprMd) : List (StmtExprMd × String) :=
       ps.map fun p => (p, s!"{what} {Std.format p}")
+    -- An invariant is named as written (`invariant total == sum(bal)`).
+    let invariantPres := if applicableInvariantPres.length == ctx.contractInvariantTexts.length then
+        applicableInvariantPres.zip (ctx.contractInvariantTexts.map (s!"invariant {·}"))
+      else described "invariant" applicableInvariantPres
     let allPreconditions :=
       described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
-      specPres ++ described "invariant" applicableInvariantPres ++
-      described "axiom" (sumAxioms ++ sumEmptyAxioms)
+      specPres ++ invariantPres
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
     let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
       if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc
       else acc ++ [(p, d)]) []
 
+    -- Transaction constants (`block.timestamp`, …) the function reads hold
+    -- values of their Solidity type.
+    let reads (c : String) : Bool :=
+      allPreconditions.any (readsConstant c ·.1) ||
+      match body with
+      | .Opaque posts impl _ => posts.any (readsConstant c ·.condition) || impl.any (readsConstant c)
+      | _ => false
+    let envRanges := envConstants.flatMap fun (c, what, solName) =>
+      if !reads c then [] else
+        let v := mkStmtExprMd (mkCall c [])
+        (mkRangeCond solName v).toList.map (·, s!"type range of {what} ({solName})") ++
+        if positiveEnvConstants.contains c then
+          [(mkStmtExprMd (mkPrimOp .Gt [v, mkStmtExprMd (.LiteralInt 0)]), s!"{what} is positive")]
+        else []
+    -- The sum() axioms are facts about the uninterpreted `sum_<m>`: free,
+    -- like the type ranges (nothing for a caller to check).
+    let axioms := (sumAxioms ++ sumEmptyAxioms).map fun p => (p, s!"axiom {Std.format p}")
     -- Wrap preconditions in Condition records (new Laurel shape requires this).
     let allPreconditionConds : List Condition :=
       allPreconditions.map (fun (p, d) => { condition := p, summary := some d }) ++
-      typeRanges.map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
+      (typeRanges ++ envRanges ++ axioms).map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
 
     return {
-      name := funcName
+      -- Located at the function, which is where Laurel reports the heap
+      -- frame ("only this contract is modified") of the procedure.
+      name := { text := funcName, source := match ctx.uri with
+        | some uri => sourceRangeToFileRange uri fnSr
+        | none => .unknown }
       inputs := inputs
       outputs := outputs
       preconditions := allPreconditionConds

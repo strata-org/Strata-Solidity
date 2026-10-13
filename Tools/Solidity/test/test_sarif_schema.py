@@ -253,17 +253,20 @@ def _json_statuses(fixture: Path, *extra: str) -> list[str]:
 
 
 def test_sarif_matches_json_per_obligation() -> None:
-    """Each obligation has the same verdict in SARIF and in --json."""
+    """Each obligation, and each annotation or function that is not
+    verified, has the same verdict in SARIF and in --json."""
     _require_built_binary()
     _require_solc()
     expected = {"pass": ("pass", "none"), "fail": ("fail", "error"),
-                "unknown": ("fail", "warning"), "implementation_error": ("fail", "error")}
+                "unknown": ("fail", "warning"), "implementation_error": ("fail", "error"),
+                "not_verified": ("fail", "warning")}
     for fixture in _FIXTURES:
         statuses = _json_statuses(fixture)
-        results = [r for r in _results(_run_sarif(fixture))
-                   if r["ruleId"] != "strata/not-verified"]
+        results = _results(_run_sarif(fixture))
         assert [(r["kind"], r["level"]) for r in results] == \
             [expected[st] for st in statuses], (fixture, statuses)
+        assert sum(r["ruleId"] == "strata/not-verified" for r in results) == \
+            statuses.count("not_verified"), fixture
 
 
 

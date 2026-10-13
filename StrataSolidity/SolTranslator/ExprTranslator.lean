@@ -206,6 +206,123 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
   | _ => return mkStmtExprMd (.Block [assign] none)
 
+/-- What an inline-assembly block may do, read from solc's Yul AST (the
+    `InlineAssembly` payload). -/
+structure YulSummary where
+  /-- Names the block assigns (`x := …`; the variable of `p.slot := …`).
+      Some are Yul locals. -/
+  assigned : List String
+  /-- Whether it writes memory (`mstore`, a copy, a call's output area). -/
+  writesMemory : Bool
+  /-- Whether it may write this contract's storage: `sstore`, or a call or
+      creation that can run code writing it. -/
+  writesStorage : Bool
+  /-- Whether it may end the function (`return`, `stop`, `selfdestruct`). -/
+  exits : Bool
+
+/-- `yulSummary?` for a block whose Yul AST is unknown: it may do anything
+    to the given variables. -/
+def YulSummary.any (vars : List String) : YulSummary :=
+  { assigned := vars, writesMemory := true, writesStorage := true, exits := true }
+
+/-- The summary of a Yul AST, or `none` if the payload is not one. -/
+partial def yulSummary? (payload : String) : Option YulSummary :=
+  match Lean.Json.parse payload with
+  | .ok j =>
+    if j.getObjValD "nodeType" == .str "YulBlock" then
+      let (assigned, called) := collect j
+      let calls (fs : List String) := called.any fs.contains
+      some { assigned
+             writesMemory := calls ["mstore", "mstore8", "mcopy", "calldatacopy", "codecopy",
+               "extcodecopy", "returndatacopy", "datacopy", "call", "callcode", "delegatecall",
+               "staticcall"]
+             writesStorage := calls ["sstore", "call", "callcode", "delegatecall", "create", "create2"]
+             exits := calls ["return", "stop", "selfdestruct"] }
+    else none
+  | .error _ => none
+where
+  /-- Assigned names and called functions. -/
+  collect : Lean.Json → List String × List String
+    | .obj kvs =>
+      let kvs := kvs.toList
+      let name (v : Lean.Json) : Option String := match v.getObjVal? "name" with
+        | .ok (.str n) => (n.splitOn ".").head?
+        | _ => none
+      let assigned := match kvs.lookup "nodeType", kvs.lookup "variableNames" with
+        | some (.str "YulAssignment"), some (.arr vs) => vs.toList.filterMap name
+        | _, _ => []
+      let called := match kvs.lookup "nodeType", kvs.lookup "functionName" with
+        | some (.str "YulFunctionCall"), some f => (name f).toList
+        | _, _ => []
+      kvs.foldl (fun (a, c) (_, v) => let (a', c') := collect v; (a ++ a', c ++ c'))
+        (assigned, called)
+    | .arr xs => xs.foldl (fun (a, c) x => let (a', c') := collect x; (a ++ a', c ++ c')) ([], [])
+    | _ => ([], [])
+
+/-- The Solidity variables in scope that inline assembly can assign:
+    locals, parameters and named returns, but not the variables carrying
+    mapping and array state, which Yul cannot name (and which are inputs
+    of `view` functions). -/
+def assemblyAssignable (ctx : TransCtx) : List String :=
+  let stateNames := ctx.mappingStateVars ++ ctx.arrayStateVars.map (· ++ "_length")
+  ctx.localNames.filter (!stateNames.contains ·) |>.eraseDups
+
+/-- The model of an inline-assembly block with summary `s`. Yul is not
+    interpreted: whatever the block may write is unknown afterwards, and
+    it may end the function there.
+    - The Solidity variables it assigns get fresh values, a memory array
+      with its length; so does every variable in memory if it writes memory.
+    - If it may write storage, so does all of the contract's state, where
+      solc lets assembly write it (not in `view` and `pure` functions).
+    - If it may end the function, it does so on some paths, with unknown
+      return values.
+    Fresh values are nondeterministic holes: a deterministic hole is a
+    function of the procedure's inputs, so a block in a loop would produce
+    the same value at every iteration. -/
+def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError StmtExprMd := do
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
+  let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  if let some p := s.assigned.find? fun n => ctx.storageAliases.any (·.1 == n) then
+    throw (.unsupported s!"inline assembly that assigns the storage reference `{p}`")
+  if s.writesMemory then
+    if let some (v, _) := ctx.memoryVars.find? (·.2.val matches .UserDefined _) then
+      throw (.unsupported s!"inline assembly that writes memory while the memory struct `{v}` is in scope")
+  if s.exits && ctx.isConstructor then
+    throw (.unsupported "inline assembly that may end the constructor")
+  let memory := if s.writesMemory then ctx.memoryVars.map (·.1) else []
+  let vars := (assemblyAssignable ctx).filter fun n => s.assigned.contains n || memory.contains n
+  let vars := vars.flatMap fun n =>
+    if ctx.memoryArrayParams.contains n then [n, s!"{n}_length"] else [n]
+  let state := if !(s.writesStorage && ctx.mayWriteState) then [] else
+    ctx.stateVarNames.flatMap fun n =>
+      if ctx.arrayStateVars.contains n then [n, s!"{n}_length"] else [n]
+  -- Scalar state is a field of `self`, except in constructors, where it
+  -- is an output variable like mapping state.
+  let (fields, stateVars) := state.partition fun n =>
+    ctx.hasSelfParam && ctx.stateVarNames.contains n && !ctx.mappingStateVars.contains n
+  let havocs := (vars ++ stateVars).eraseDups.map (assign ∘ ident) ++
+    fields.map fun n => assign (mkStmtExprMd (mkFieldSelect (ident "self") n))
+  let exit := if !s.exits then [] else
+    [mkStmtExprMd (.IfThenElse fresh
+      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))
+      none)]
+  return mkStmtExprMd (.Block (havocs ++ exit) none)
+
+/-- The loop condition and the statements to run at the top of each
+    iteration. Laurel lifts the effects of a condition (a call, `k++`, an
+    assignment, a division's check; see `hasEffects`) out of the loop,
+    evaluating them once before the first iteration, so a loop with such a
+    condition is translated as `while (true) { if (!cond) break; … }`,
+    which evaluates the condition at every iteration as Solidity does. -/
+def loopHead (cond : StmtExprMd) (breakLbl : String)
+    : StmtExprMd × List StmtExprMd :=
+  if hasEffects cond then
+    (mkStmtExprMd (.LiteralBool true),
+     [mkStmtExprMd (.IfThenElse (mkStmtExprMd (mkPrimOp .Not [cond]))
+        (mkStmtExprMd (.Exit breakLbl)) none)])
+  else (cond, [])
+
 /-- Source range of an expression node (`none` for other node kinds). -/
 def exprRange : Solidity.node SourceRange → SourceRange
   | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
@@ -296,8 +413,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<=" => .ok Operation.Leq
       | ">" => .ok Operation.Gt
       | ">=" => .ok Operation.Geq
-      | "&&" => .ok Operation.And
-      | "||" => .ok Operation.Or
+      -- Short-circuit: the right operand is evaluated only if needed, so
+      -- its effects (calls, checks) happen only on those paths.
+      | "&&" => .ok Operation.AndThen
+      | "||" => .ok Operation.OrElse
       | "&" => return mkStmtExprMd (mkCall "bit_and" [l, r])
       | "|" => return mkStmtExprMd (mkCall "bit_or" [l, r])
       | "^" => return mkStmtExprMd (mkCall "bit_xor" [l, r])
@@ -319,39 +438,42 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | none =>
         let subExpr ← translateExpr ctx sub
         return mkStmtExprMd (.Assign [toAssignTarget subExpr] zero)
+    -- `++`/`--` on a mapping or array element: write back through
+    -- `update`. Each index is evaluated once (`m[k++]++`), and the
+    -- expression yields the old element (postfix) or the new one (prefix).
+    if opAnn.val == "++" || opAnn.val == "--" then
+      if let some (rootNode, indices) := collectIndexChain sub then
+        let rootExpr ← translateExpr ctx rootNode
+        let idxExprs ← indices.mapM (translateExpr ctx)
+        let off := (exprRange n).start.byteIdx
+        let (binds, keys) := bindInOrder s!"__k{off}" idxExprs
+        let read := keys.foldl (fun acc k => mkStmtExprMd (mkCall "select" [acc, k])) rootExpr
+        let old := s!"__old{off}"
+        let oldVar := mkStmtExprMd (mkIdentifier old)
+        let newVal := mkStmtExprMd (mkPrimOp (if opAnn.val == "++" then .Add else .Sub)
+          [oldVar, mkStmtExprMd (.LiteralInt 1)])
+        let updateExpr ← buildNestedUpdate rootExpr keys newVal
+        return mkStmtExprMd (.Block (binds ++ [
+          declareLocal old read,
+          mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr),
+          if prefixAnn.val == "true" then newVal else oldVar]) none)
     let subExpr ← translateExpr ctx sub
+    -- Laurel's native `++`/`--` (on a variable or field): prefix yields the
+    -- new value and postfix the old one, as in Solidity (`x = i++`).
+    let incrDecr (mode : IncrDecrMode) (op : IncrDecrOp) : StmtExprMd :=
+      mkStmtExprMd (.IncrDecr mode op (toAssignTarget subExpr))
     if prefixAnn.val == "true" then
       match opAnn.val with
       | "!" => return mkStmtExprMd (mkPrimOp .Not [subExpr])
       | "-" => return mkStmtExprMd (mkPrimOp .Neg [subExpr])
       | "~" => return mkStmtExprMd (mkCall "bit_not" [subExpr])
-      | "++" =>
-        -- Prefix ++i: desugar to i = i + 1
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let add := mkStmtExprMd (mkPrimOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
-      | "--" =>
-        -- Prefix --i: desugar to i = i - 1
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let sub' := mkStmtExprMd (mkPrimOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
+      | "++" => return incrDecr .Pre .Incr
+      | "--" => return incrDecr .Pre .Decr
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
     else
-      -- Postfix operators (e.g., i++).
-      -- NOTE: This desugaring produces the *new* value (i + 1), which is correct
-      -- when i++ appears as a standalone statement. In expression context (e.g.,
-      -- x = i++), Solidity evaluates to the *old* value. Phase 1 only supports
-      -- statement-level usage; expression-context semantics require a temp variable
-      -- and are deferred to a later phase.
       match opAnn.val with
-      | "++" =>
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let add := mkStmtExprMd (mkPrimOp .Add [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] add)
-      | "--" =>
-        let one := mkStmtExprMd (.LiteralInt 1)
-        let sub' := mkStmtExprMd (mkPrimOp .Sub [subExpr, one])
-        return mkStmtExprMd (.Assign [toAssignTarget subExpr] sub')
+      | "++" => return incrDecr .Post .Incr
+      | "--" => return incrDecr .Post .Decr
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
   -- `new T(args)` parses as FunctionCall(NewExpression(T), args). Contract
@@ -429,8 +551,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (mkCall nameAnn.val args)
       | "gasleft" =>
-        -- gasleft() → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier "gasleft")
+        -- A fresh uint256 at every call (an opaque procedure, see
+        -- `envProcedures`).
+        return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
         -- selfdestruct(addr) → deprecated, model as no-op
         return mkStmtExprMd .Hole
@@ -497,13 +620,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | [] => throw (.unsupported "push() with no arguments (returns storage reference)")
           | _ => throw (.typeError "push() expects at most one argument")
       else if memberAnn.val == "transfer" then do
-        -- payable(addr).transfer(amount) → no-op for verification
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd .Hole
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        -- payable(addr).transfer(amount) → no-op for verification; a
+        -- contract's `transfer(to, amount)` (ERC-20) → unknown result
+        if args.length == 1 then return mkStmtExprMd (.Block [] none)
+        else return mkStmtExprMd .Hole
       else if memberAnn.val == "send" then do
-        -- payable(addr).send(amount) → nondeterministic bool
+        -- payable(addr).send(amount) → a fresh bool: whether it succeeded
         let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (mkIdentifier "send_result")
+        return mkStmtExprMd (mkCall "send_result" [])
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
@@ -541,20 +666,17 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           return mkStmtExprMd (mkIdentifier "msg_sender")
         else if memberAnn.val == "value" then
           return mkStmtExprMd (mkIdentifier "msg_value")
-        else if memberAnn.val == "data" then
-          -- msg.data → nondeterministic value (opaque calldata bytes)
-          return mkStmtExprMd (mkIdentifier "msg_data")
-        else if memberAnn.val == "sig" then
-          -- msg.sig → nondeterministic value (first 4 bytes of calldata)
-          return mkStmtExprMd (mkIdentifier "msg_sig")
+        else if let some (c, _) := envConstants.find? (·.2.1 == s!"msg.{memberAnn.val}") then
+          -- msg.data, msg.sig: constants of the transaction
+          return mkStmtExprMd (mkCall c [])
         else
           throw (.unsupported s!"msg.{memberAnn.val}")
-      else if baseNameAnn.val == "block" then
-        -- block.number, block.timestamp, block.chainid → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier s!"block_{memberAnn.val}")
-      else if baseNameAnn.val == "tx" then
-        -- tx.origin → fresh unconstrained TInt
-        return mkStmtExprMd (mkIdentifier s!"tx_{memberAnn.val}")
+      else if baseNameAnn.val == "block" || baseNameAnn.val == "tx" then
+        -- block.timestamp, tx.origin, …: constants of the transaction
+        let solName := s!"{baseNameAnn.val}.{memberAnn.val}"
+        match envConstants.find? (·.2.1 == solName) with
+        | some (c, _) => return mkStmtExprMd (mkCall c [])
+        | none => throw (.unsupported solName)
       else pure ()
       -- Enum member access: Status.Active → integer literal for position
       match ctx.enumDefs.lookup baseNameAnn.val with
@@ -586,14 +708,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _ => pure ()
       else pure ()
     | .FunctionCall _ (.ElementaryTypeNameExpression _ typeNameAnn) argsSeq _ _ =>
-      -- address(x).balance → StaticCall "address_balance" [x]
-      -- address(this).balance → Identifier "this_balance"
+      -- address(x).balance → address_balance(x), address(this).balance →
+      -- this_balance(): a fresh uint256 at every read (balances change
+      -- with transfers, which are not modelled)
       if typeNameAnn.val == "address" || typeNameAnn.val == "address payable" then
         if memberAnn.val == "balance" then
           match argsSeq.val.toList with
           | [.Identifier _ argAnn] =>
             if argAnn.val == "this" then
-              return mkStmtExprMd (mkIdentifier "this_balance")
+              return mkStmtExprMd (mkCall "this_balance" [])
             else do
               let addrExpr ← translateExpr ctx (.Identifier default argAnn)
               return mkStmtExprMd (mkCall "address_balance" [addrExpr])
@@ -646,8 +769,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     match componentsSeq.val.toList with
     | [inner] => translateExpr ctx inner
     | _ =>
-      -- Multi-component tuples (e.g., (a, b)) — model as nondeterministic
-      return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+      -- A multi-component tuple as a value (`return (a, b)`, `(a, b) = …`)
+      -- is not supported. It must not become `assume false`, which would
+      -- silently make every later obligation on the path hold.
+      throw (.unsupported "tuple expressions with several components are not supported here")
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
@@ -792,8 +917,12 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
           match declsSeq.val.toList with
-          | [.some_node _ (.VariableDeclaration _ nameAnn _ _ _ _ _ _ _ _ _)] =>
-            { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+          | [.some_node _ (.VariableDeclaration _ nameAnn typeOpt _ _ _ _ _ storageLocAnn _ _)] =>
+            let ctx := { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+            match storageLocAnn.val, typeOpt with
+            | "memory", .some_type_name _ tn =>
+              { ctx with memoryVars := ctx.memoryVars ++ [(nameAnn.val, (translateTypeNode ctx tn).highType)] }
+            | _, _ => ctx
           | _ => ctx
         | _ => ctx
       let s ← translateStmt ctx' stmt
@@ -825,71 +954,39 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let stmts ← translateBlockStmts uncheckedCtx stmtsSeq.val.toList
     return mkStmtExprMd (.Block stmts none)
 
-  -- Inline assembly: havoc strategy. Any state variable potentially touched
-  -- by the assembly block is treated as unknown afterward (sound
-  -- over-approximation). The Yul payload is preserved in the AST but not
-  -- interpreted here. Without this arm, InlineAssembly falls through to the
-  -- catch-all assume(false), which silently makes post-assembly specs vacuous.
-  | .InlineAssembly _ _ =>
-    let mut havocs : List StmtExprMd := []
-    -- Havoc scalar state vars via self field assigns — only when `self` is in
-    -- scope (non-pure, non-constructor functions with non-mapping state).
-    if ctx.hasSelfParam then
-      for name in ctx.stateVarNames do
-        if !ctx.mappingStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
-            (mkStmtExprMd .Hole))]
-    for name in ctx.mappingStateVars do
-      havocs := havocs ++ [mkStmtExprMd (.Assign
-        [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
-        (mkStmtExprMd .Hole))]
-      if ctx.arrayStateVars.contains name then
-        havocs := havocs ++ [mkStmtExprMd (.Assign
-          [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
-          (mkStmtExprMd .Hole))]
-    return mkStmtExprMd (.Block havocs none)
+  -- Inline assembly: see `assemblyModel`. Without this arm, InlineAssembly
+  -- would fall through to the statement catch-all.
+  | .InlineAssembly _ yulAnn =>
+    -- A block whose Yul AST is unreadable may do anything.
+    assemblyModel ctx ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
 
   | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
     -- Legacy __assembly__ marker (pre-InlineAssembly-op). Kept for backward
-    -- compatibility with any Ion produced by an older solast.py.
+    -- compatibility with any Ion produced by an older solast.py. There is
+    -- no Yul AST, so every Solidity variable in scope may be assigned.
     if valAnn.val == "__assembly__" && kindAnn.val == "string" then
-      let mut havocs : List StmtExprMd := []
-      -- Havoc scalar state vars via self field assigns to Hole
-      for name in ctx.stateVarNames do
-        if !ctx.mappingStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name))]
-            (mkStmtExprMd .Hole))]
-      -- Havoc mapping/array state vars to fresh nondeterministic values
-      for name in ctx.mappingStateVars do
-        havocs := havocs ++ [mkStmtExprMd (.Assign
-          [toAssignTarget (mkStmtExprMd (mkIdentifier name))]
-          (mkStmtExprMd .Hole))]
-        if ctx.arrayStateVars.contains name then
-          havocs := havocs ++ [mkStmtExprMd (.Assign
-            [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
-            (mkStmtExprMd .Hole))]
-      return mkStmtExprMd (.Block havocs none)
+      assemblyModel ctx (.any (assemblyAssignable ctx))
     else
       translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
-  | .Return _ exprOpt =>
+  | .Return sr exprOpt =>
     match exprOpt with
     | .some_node _ expr => do
       let e ← translateExpr ctx expr
+      -- Located at the statement, so that the checks Laurel lifts out of
+      -- the expression (a callee's precondition, a divisor) are too.
       match ctx.valuedReturnTarget with
       | some outName =>
         -- The procedure has multiple output parameters (declared return +
         -- mapping-state outputs); Laurel's EliminateValueReturns rejects a
         -- valued `return` there. Desugar: `<out> := e; return`.
         return mkStmtExprMd (.Block [
-          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e),
+          withSourceRange ctx sr (mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier outName))] e)),
           mkStmtExprMd (.Return none)] none)
       | none =>
-        return mkStmtExprMd (.Return (some e))
+        return withSourceRange ctx sr (mkStmtExprMd (.Return (some e)))
     | .missing_node _ =>
       return mkStmtExprMd (.Return none)
 
@@ -912,9 +1009,11 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let bodyCtx := { ctx with currentLoopLabels := some (breakLbl, contLbl),
                               loopLabelCounter := n + 1 }
     let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
+    let (loopCond, guard) := loopHead condExpr breakLbl
     -- body wrapped in continue-labelled block; loop wrapped in break-labelled block
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock false)
+    let loopBody := if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none)
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     return mkStmtExprMd (.Block [whileStmt] (some breakLbl))
 
   | .DoWhileStatement _ cond body => do
@@ -942,8 +1041,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let (invariants, bodyStmt) ← extractAndTranslateLoopInvariants bodyCtx body
     let firstBody ← translateStmt bodyCtx body
     let firstBlock := mkStmtExprMd (.Block [firstBody] (some contLbl))
+    let (loopCond, guard) := loopHead condExpr breakLbl
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none contBlock false)
+    let loopBody := if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none)
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     return mkStmtExprMd (.Block [firstBlock, whileStmt] (some breakLbl))
 
   | .BreakStatement _ =>
@@ -997,11 +1098,19 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .ForStatement _ initOpt condOpt loopOpt body => do
     -- Desugar: for (init; cond; loop) body → { init; while (cond) { body; loop } }
     let mut stmts : List StmtExprMd := []
-    -- Init
+    -- Init. A variable it declares is a local for the condition, the body
+    -- and the increment (it shadows a state variable of the same name).
+    let mut ctx := ctx
     match initOpt with
     | .some_node _ initNode => do
       let s ← translateStmt ctx initNode
       stmts := [s]
+      match initNode with
+      | .VariableDeclarationStatement _ declsSeq _ =>
+        for d in declsSeq.val.toList do
+          if let .some_node _ (.VariableDeclaration _ nameAnn ..) := d then
+            ctx := { ctx with localNames := ctx.localNames ++ [nameAnn.val] }
+      | _ => pure ()
     | .missing_node _ => pure ()
     -- Condition (default to true if missing)
     let condExpr ← match condOpt with
@@ -1018,16 +1127,18 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- `continue` exits the body block but the increment still runs afterward.
     let contBlock := mkStmtExprMd (.Block [bodyStmt] (some contLbl))
     -- Loop body + increment
+    let (loopCond, guard) := loopHead condExpr breakLbl
     let loopBody ← match loopOpt with
       | .some_node _ loopNode => do
         let loopStmt ← translateStmt bodyCtx loopNode
-        pure (mkStmtExprMd (.Block [contBlock, loopStmt] none))
-      | .missing_node _ => pure contBlock
-    let whileStmt := mkStmtExprMd (.While condExpr invariants none loopBody false)
+        pure (mkStmtExprMd (.Block (guard ++ [contBlock, loopStmt]) none))
+      | .missing_node _ =>
+        pure (if guard.isEmpty then contBlock else mkStmtExprMd (.Block (guard ++ [contBlock]) none))
+    let whileStmt := mkStmtExprMd (.While loopCond invariants none loopBody false)
     stmts := stmts ++ [mkStmtExprMd (.Block [whileStmt] (some breakLbl))]
     return mkStmtExprMd (.Block stmts none)
 
-  | .VariableDeclarationStatement _ declsSeq initOpt => do
+  | .VariableDeclarationStatement declSr declsSeq initOpt => do
     -- Extract variable declarations
     let decls := declsSeq.val.toList
     match decls with
@@ -1049,7 +1160,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         if storageLocAnn.val == "storage" then
           throw (.internalError "storage ref should be handled by translateBlockStmts")
         else
-          return mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal)
+          -- Without an initializer, a Solidity local starts at zero.
+          let initVal := initVal <|> zeroValue? solTy.highType
+          -- Located at the statement (see `.Return`).
+          return withSourceRange ctx declSr (mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType initVal))
       | .some_node _ _ =>
         throw (.unsupported "Non-VariableDeclaration in VariableDeclarationStatement")
       | .missing_node _ =>
@@ -1084,11 +1198,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .RevertStatement _ _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
 
   -- Expression nodes that appear as statements (e.g., function calls, postfix ops).
-  -- Unrecognized statement nodes are treated as unconditional aborts: assume(false).
-  | _ =>
-    match translateExpr ctx n with
-    | .ok e => return e
-    | .error _ => return mkStmtExprMd (mkAssume (mkStmtExprMd (.LiteralBool false)))
+  -- A statement that cannot be translated is an error: treating it as an
+  -- unconditional abort (`assume false`) would silently make every later
+  -- obligation on the path hold.
+  | _ => translateExpr ctx n
 
 end
 

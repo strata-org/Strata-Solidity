@@ -366,8 +366,8 @@ private def canonicalTypeName (ty : HighType) : String :=
 private def opToken : Laurel.Operation → Option String
   | .Eq => some "=="
   | .Neq => some "!="
-  | .And => some "&&"
-  | .Or => some "||"
+  | .AndThen => some "&&"
+  | .OrElse => some "||"
   | .Implies => some "==>"
   | .Add => some "+"
   | .Sub => some "-"

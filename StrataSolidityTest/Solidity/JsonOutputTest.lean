@@ -17,7 +17,9 @@
   Property (from `requirements.md` §13 REQ-PBT-005):
     For every element of the `--json` output array, the object has
       * `name : String`,
-      * `status ∈ {"pass","fail","unknown","implementation_error"}`,
+      * `status ∈ {"pass","fail","unknown","implementation_error","not_verified"}`
+        (`not_verified`: an annotation or function that is not verified,
+        one entry per warning),
       * `line` and `col` are either BOTH present (and both `Nat`) or
         BOTH absent — no mixed case allowed.
 
@@ -219,9 +221,11 @@ end Setup
 -/
 section JsonShape
 
-/-- Legal values for the `status` field (REQ-PBT-005, REQ-OUT-022). -/
+/-- Legal values for the `status` field (REQ-PBT-005, REQ-OUT-022), plus
+    `not_verified` for the entries that report an annotation or function
+    that is not verified. -/
 def allowedStatuses : List String :=
-  ["pass", "fail", "unknown", "implementation_error"]
+  ["pass", "fail", "unknown", "implementation_error", "not_verified"]
 
 /-- The curated fixture matrix for REQ-PBT-005.
 
@@ -351,7 +355,7 @@ private def isErr : Except String Unit → Bool
   (Json.mkObj [("name", .str "x"), ("status", .str "fail"),
                ("line", .num 10), ("col", .num 4)]))
 
--- All four statuses accepted.
+-- All five statuses accepted.
 #guard isOk (isValidJsonElement
   (Json.mkObj [("name", .str "x"), ("status", .str "pass")]))
 #guard isOk (isValidJsonElement
@@ -360,6 +364,9 @@ private def isErr : Except String Unit → Bool
   (Json.mkObj [("name", .str "x"), ("status", .str "unknown")]))
 #guard isOk (isValidJsonElement
   (Json.mkObj [("name", .str "x"), ("status", .str "implementation_error")]))
+#guard isOk (isValidJsonElement
+  (Json.mkObj [("name", .str "not-verified"), ("status", .str "not_verified"),
+               ("line", .num 4), ("col", .num 42)]))
 
 -- Unknown status rejected.
 #guard isErr (isValidJsonElement
@@ -410,29 +417,32 @@ end JsonShape
     directly. -/
 section PipelineJsonShape
 
-/-- The four top-level keys the `--pipeline-json` object must have, in
-    any order (REQ-OUT-040). -/
+/-- The top-level keys the `--pipeline-json` object must have, in any
+    order (REQ-OUT-040), plus `warnings`: the annotations and functions
+    that are not verified. -/
 def pipelineTopKeys : List String :=
-  ["laurel", "core", "obligations", "summary"]
+  ["laurel", "core", "obligations", "summary", "warnings"]
 
 /-- The four keys each `obligations[i]` must have (REQ-OUT-043). -/
 def pipelineObligationKeys : List String :=
   ["label", "status", "smt", "smtResult"]
 
-/-- The four integer keys `summary` must have (REQ-OUT-044). -/
+/-- The integer keys `summary` must have (REQ-OUT-044), plus `errors`
+    (obligations nothing checked: an encoding error, a solver crash) and
+    `notVerified` (the number of warnings). -/
 def pipelineSummaryKeys : List String :=
-  ["total", "passed", "failed", "unknown"]
+  ["total", "passed", "failed", "unknown", "errors", "notVerified"]
 
-/-- Legal values for the `obligations[i].status` field
-    (REQ-OUT-043; note the three-valued set, distinct from REQ-PBT-005
-    which additionally admits `implementation_error`). -/
+/-- Legal values for the `obligations[i].status` field (REQ-OUT-043),
+    plus `error` for an obligation nothing checked (`--json` spells it
+    `implementation_error`, see REQ-PBT-005). -/
 def pipelineObligationStatuses : List String :=
-  ["pass", "fail", "unknown"]
+  ["pass", "fail", "unknown", "error"]
 
 /-- Legal values for the `obligations[i].smtResult` field
-    (REQ-OUT-043). -/
+    (REQ-OUT-043), plus `error`. -/
 def pipelineSmtResultValues : List String :=
-  ["unsat", "sat", "unknown"]
+  ["unsat", "sat", "unknown", "error"]
 
 /-- The curated fixture matrix for REQ-PBT-006.
 
@@ -477,15 +487,15 @@ private def checkExactKeys (context : String) (j : Json) (expected : List String
 /-- Validate one `obligations[i]` element:
       * Exact keys `label`, `status`, `smt`, `smtResult`.
       * `label` is a string.
-      * `status ∈ {"pass","fail","unknown"}` (REQ-OUT-043).
+      * `status ∈ {"pass","fail","unknown","error"}` (REQ-OUT-043).
       * `smt` is a string (may be empty per REQ-OUT-045).
-      * `smtResult ∈ {"unsat","sat","unknown"}` (REQ-OUT-043). -/
+      * `smtResult ∈ {"unsat","sat","unknown","error"}` (REQ-OUT-043). -/
 def isValidObligation (j : Json) : Except String Unit := do
   checkExactKeys "obligation" j pipelineObligationKeys
   -- label : String
   let labelJ ← j.getObjVal? "label"
   let _label ← labelJ.getStr?
-  -- status : String ∈ {pass,fail,unknown}
+  -- status : String ∈ {pass,fail,unknown,error}
   let statusJ ← j.getObjVal? "status"
   let status ← statusJ.getStr?
   if !pipelineObligationStatuses.contains status then
@@ -493,33 +503,57 @@ def isValidObligation (j : Json) : Except String Unit := do
   -- smt : String
   let smtJ ← j.getObjVal? "smt"
   let _smt ← smtJ.getStr?
-  -- smtResult : String ∈ {unsat,sat,unknown}
+  -- smtResult : String ∈ {unsat,sat,unknown,error}
   let smtResultJ ← j.getObjVal? "smtResult"
   let smtResult ← smtResultJ.getStr?
   if !pipelineSmtResultValues.contains smtResult then
     throw s!"obligation smtResult {smtResult} not in {pipelineSmtResultValues}"
 
 /-- Validate the `summary` sub-object:
-      * Exact keys `total`, `passed`, `failed`, `unknown`.
-      * All four values are non-negative integers (REQ-OUT-044). -/
-def isValidSummary (j : Json) : Except String Unit := do
+      * Exact keys `total`, `passed`, `failed`, `unknown`, `errors`,
+        `notVerified`.
+      * All values are non-negative integers (REQ-OUT-044).
+      * `total = passed + failed + unknown + errors`.
+    Returns `(total, notVerified)`, which the caller checks against the
+    `obligations` and `warnings` arrays. -/
+def isValidSummary (j : Json) : Except String (Nat × Nat) := do
   checkExactKeys "summary" j pipelineSummaryKeys
-  for key in pipelineSummaryKeys do
+  let count : String → Except String Nat := fun key => do
     let v ← j.getObjVal? key
-    let _n ← v.getNat?
-    pure ()
+    v.getNat?
+  let total ← count "total"
+  let parts ← ["passed", "failed", "unknown", "errors"].mapM count
+  let sum := parts.foldl (· + ·) 0
+  if total != sum then
+    throw s!"summary: total {total} is not passed + failed + unknown + errors = {sum}"
+  return (total, ← count "notVerified")
+
+/-- Validate one `warnings[i]` element: a `message : String`, and `line`
+    and `col` either both present (both `Nat`) or both absent. -/
+def isValidWarning (j : Json) : Except String Unit := do
+  let obj ← j.getObj?
+  let hasPos := obj.contains "line" || obj.contains "col"
+  checkExactKeys "warning" j (if hasPos then ["message", "line", "col"] else ["message"])
+  let _message ← (← j.getObjVal? "message").getStr?
+  if hasPos then
+    let _line ← (← j.getObjVal? "line").getNat?
+    let _col ← (← j.getObjVal? "col").getNat?
 
 /-- The full-output property for REQ-PBT-006. Parses the stdout, enforces
     the exact top-level key set, and validates each sub-structure.
 
     Checks, in order:
       1. stdout is a JSON object.
-      2. Top-level keys are exactly `{laurel, core, obligations, summary}`.
+      2. Top-level keys are exactly `{laurel, core, obligations, summary,
+         warnings}`.
       3. `laurel` is a string (REQ-OUT-041).
       4. `core` is a string (REQ-OUT-042).
       5. `obligations` is an array; every element passes
          `isValidObligation` (REQ-OUT-043).
-      6. `summary` passes `isValidSummary` (REQ-OUT-044). -/
+      6. `summary` passes `isValidSummary` (REQ-OUT-044), and its `total`
+         is the number of obligations.
+      7. `warnings` is an array; every element passes `isValidWarning`,
+         and there are `summary.notVerified` of them. -/
 def isValidPipelineJson (stdout : String) : Except String Unit := do
   let j ← Json.parse stdout
   checkExactKeys "top-level" j pipelineTopKeys
@@ -538,7 +572,17 @@ def isValidPipelineJson (stdout : String) : Except String Unit := do
     | .error msg => throw s!"obligations[{i}] invalid: {msg}"
   -- summary
   let summaryJ ← j.getObjVal? "summary"
-  isValidSummary summaryJ
+  let (total, notVerified) ← isValidSummary summaryJ
+  if total != obligations.size then
+    throw s!"summary: total {total} but {obligations.size} obligations"
+  -- warnings : Array of valid warning objects, `notVerified` of them
+  let warnings ← (← j.getObjVal? "warnings").getArr?
+  for (elt, i) in warnings.toList.zipIdx do
+    match isValidWarning elt with
+    | .ok () => pure ()
+    | .error msg => throw s!"warnings[{i}] invalid: {msg}"
+  if warnings.size != notVerified then
+    throw s!"summary: notVerified {notVerified} but {warnings.size} warnings"
 
 /-- Helper for the `#eval` below: run the pipeline for one fixture under
     `--pipeline-json` and apply the property. Mirrors `checkFixture`
@@ -575,184 +619,138 @@ def checkPipelineFixture (paths : TestPaths) (fixtureName : String) : IO Bool :=
     output passes and every failure mode is caught. These are unit-level
     reinforcements of the property body and run at elab time without
     invoking the binary. Reuses the module-private `isOk` / `isErr`
-    helpers defined in `section JsonShape` above. -/
+    helpers defined in `section JsonShape` above. Each rejected object
+    differs from a well-formed one in exactly the defect it names. -/
 
-/-- A minimal, well-formed `--pipeline-json` object used throughout the
-    `#guard` block below. Exercises the empty-`obligations`-array and
-    zero-summary case. -/
-private def wellFormedEmpty : Json :=
+/-- A `summary` object with the given counts, in key order. -/
+private def summaryObj (total passed failed unknown errors notVerified : Nat) : Json :=
   Json.mkObj [
-    ("laurel", .str "laurel text"),
-    ("core", .str "core text"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)
-    ])
-  ]
+    ("total", .num total), ("passed", .num passed), ("failed", .num failed),
+    ("unknown", .num unknown), ("errors", .num errors),
+    ("notVerified", .num notVerified)]
 
-/-- A well-formed `--pipeline-json` object with one obligation of each
-    allowed status. Exercises every case of the per-element predicate. -/
-private def wellFormedThree : Json :=
-  Json.mkObj [
+/-- A `--pipeline-json` object with the given parts; `extra` adds keys. -/
+private def pipelineObj (obligations : Array Json) (summary : Json)
+    (warnings : Array Json := #[]) (extra : List (String × Json) := []) : Json :=
+  Json.mkObj ([
     ("laurel", .str "L"),
     ("core", .str "C"),
-    ("obligations", Json.arr #[
-      Json.mkObj [
-        ("label", .str "p1"), ("status", .str "pass"),
-        ("smt", .str ""), ("smtResult", .str "unsat")],
-      Json.mkObj [
-        ("label", .str "f1"), ("status", .str "fail"),
-        ("smt", .str "(assert false)"), ("smtResult", .str "sat")],
-      Json.mkObj [
-        ("label", .str "u1"), ("status", .str "unknown"),
-        ("smt", .str "(assert x)"), ("smtResult", .str "unknown")]
-    ]),
-    ("summary", Json.mkObj [
-      ("total", .num 3), ("passed", .num 1),
-      ("failed", .num 1), ("unknown", .num 1)
-    ])
-  ]
+    ("obligations", .arr obligations),
+    ("summary", summary),
+    ("warnings", .arr warnings)] ++ extra)
 
--- Well-formed: minimal (empty obligations).
-#guard isOk (isValidPipelineJson wellFormedEmpty.compress)
+/-- An obligation with the given status and SMT result. -/
+private def obligation (label status smtResult : String) : Json :=
+  Json.mkObj [
+    ("label", .str label), ("status", .str status),
+    ("smt", .str ""), ("smtResult", .str smtResult)]
 
--- Well-formed: three obligations covering every status and smtResult.
-#guard isOk (isValidPipelineJson wellFormedThree.compress)
+/-- A warning, with or without a position. -/
+private def warning (message : String) (pos : Option (Nat × Nat) := none) : Json :=
+  Json.mkObj ([("message", .str message)] ++
+    match pos with
+    | some (line, col) => [("line", .num line), ("col", .num col)]
+    | none => [])
+
+-- Well-formed: minimal (no obligations, no warnings).
+#guard isOk (isValidPipelineJson (pipelineObj #[] (summaryObj 0 0 0 0 0 0)).compress)
+
+-- Well-formed: one obligation of each status, and a warning with and
+-- one without a position.
+#guard isOk (isValidPipelineJson (pipelineObj
+  #[obligation "p" "pass" "unsat", obligation "f" "fail" "sat",
+    obligation "u" "unknown" "unknown", obligation "e" "error" "error"]
+  (summaryObj 4 1 1 1 1 2)
+  #[warning "ignored" (some (4, 42)), warning "not verified"]).compress)
 
 -- Reject: missing `laurel`.
 #guard isErr (isValidPipelineJson
   (Json.mkObj [
     ("core", .str "C"), ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+    ("summary", summaryObj 0 0 0 0 0 0), ("warnings", .arr #[])]).compress)
 
--- Reject: missing `summary`.
+-- Reject: missing `warnings`.
 #guard isErr (isValidPipelineJson
   (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .arr #[])
-  ]).compress)
+    ("laurel", .str "L"), ("core", .str "C"), ("obligations", .arr #[]),
+    ("summary", summaryObj 0 0 0 0 0 0)]).compress)
 
 -- Reject: extra top-level key.
 #guard isErr (isValidPipelineJson
-  (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)]),
-    ("extra", .str "nope")
-  ]).compress)
+  (pipelineObj #[] (summaryObj 0 0 0 0 0 0) (extra := [("extra", .str "nope")])).compress)
 
 -- Reject: non-string `laurel`.
 #guard isErr (isValidPipelineJson
   (Json.mkObj [
-    ("laurel", .num 1), ("core", .str "C"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+    ("laurel", .num 1), ("core", .str "C"), ("obligations", .arr #[]),
+    ("summary", summaryObj 0 0 0 0 0 0), ("warnings", .arr #[])]).compress)
 
 -- Reject: obligation missing `smt`.
-#guard isErr (isValidPipelineJson
-  (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", Json.arr #[
-      Json.mkObj [
-        ("label", .str "x"), ("status", .str "pass"),
-        ("smtResult", .str "unsat")]
-    ]),
-    ("summary", Json.mkObj [
-      ("total", .num 1), ("passed", .num 1),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[Json.mkObj [("label", .str "x"), ("status", .str "pass"), ("smtResult", .str "unsat")]]
+  (summaryObj 1 1 0 0 0 0)).compress)
 
 -- Reject: obligation with extra key.
-#guard isErr (isValidPipelineJson
-  (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", Json.arr #[
-      Json.mkObj [
-        ("label", .str "x"), ("status", .str "pass"),
-        ("smt", .str ""), ("smtResult", .str "unsat"),
-        ("extra", .num 1)]
-    ]),
-    ("summary", Json.mkObj [
-      ("total", .num 1), ("passed", .num 1),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[Json.mkObj [
+    ("label", .str "x"), ("status", .str "pass"), ("smt", .str ""),
+    ("smtResult", .str "unsat"), ("extra", .num 1)]]
+  (summaryObj 1 1 0 0 0 0)).compress)
 
--- Reject: obligation with unknown status.
-#guard isErr (isValidPipelineJson
-  (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", Json.arr #[
-      Json.mkObj [
-        ("label", .str "x"), ("status", .str "implementation_error"),
-        ("smt", .str ""), ("smtResult", .str "unsat")]
-    ]),
-    ("summary", Json.mkObj [
-      ("total", .num 1), ("passed", .num 1),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+-- Reject: obligation with an unknown status (`--json`'s spelling of an
+-- error is not `--pipeline-json`'s).
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[obligation "x" "implementation_error" "error"] (summaryObj 1 0 0 0 1 0)).compress)
 
--- Reject: obligation with unknown smtResult.
-#guard isErr (isValidPipelineJson
-  (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", Json.arr #[
-      Json.mkObj [
-        ("label", .str "x"), ("status", .str "pass"),
-        ("smt", .str ""), ("smtResult", .str "bogus")]
-    ]),
-    ("summary", Json.mkObj [
-      ("total", .num 1), ("passed", .num 1),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+-- Reject: obligation with an unknown smtResult.
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[obligation "x" "pass" "bogus"] (summaryObj 1 1 0 0 0 0)).compress)
 
--- Reject: summary missing `unknown`.
-#guard isErr (isValidPipelineJson
+-- Reject: summary missing `errors`.
+#guard isErr (isValidPipelineJson (pipelineObj #[]
   (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0), ("failed", .num 0)])
-  ]).compress)
+    ("total", .num 0), ("passed", .num 0), ("failed", .num 0),
+    ("unknown", .num 0), ("notVerified", .num 0)])).compress)
 
 -- Reject: summary with extra key.
-#guard isErr (isValidPipelineJson
+#guard isErr (isValidPipelineJson (pipelineObj #[]
   (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0),
-      ("extra", .num 0)])
-  ]).compress)
+    ("total", .num 0), ("passed", .num 0), ("failed", .num 0),
+    ("unknown", .num 0), ("errors", .num 0), ("notVerified", .num 0),
+    ("extra", .num 0)])).compress)
 
 -- Reject: summary with non-integer value.
-#guard isErr (isValidPipelineJson
+#guard isErr (isValidPipelineJson (pipelineObj #[]
   (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .arr #[]),
-    ("summary", Json.mkObj [
-      ("total", .str "0"), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+    ("total", .str "0"), ("passed", .num 0), ("failed", .num 0),
+    ("unknown", .num 0), ("errors", .num 0), ("notVerified", .num 0)])).compress)
+
+-- Reject: total is not the sum of the outcome counts.
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[obligation "p" "pass" "unsat"] (summaryObj 1 0 0 0 0 0)).compress)
+
+-- Reject: total is not the number of obligations.
+#guard isErr (isValidPipelineJson (pipelineObj
+  #[obligation "p" "pass" "unsat"] (summaryObj 2 2 0 0 0 0)).compress)
+
+-- Reject: `notVerified` is not the number of warnings.
+#guard isErr (isValidPipelineJson (pipelineObj #[]
+  (summaryObj 0 0 0 0 0 0) #[warning "ignored"]).compress)
+
+-- Reject: warning without a message.
+#guard isErr (isValidPipelineJson (pipelineObj #[]
+  (summaryObj 0 0 0 0 0 1) #[Json.mkObj [("line", .num 1), ("col", .num 1)]]).compress)
+
+-- Reject: warning with `line` but no `col`.
+#guard isErr (isValidPipelineJson (pipelineObj #[]
+  (summaryObj 0 0 0 0 0 1)
+  #[Json.mkObj [("message", .str "m"), ("line", .num 1)]]).compress)
 
 -- Reject: `obligations` is not an array.
 #guard isErr (isValidPipelineJson
   (Json.mkObj [
-    ("laurel", .str "L"), ("core", .str "C"),
-    ("obligations", .str "not an array"),
-    ("summary", Json.mkObj [
-      ("total", .num 0), ("passed", .num 0),
-      ("failed", .num 0), ("unknown", .num 0)])
-  ]).compress)
+    ("laurel", .str "L"), ("core", .str "C"), ("obligations", .str "not an array"),
+    ("summary", summaryObj 0 0 0 0 0 0), ("warnings", .arr #[])]).compress)
 
 -- Reject: stdout is not an object (e.g. bare array from `--json` mode).
 #guard isErr (isValidPipelineJson "[]")

@@ -33,7 +33,7 @@ StrataSolidity supports a substantial subset of Solidity. Support is being expan
 - `receive`/`fallback` functions
 - `immutable` and `constant` variables
 - Hash functions (`keccak256`, `sha256`) and `abi.encode*` — modeled as uninterpreted functions
-- Inline assembly — havoc strategy (all touched state treated as unknown)
+- Inline assembly — havoc strategy (what a block may write is unknown afterwards)
 - Custom errors with `revert`
 - `msg.sender`, `msg.value`, `block.*`, `tx.*` globals
 - `type(uint256).max`, `type(uint256).min` compile-time constants
@@ -57,7 +57,6 @@ See [Current Limitations](./limitations.md) for the full list. Major gaps:
 
 - Struct fields accessed through mapping values
 - `old()` in loop invariants
-- `block.timestamp` modeling
 - External calls / cross-contract reasoning
 - Counterexample generation
 - `msg.sender` in constructors

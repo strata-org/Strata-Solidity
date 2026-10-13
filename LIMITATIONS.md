@@ -101,10 +101,11 @@ This is not practical for verifying existing contracts but works for new designs
 | Struct fields through mappings | ❌ Blocked (Core) | See above |
 | `old()` in loop invariants | ❌ Blocked (Core) | `__old` marker not resolved in loop context |
 | `@custom:strata lemma` | ❌ Not started | Needs Laurel grammar extension |
-| `block.timestamp` | ❌ Not modeled | No time abstraction yet |
+| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants: they change between transactions |
+| `gasleft()`, balances, `send` | ⚠️ Unknown | A fresh value of the result type at every read or call |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ❌ | No cross-contract reasoning |
-| Assembly / inline Yul | ⚠️ Havoc | Parsed; state touched by assembly treated as unknown (sound over-approximation) |
+| Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the function on some paths. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor |
 | Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |
 | Events / errors | First-class ops | `revert` prunes its path; `emit` is a verification no-op |

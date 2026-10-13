@@ -134,6 +134,16 @@ structure TransCtx where
       non-mapping state variable (see translateFunction). Used by the inline
       assembly havoc to decide whether `self.<field>` references are valid. -/
   hasSelfParam : Bool := false
+  /-- Whether the current function may modify contract state: not `view`
+      or `pure` (solc rejects state-modifying inline assembly in those). -/
+  mayWriteState : Bool := false
+  /-- Whether the current function is the constructor. -/
+  isConstructor : Bool := false
+  /-- The current function's declared return variables. -/
+  returnNames : List String := []
+  /-- Parameters and locals in memory or calldata, with their types: what
+      inline assembly that writes memory may change. -/
+  memoryVars : List (String × HighTypeMd) := []
   /-- Labels of the innermost enclosing loop, as (breakLabel, continueLabel).
       Set when translating a loop body so that `break`/`continue` statements
       can emit `Exit` to the correct labelled block. `none` outside any loop. -/
@@ -415,6 +425,35 @@ def mkRangeCond (solName : String) (e : StmtExprMd) : Option StmtExprMd :=
       mkStmtExprMd (mkPrimOp .Leq [mkStmtExprMd (.LiteralInt lo), e]),
       mkStmtExprMd (mkPrimOp .Leq [e, mkStmtExprMd (.LiteralInt hi)])])
 
+/-- Values fixed for the whole transaction, read through `block.*`, `tx.*`
+    and `msg.sig`/`msg.data`: (Laurel constant, Solidity name, Solidity
+    type). As constants, two reads in one transaction agree; each function
+    that reads one assumes it holds a value of its type. -/
+def envConstants : List (String × String × String) := [
+  ("block_basefee", "block.basefee", "uint256"),
+  ("block_blobbasefee", "block.blobbasefee", "uint256"),
+  ("block_chainid", "block.chainid", "uint256"),
+  ("block_coinbase", "block.coinbase", "address"),
+  ("block_difficulty", "block.difficulty", "uint256"),
+  ("block_gaslimit", "block.gaslimit", "uint256"),
+  ("block_number", "block.number", "uint256"),
+  ("block_prevrandao", "block.prevrandao", "uint256"),
+  ("block_timestamp", "block.timestamp", "uint256"),
+  ("tx_gasprice", "tx.gasprice", "uint256"),
+  ("tx_origin", "tx.origin", "address"),
+  ("msg_sig", "msg.sig", "bytes4"),
+  ("msg_data", "msg.data", "bytes")]
+
+/-- Transaction constants assumed positive, as they are in any block a
+    transaction runs in. -/
+def positiveEnvConstants : List String := ["block_number", "block_timestamp"]
+
+/-- Whether `e` reads the constant `name` (a call without arguments). -/
+def readsConstant (name : String) (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .StaticCall id [] _ => id.text == name
+    | _ => false) e
+
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
@@ -422,6 +461,14 @@ partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
   | .TBool => mkStmtExprMd (.LiteralBool false)
   | .TMap _ v => mkStmtExprMd (mkCall "mapConst" [defaultValueForType v])
   | _ => mkStmtExprMd (.LiteralInt 0)
+
+/-- The zero value a Solidity variable of this type starts with, for the
+    types whose zero value Laurel can express: integers, `bool`, mappings
+    and arrays (other types, such as structs, have none here). -/
+def zeroValue? (ty : HighTypeMd) : Option StmtExprMd :=
+  match ty.val with
+  | .TInt | .TBool | .TMap .. => some (defaultValueForType ty)
+  | _ => none
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
