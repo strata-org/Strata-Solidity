@@ -193,3 +193,17 @@ jobs:
         env:
           LEAN_ABORT_ON_PANIC: '1'
         run: python3 -m pytest Tools/Solidity/test -v
+
+      # ---- Stage 8: docs/site builds from current docs/guide/src ----
+      # Catches a broken template placeholder or a SUMMARY.md/file-name
+      # mismatch at PR time, before it reaches the Pages deploy workflow.
+      # markdown/pygments are build-only for this static site generator,
+      # kept out of Tools/Solidity/requirements-dev.txt (SARIF schema
+      # checking) to keep each dependency file scoped to what it's for.
+      - name: docs/site build
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
+        run: |
+          python3 -m pip install markdown pygments
+          python3 docs/site/_src/capture_outputs.py
+          python3 docs/site/_src/build.py

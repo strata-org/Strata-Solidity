@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · StrataSolidity guide</title>
+<link rel="icon" href="../assets/favicon.png">
+<link rel="stylesheet" href="../assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body class="doc">
+
+<a class="skip" href="#content">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar__inner topbar__inner--wide">
+    <button type="button" class="menu-btn" aria-controls="sidebar" aria-expanded="false">Menu</button>
+    <a class="brand" href="../index.html"><img src="../assets/strata-mark.png" alt="" width="22" height="22"><span>StrataSolidity</span></a>
+    <nav class="topnav" aria-label="Site">
+      <a href="index.html" aria-current="true">Guide</a>
+      <a href="https://github.com/strata-org/Strata-Solidity" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="doc-layout">
+  <aside class="sidebar" id="sidebar" aria-label="Guide">
+    <div class="search">
+      <label class="visually-hidden" for="search-input">Search the guide</label>
+      <input id="search-input" type="search" placeholder="Search the guide" autocomplete="off">
+      <ul class="search__results" id="search-results" hidden></ul>
+    </div>
+    <nav aria-label="Chapters">{{nav}}</nav>
+  </aside>
+
+  <main class="doc-main" id="content">
+    <p class="caption doc-section">{{section}}</p>
+    <article class="prose">
+{{content}}
+    </article>
+    <nav class="pager" aria-label="Previous and next">{{pager}}</nav>
+    <p class="doc-source caption"><a href="{{source}}" rel="noopener">View this page’s source on GitHub</a></p>
+  </main>
+
+  <aside class="doc-toc" aria-label="On this page">
+    <p class="caption">On this page</p>
+    {{toc}}
+  </aside>
+</div>
+
+<footer class="footer footer--doc">
+  <div class="footer__inner footer__inner--wide">
+    <p>StrataSolidity is part of <a href="https://github.com/strata-org/Strata" rel="noopener">Strata</a>, an open-source project from AWS.</p>
+    <p class="caption">Apache-2.0 OR MIT</p>
+  </div>
+</footer>
+
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

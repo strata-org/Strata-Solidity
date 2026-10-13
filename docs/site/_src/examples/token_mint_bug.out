@@ -1,0 +1,16 @@
+==== Verification Results ====
+❓ Unknown (2):
+  invariant totalSupply == sum(balances) at line 13, col 5
+  ensures totalSupply == old(totalSupply) + amount at line 12, col 9
+
+✅ Passed (8):
+  invariant totalSupply == sum(balances) at line 4, col 1
+  modifies frame (balances) at line 13, col 5
+  ensures balances[to] == old(balances[to]) + amount at line 11, col 9
+  ensures balances[msg.sender] == old(balances[msg.sender]) - amount at line 20, col 9
+  ensures balances[to] == old(balances[to]) + amount at line 21, col 9
+  modifies frame (balances) at line 22, col 5
+  modifies frame (totalSupply) at line 22, col 5
+  invariant totalSupply == sum(balances) at line 22, col 5
+
+8 passed, 0 failed, 2 unknown out of 10 total

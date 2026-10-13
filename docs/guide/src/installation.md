@@ -6,9 +6,9 @@ StrataSolidity can currently only be used by building from source.
 
 1. **[Lean 4](https://lean-lang.org/)** (via `elan`; the version is pinned in `lean-toolchain`) — needed to build StrataSolidity and the [Strata](https://github.com/strata-org/Strata) back-end.
 2. **[Strata](https://github.com/strata-org/Strata)** vendored as a git submodule at `./Strata`.
-3. **Python 3.12+** — used by the parser (`solast.py`).
+3. **Python 3.12+** — only for development and CI tooling (the SARIF schema check and the benchmark CSV check). You don't need it to verify contracts.
 4. **[solc](https://docs.soliditylang.org/en/latest/installing-solidity.html)** — the Solidity compiler (used for AST extraction only).
-5. **z3** or **cvc5** SMT solver on your `PATH`.
+5. **z3** SMT solver on your `PATH`.
 
 ## Building
 
@@ -27,15 +27,15 @@ StrataSolidity can currently only be used by building from source.
    lake build
    ```
 
-This compiles the Lean translation pipeline and the `strataSolidity` CLI executable.
+This compiles the Lean translation pipeline and the `strataSolidity` CLI executable at `.lake/build/bin/strataSolidity`.
 
 ## Verifying the installation
 
-Run the included test suite:
+Run the included test suites:
 
 ```bash
-cd StrataSolidityTest/Solidity
-bash run_sol_analyze_laurel.sh
+lake test               # Lean unit and characterization tests
+bash test/run_tests.sh  # golden suite (test/examples/*.sol vs test/expected/) and exit-code checks
 ```
 
-This runs each test contract through the full pipeline and diffs against expected output. If all tests pass, your installation is working correctly.
+The golden suite runs each example contract through the full pipeline and diffs the result against the expected output. If both pass, your installation is working correctly.

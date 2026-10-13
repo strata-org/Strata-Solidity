@@ -1,4 +1,4 @@
-name: Deploy mdBook site to Pages
+name: Deploy site to Pages
 
 # Disabled: GitHub Pages is not enabled for this repository.
 # Re-enable by restoring the `push` trigger once Pages is configured.
@@ -28,14 +28,16 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          mdbook-version: '0.4.52'
+          python-version: '3.12'
 
-      - name: Build
-        working-directory: docs/guide
-        run: mdbook build
+      - name: Install site build dependencies
+        run: pip install markdown pygments
+
+      - name: Build site
+        run: python3 docs/site/_src/build.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v3
@@ -43,7 +45,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './docs/guide/book'
+          path: './docs/site'
           name: "github-pages"
 
       - name: Deploy to GitHub Pages
