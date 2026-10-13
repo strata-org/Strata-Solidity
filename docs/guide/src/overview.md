@@ -11,9 +11,11 @@ Smart contract bugs are uniquely costly. Deployed contracts are immutable, trans
 StrataSolidity translates annotated Solidity contracts through the Strata pipeline for verification via SMT solving:
 
 ```
-Solidity (.sol) → solc + solast.py → Ion → SolToLaurel → Laurel IR
-  → LaurelToCoreTranslator → Strata Core → VCG → SMT solver (z3/cvc5)
+Solidity (.sol) → solc --standard-json → SolcAstParser (Lean) → SolTranslator
+  → Laurel IR → Laurel compilation pipeline → Strata Core → VCG → SMT solver (z3)
 ```
+
+The entire pipeline lives in the `strataSolidity` binary: it invokes `solc`, parses the JSON AST into typed Lean structures, and verifies — no Python, no intermediate serialization.
 
 You write specifications as `@custom:strata` annotations in standard NatSpec comments — no special imports, no stub functions, no separate specification language. Your specs live alongside your code:
 
@@ -50,10 +52,10 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 Solidity's compiler (solc) is licensed under GPL-3.0. Building a compiler plugin would create a derivative work with GPL obligations. NatSpec comments avoid any compiler modification — we use solc only to produce the AST. NatSpec is also the standard mechanism for structured metadata in Solidity, already used by Etherscan, documentation generators, and static analysis tools.
 
 #### Can StrataSolidity prove that code has a bug?
-Currently, StrataSolidity can prove the *absence* of bugs but cannot generate concrete counterexamples. If verification fails, you know something is wrong, but you won't yet get values like "fails when `amount = 5, balance = 3`."
+Partly. When the solver refutes an obligation, StrataSolidity reports it as ❌ fail and the plain-text output includes the solver's model as raw values, such as `old(balances) = store(const(6), 32286, 11798)`. Many violations still come back as ❓ unknown, with no counterexample. See [Current Limitations](./limitations.md).
 
-#### Which SMT solvers are supported?
-z3 and cvc5. Either one works — z3 is the default.
+#### Which SMT solver is used?
+z3. The CLI hardcodes it as the solver for every verification call.
 
 # This guide
 

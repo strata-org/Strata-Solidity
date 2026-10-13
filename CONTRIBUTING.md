@@ -10,6 +10,11 @@ StrataSolidity is specified under `.kiro/specs/`, not in the mdBook under
 (REQ-DIST-006); the spec is the contract. When the guide and the spec disagree,
 the spec wins and the guide is treated as stale documentation.
 
+`docs/guide/src/*.md` is the single copy of the guide's content: the mdBook
+build (`docs/guide/book.toml`) and the landing-page/guide site under
+`docs/site/` (see [`docs/site/README.md`](./docs/site/README.md)) both render
+it, so edit it in one place.
+
 The two canonical documents are:
 
 - [`.kiro/specs/strata-solidity-baseline/requirements.md`](./.kiro/specs/strata-solidity-baseline/requirements.md) —

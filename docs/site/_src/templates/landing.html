@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StrataSolidity · Formal verification for Solidity</title>
+<meta name="description" content="Write specifications as NatSpec comments. StrataSolidity proves your contract meets them for all inputs and states.">
+<link rel="icon" href="assets/favicon.png">
+<link rel="stylesheet" href="assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body class="landing">
+
+<a class="skip" href="#content">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar__inner">
+    <a class="brand" href="index.html"><img src="assets/strata-mark.png" alt="" width="22" height="22"><span>StrataSolidity</span></a>
+    <nav class="topnav" aria-label="Site">
+      <a href="docs/index.html">Guide</a>
+      <a href="https://github.com/strata-org/Strata-Solidity" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="content">
+
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow">A Strata project</p>
+      <h1>Formal verification for Solidity</h1>
+      <p class="hero__lead">Write specifications as NatSpec comments. StrataSolidity proves your contract meets them for all inputs and states, not just the cases you test.</p>
+      <p class="hero__links">
+        <a class="cta" href="docs/index.html">Read the guide</a>
+        <a class="cta" href="https://github.com/strata-org/Strata-Solidity" rel="noopener">View on GitHub</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="example" aria-labelledby="example-title">
+    <div class="wrap">
+      <h2 id="example-title" class="visually-hidden">Example</h2>
+      <div class="example__grid">
+        <figure class="example__code">
+          <figcaption class="filename">token.sol</figcaption>
+          {{code:token}}
+        </figure>
+        <div class="example__runs">
+          <figure>
+            <figcaption class="filename">strata-verify.sh token.sol</figcaption>
+            {{out:token}}
+          </figure>
+          <figure>
+            <figcaption class="filename">Without <code>totalSupply += amount</code> in mint</figcaption>
+            {{out:token_mint_bug}}
+          </figure>
+          <p class="note">Real output from <code>strataSolidity</code> at commit <code>{{commit}}</code> with z3. The invariant <code>totalSupply == sum(balances)</code> stops verifying the moment <code>mint</code> forgets to update the supply.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">How it works</h2>
+      <ol class="pipeline" aria-label="Verification pipeline">
+        <li>Solidity</li><li>solc AST</li><li>Lean translator</li><li>Laurel IR</li><li>Strata Core</li><li>VCG</li><li>z3</li>
+      </ol>
+      <div class="cols">
+        <div>
+          <h3>Specs live in your code</h3>
+          <p>Specifications are <code>@custom:strata</code> NatSpec annotations: no imports, no stub functions, no separate spec language. <code>solc</code> is used only to produce the AST, so the compiler stays untouched.</p>
+        </div>
+        <div>
+          <h3>One binary</h3>
+          <p>The <code>strataSolidity</code> binary runs the whole pipeline. It invokes <code>solc</code>, parses the JSON AST into typed Lean structures, translates it, and verifies.</p>
+        </div>
+        <div>
+          <h3>Built on Strata</h3>
+          <p>Contracts are translated into Laurel, Strata’s intermediate verification language, and checked by Strata Core with an SMT solver.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="spec-title">
+    <div class="wrap">
+      <h2 id="spec-title">Specification language</h2>
+      <table class="spec-table">
+        <thead><tr><th scope="col">Annotation</th><th scope="col">Placement</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>requires &lt;expr&gt;</code></td><td>Function</td><td>Precondition: must hold on entry</td></tr>
+          <tr><td><code>ensures &lt;expr&gt;</code></td><td>Function</td><td>Postcondition: must hold on exit. <code>old(expr)</code> refers to the pre-state</td></tr>
+          <tr><td><code>invariant &lt;expr&gt;</code></td><td>Contract or state variable</td><td>Assumed on entry and checked on exit of every public/external mutating function, assumed by view functions, and checked after the constructor</td></tr>
+          <tr><td><code>modifies &lt;vars&gt;</code></td><td>Function</td><td>Frame condition: only the listed state, or mapping keys, may change</td></tr>
+          <tr><td><code>loop-invariant &lt;expr&gt;</code></td><td>Function</td><td>Maintained across loop iterations</td></tr>
+          <tr><td><code>forall v : T :: &lt;expr&gt;</code><br><code>exists v : T :: &lt;expr&gt;</code></td><td>Function</td><td>Quantifiers over all values of a type</td></tr>
+        </tbody>
+      </table>
+      <p class="note">Every annotation starts with <code>@custom:strata</code>. See the <a href="docs/annotation_reference.html">annotation reference</a>.</p>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="start-title">
+    <div class="wrap cols cols--start">
+      <div>
+        <h2 id="start-title">Get started</h2>
+        <p>Build from source. You need Lean 4 (via <code>elan</code>), <code>solc</code>, and z3 on your <code>PATH</code>. The Strata framework comes in as a git submodule.</p>
+        <p><a class="cta" href="docs/installation.html">Installation guide</a></p>
+      </div>
+      <div>
+        {{code:quickstart}}
+        <p class="note">Add <code>--sarif</code> for SARIF 2.1.0 output, which GitHub code scanning can display on pull requests.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="status-title">
+    <div class="wrap">
+      <h2 id="status-title">Where it stands</h2>
+      <div class="cols cols--two">
+        <div>
+          <h3 class="status-head status-head--yes">Works today</h3>
+          <ul class="plain">
+            <li>Simple and nested mappings, with <code>old()</code></li>
+            <li>Contract invariants, including <code>sum(mapping)</code>, checked across external calls that may re-enter the contract</li>
+            <li>Key-scoped <code>modifies</code> frame conditions</li>
+            <li><code>forall</code> / <code>exists</code> with <code>==&gt;</code></li>
+            <li>Loop invariants</li>
+            <li>Integer conversions, wrapping and signed division as the EVM performs them</li>
+            <li>Plain-text, JSON, and SARIF output, with counterexamples when z3 produces a model</li>
+          </ul>
+        </div>
+        <div>
+          <h3 class="status-head status-head--no">Not yet</h3>
+          <ul class="plain">
+            <li>Struct fields accessed through mappings</li>
+            <li><code>old()</code> in loop invariants</li>
+            <li><code>msg.sender</code> in constructors</li>
+            <li>Reliable counterexamples: many violations still report ❓ unknown rather than a concrete model</li>
+          </ul>
+        </div>
+      </div>
+      <p><a class="cta" href="docs/limitations.html">Current limitations</a></p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer__inner">
+    <p><img src="assets/strata-mark.png" alt="" width="18" height="18"><span>StrataSolidity is part of <a href="https://github.com/strata-org/Strata" rel="noopener">Strata</a>, an open-source project from AWS.</span></p>
+    <p class="footer__links caption">
+      <a href="https://github.com/strata-org/Strata-Solidity" rel="noopener">GitHub</a>
+      <a href="https://github.com/strata-org/Strata-Solidity/blob/main/SECURITY.md" rel="noopener">Security</a>
+      <span>Apache-2.0 OR MIT</span>
+    </p>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

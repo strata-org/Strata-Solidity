@@ -1,0 +1,13 @@
+{
+  "commit": "977b136",
+  "examples": {
+    "token.sol": {
+      "exit_code": 0,
+      "summary": "11 passed, 0 failed, 0 unknown out of 11 total"
+    },
+    "token_mint_bug.sol": {
+      "exit_code": 0,
+      "summary": "8 passed, 0 failed, 2 unknown out of 10 total"
+    }
+  }
+}
