@@ -140,6 +140,8 @@ structure TransCtx where
       DDM nodes extracted from the modifier body (pre-`_;` only).
       Translated in each function's context for correct state var resolution. -/
   modifierDefs : List (String × List (Solidity.node SourceRange)) := []
+  /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
+  fieldSolTypes : List (String × String) := []
   /-- Constant state variable definitions: maps constant name to its
       compile-time value expression for constant folding. -/
   constantDefs : List (String × StmtExprMd) := []
@@ -342,6 +344,32 @@ def SolType.isAddress (st : SolType) : Bool :=
 /-- Is this a Solidity bytes type (bytes1–bytes32)? -/
 def SolType.isBytes (st : SolType) : Bool :=
   st.solName.startsWith "bytes"
+
+/-- The values of a Solidity integer-like type, `(lo, hi)` inclusive:
+    `uint<N>`, `int<N>` (two's complement), `address` (160 bits) and
+    `bytes<N>` (fixed-size byte arrays, modelled as unsigned integers).
+    `none` for other types (bool, dynamic `bytes`/`string`, enums, …). -/
+def solTypeRange? (solName : String) : Option (Int × Int) :=
+  let bits (pre : String) : Option Nat :=
+    if !solName.startsWith pre then none
+    else
+      let rest := (solName.drop pre.length).toString
+      if rest.isEmpty then (if pre == "bytes" then none else some 256) else rest.toNat?
+  if solName == "address" then some (0, 2 ^ 160 - 1)
+  else match bits "uint" with
+  | some n => if n == 0 then none else some (0, 2 ^ n - 1)
+  | none => match bits "int" with
+    | some n => if n == 0 then none else some (-(2 ^ (n - 1)), 2 ^ (n - 1) - 1)
+    | none => match bits "bytes" with
+      | some n => if n == 0 || n > 32 then none else some (0, 2 ^ (8 * n) - 1)
+      | none => none
+
+/-- `lo <= e && e <= hi` for the range of Solidity type `solName`. -/
+def mkRangeCond (solName : String) (e : StmtExprMd) : Option StmtExprMd :=
+  (solTypeRange? solName).map fun (lo, hi) =>
+    mkStmtExprMd (mkPrimOp .And [
+      mkStmtExprMd (mkPrimOp .Leq [mkStmtExprMd (.LiteralInt lo), e]),
+      mkStmtExprMd (mkPrimOp .Leq [e, mkStmtExprMd (.LiteralInt hi)])])
 
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/

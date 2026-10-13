@@ -44,7 +44,7 @@ lake build
 1. Checks out StrataSolidity with `submodules: recursive` so the Strata submodule is materialized at the recorded SHA
 2. Verifies the submodule layout via `scripts/check-strata.sh`
 3. Installs `solc` (via the `ethereum/ethereum` PPA) and the CI-only Python deps in `Tools/Solidity/requirements-dev.txt`
-4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action) (which handles elan install and `.lake` caching)
+4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action), which handles elan install and caches the root `.lake`; Strata builds into `Strata/.lake`, which separate steps restore and save, keyed on the toolchain, the manifest and the submodule commit
 5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)
 6. Runs `python3 bench/check_csv_schema.py bench/results.csv` (REQ-PBT-008 schema enforcer against the committed CSV)
 7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema compliance)
@@ -167,6 +167,14 @@ Tools/Solidity/scripts/strata-verify.sh <file.sol> [--sarif] [--verbose]
 ```
 
 Requires `lake build` to have been run first.
+
+| Flag | Effect |
+|---|---|
+| `--sarif` / `--json` / `--pipeline-json` | Output format (default: plain text) |
+| `--verbose` | Also print the generated Laurel and Core programs |
+| `--timeout=<s>` | Per-obligation solver timeout (default 10) |
+| `--no-array-theory` | Encode mappings with quantified select/update axioms instead of SMT arrays (the default since the 2026-10 Strata re-pin; `--array-theory` is accepted and has no effect) |
+| `--dump-vc=<dir>` | Keep the generated `.smt2` files in `<dir>/<procedure>/` |
 
 ## Directory layout
 

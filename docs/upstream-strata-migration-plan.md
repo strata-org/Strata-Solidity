@@ -383,7 +383,7 @@ Semantic subtleties to keep in mind:
 
 - `Body.Opaque … []` now means *unframed*; "changes nothing" is `[{ targets := [] }]`. The port always emits one group.
 - Obligation labels changed from `postcondition_N` / `callElimAssert_requires_N` to `assert(<n>)`; the useful text is now the property *summary*, not the label.
-- `Strata.Laurel.translate` still returns `(Option Core.Program × List Message)`; StrataSolidity still calls `Core.verify` directly with `VerifyOptions.default` (array theory off), whereas Laurel's own `verifyTo*` APIs default to array theory on and `removeIrrelevantAxioms := .Precise`.
+- `Strata.Laurel.translate` still returns `(Option Core.Program × List Message)`; StrataSolidity calls `Core.verify` directly, once per user procedure, with array theory on (as Laurel's own `verifyTo*` APIs default to) and `pp.max_depth` raised so z3 prints `let`-free models. `removeIrrelevantAxioms := .Precise` (Laurel's other default) made no difference on the corpus; Core's `mapConst` axiom is not pruned by it.
 
 Pre-existing gaps found while establishing the baseline (present at `349b1cf4` too):
 

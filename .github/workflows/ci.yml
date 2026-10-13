@@ -40,6 +40,29 @@ jobs:
       - name: Verify Strata submodule precondition
         run: bash scripts/check-strata.sh
 
+      # Strata is a path dependency, so Lake builds it into Strata/.lake,
+      # outside the root .lake that lean-action caches. That build is
+      # restored here and saved after `lake build` + `lake test`. The key is
+      # what it depends on: the toolchain, the manifest (Strata's own
+      # dependencies) and the submodule commit. Without an exact match, the
+      # newest cache with the same toolchain and manifest is restored and
+      # Lake rebuilds what changed; it checks every restored module against
+      # its sources either way.
+      - name: Strata submodule commit
+        id: strata
+        run: |
+          commit=$(git rev-parse HEAD:Strata)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Strata build
+        id: strata-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Strata/.lake
+          key: strata-lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-${{ steps.strata.outputs.commit }}
+          restore-keys: |
+            strata-lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -94,6 +117,16 @@ jobs:
           build: true
           test: true
           lint: false
+
+      # Saved before the remaining test steps, so a failure in one of them
+      # does not throw the build away. Skipped when the exact key was
+      # restored.
+      - name: Save the Strata build
+        if: steps.strata-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: Strata/.lake
+          key: ${{ steps.strata-cache.outputs.cache-primary-key }}
 
       # ---- Stage 5: golden + REQ-PBT-007 exit-code sub-stage ----
       # test/run_tests.sh runs strata-verify.sh against test/examples/*.sol

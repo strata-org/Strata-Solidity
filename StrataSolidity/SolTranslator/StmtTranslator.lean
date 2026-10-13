@@ -61,6 +61,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Translate parameters, tracking Solidity types for bounds
     let mut inputs : List Parameter := []
     let mut preconditions : List StmtExprMd := []
+    -- Facts the Solidity type system guarantees (value ranges). They are
+    -- assumed by the procedure but not checked at internal call sites:
+    -- the model does not bound intermediate arithmetic (overflow reverts
+    -- in Solidity), so a call site could not prove them, and every value
+    -- that reaches a call in a real execution satisfies them.
+    let mut typeRanges : List (StmtExprMd × String) := []
 
     -- Add implicit self parameter for non-pure functions with contract state
     -- Only add self for non-mapping state vars (mapping vars are separate params)
@@ -69,15 +75,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     if !isPure && hasNonMappingState && !isConstructor then
       inputs := inputs ++ [{ name := "self",
                               type := mkHighTypeMd (.UserDefined (mkIdent ctx.contractName)) }]
-      -- Assert non-negativity only for INTEGER scalar state vars (Solidity
-      -- uints are always >= 0). Non-int fields (e.g. bool) must not get a
-      -- `>= 0` precondition — that produces an ill-typed `bool >= 0`.
+      -- Scalar state variables hold values of their Solidity type: uintN in
+      -- [0, 2^N), intN in [-2^(N-1), 2^(N-1)), address in [0, 2^160), ….
+      -- (Only for typed integer-like fields: `bool >= 0` would be ill-typed,
+      -- and a signed field must not be assumed non-negative.)
       for name in nonMappingStateVars do
-        let isIntField := ctx.contractFields.any fun f =>
-          f.name.text == name && (match f.type.val with | .TInt => true | _ => false)
-        if isIntField then
+        if let some solName := ctx.fieldSolTypes.lookup name then
           let fieldExpr := mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)
-          preconditions := preconditions ++ [mkStmtExprMd (mkPrimOp .Geq [fieldExpr, mkStmtExprMd (.LiteralInt 0)])]
+          if let some c := mkRangeCond solName fieldExpr then
+            typeRanges := typeRanges ++ [(c, s!"type range of {name} ({solName})")]
       -- Synthetic pre-state input parameters for scalar state vars.
       -- For each scalar field, add `<name>_in : <type>` and a precondition
       -- `self.<name> == <name>_in` so that `<name>_in` carries the pre-state
@@ -96,12 +102,14 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     -- Add implicit msg_sender parameter for non-pure functions
     if !isPure then
       inputs := inputs ++ [{ name := "msg_sender", type := mkHighTypeMd .TInt }]
-      preconditions := preconditions ++ [mkNonNegPrecond "msg_sender"]
+      if let some c := mkRangeCond "address" (mkStmtExprMd (mkIdentifier "msg_sender")) then
+        typeRanges := typeRanges ++ [(c, "type range of msg.sender (address)")]
       -- msg.sender is always > 0 (zero address cannot send transactions)
       preconditions := preconditions ++ [mkStmtExprMd (mkPrimOp .Gt [
         mkStmtExprMd (mkIdentifier "msg_sender"), mkStmtExprMd (.LiteralInt 0)])]
       inputs := inputs ++ [{ name := "msg_value", type := mkHighTypeMd .TInt }]
-      preconditions := preconditions ++ [mkNonNegPrecond "msg_value"]
+      if let some c := mkRangeCond "uint256" (mkStmtExprMd (mkIdentifier "msg_value")) then
+        typeRanges := typeRanges ++ [(c, "type range of msg.value (uint256)")]
 
     -- Add mapping/array state variables as explicit input parameters
     -- For view functions: use field name directly (read-only, no output).
@@ -149,9 +157,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           let inputName := s!"{baseName}_param"
           inputs := inputs ++ [{ name := inputName, type := solTy.highType }]
           userParamInfo := userParamInfo ++ [(baseName, solTy.highType)]
-          -- Add non-negative precondition for uint, address, and bytes types
-          if solTy.isUint || solTy.isAddress || solTy.isBytes then
-            preconditions := preconditions ++ [mkNonNegPrecond inputName]
+          -- The argument is a value of its Solidity type.
+          if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier inputName)) then
+            typeRanges := typeRanges ++ [(c, s!"type range of {baseName} ({solTy.solName})")]
           -- For memory array parameters, add a paired length parameter
           if solTy.solName == "array" &&
              (storageLocAnn.val == "memory" || storageLocAnn.val == "calldata") then
@@ -528,7 +536,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
 
     -- Wrap preconditions in Condition records (new Laurel shape requires this).
     let allPreconditionConds : List Condition :=
-      allPreconditions.map fun (p, d) => { condition := p, summary := some d }
+      allPreconditions.map (fun (p, d) => { condition := p, summary := some d }) ++
+      typeRanges.map fun (p, d) => { condition := p, summary := some d, mode := .Assume }
 
     return {
       name := funcName

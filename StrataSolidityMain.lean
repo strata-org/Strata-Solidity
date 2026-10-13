@@ -158,7 +158,12 @@ def main (args : List String) : IO Unit := do
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
   let pipelineJson := args.contains "--pipeline-json"
-  let useArrays := args.contains "--array-theory"
+  -- Array theory is the default, as in Laurel's own verification entry
+  -- points: maps become SMT arrays instead of quantified select/update
+  -- axioms, which z3 (with MBQI off) often cannot refute. Without it,
+  -- refutable obligations tend to come back `unknown` with no
+  -- counterexample. `--array-theory` is still accepted for compatibility.
+  let useArrays := !args.contains "--no-array-theory"
   let dumpVcDir : Option String := match args.filter (·.startsWith "--dump-vc=") with
     | t :: _ => some (t.drop "--dump-vc=".length).toString
     | _ => none
@@ -168,7 +173,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--pipeline-json", "--from-sol"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
@@ -230,18 +235,72 @@ def main (args : List String) : IO Unit := do
           IO.print coreStr
 
         -- Verify using Core verifier
-        let (vcResults, smtDir) ← match dumpVcDir with
+        let verifyOpts : VerifyOptions :=
+          { VerifyOptions.default with
+            stopOnFirstError := false,
+            verbose := .quiet,
+            solver := "z3",
+            solverTimeout := timeoutVal,
+            useArrayTheory := useArrays,
+            -- z3 abbreviates nested array values (the heap, nested
+            -- mappings) with `let` when they are deep or repeat a large
+            -- subterm, and Core's model reader cannot parse `let`: the
+            -- whole counterexample would be dropped.
+            solverOptions := #[("pp.max_depth", "1000"), ("pp.min_alias_size", "1000000")] }
+        -- Verify each user procedure in its own Core.verify call. Core shares
+        -- one SMT prefix across the obligations of a call, so axioms needed
+        -- by one procedure (e.g. the quantified `mapConst` axiom of a
+        -- constructor that zero-initializes a mapping, or heap axioms
+        -- without array theory) would otherwise reach every VC of the
+        -- contract, and z3 (MBQI off) answers `unknown` instead of
+        -- refuting an unrelated false property. The SMT files of each
+        -- procedure go to their own subdirectory.
+        --
+        -- A user procedure `C_f` is the Core procedure `C_f`, or
+        -- `$ov<n>$C_f` for each overload of `f`; each goes with the
+        -- procedures that check that its contract is well defined
+        -- (`<proc>$pre<i>`, `<proc>$post<i>`: a division in a `requires`
+        -- or `ensures`). If a user procedure has no Core counterpart,
+        -- verify the whole program at once rather than risk skipping
+        -- obligations.
+        let userProcs := (laurelProgram.staticProcedures.filterMap fun p =>
+          match p.body with
+          | .Opaque _ (some _) _ => some p.name.text
+          | _ => none).eraseDups
+        let coreNames := coreProgram.decls.filterMap fun d =>
+          match d with
+          | .proc pr _ => some (toString pr.header.name)
+          | _ => none
+        let isOverloadOf (name core : String) : Bool :=
+          match core.splitOn "$" with
+          | ["", ov, base] => ov.startsWith "ov" && (ov.drop 2).toString.all Char.isDigit && base == name
+          | _ => false
+        let companions (core : String) : List String :=
+          coreNames.filter fun c =>
+            let rest := (c.drop core.length).toString
+            c.startsWith core && (rest.startsWith "$pre" || rest.startsWith "$post") &&
+              ((rest.drop (if rest.startsWith "$pre" then 4 else 5)).toString.all Char.isDigit)
+        let groups := userProcs.map fun name =>
+          (name, coreNames.filter fun c => c == name || isOverloadOf name c)
+        let perProcedure := groups.all (!·.2.isEmpty)
+        -- Each result is paired with the directory holding its SMT files.
+        let verifyIn (dir : System.FilePath) : IO (Array (VCResult × System.FilePath)) := do
+          let run (d : System.FilePath) (opts : VerifyOptions) := do
+            let rs ← EIO.toIO (fun f => IO.Error.userError (toString f))
+              (Core.verify coreProgram d opts)
+            pure (rs.map (·, d))
+          if perProcedure then
+            let mut acc := #[]
+            for core in groups.flatMap (·.2) do
+              let sub := dir / core
+              IO.FS.createDirAll sub
+              acc := acc ++ (← run sub { verifyOpts with proceduresToVerify := some (core :: companions core) })
+            pure acc
+          else run dir verifyOpts
+        let (located, _smtDir) ← match dumpVcDir with
           | some dir => do
             IO.FS.createDirAll ⟨dir⟩
-            let r ← EIO.toIO
-              (fun f => IO.Error.userError (toString f))
-              (Core.verify coreProgram ⟨dir⟩
-                { VerifyOptions.default with
-                  stopOnFirstError := false,
-                  verbose := .quiet,
-                  solver := "z3",
-                  solverTimeout := timeoutVal,
-                  useArrayTheory := useArrays })
+            let r ← verifyIn ⟨dir⟩
             pure (r, (⟨dir⟩ : System.FilePath))
           | none =>
             let smtDirEnv ← IO.getEnv "STRATA_SMT_DIR"
@@ -252,39 +311,25 @@ def main (args : List String) : IO Unit := do
                 | some d => d
                 | none => "/tmp/strata-pipeline-smt"
               IO.FS.createDirAll dir
-              -- Clean previous run's files
+              -- Clean previous run's files (and per-procedure subdirectories)
               let entries ← (dir.readDir).catchExceptions (fun _ => pure #[])
               for e in entries do
                 if e.fileName.endsWith ".smt2" then
                   IO.FS.removeFile e.path |>.catchExceptions (fun _ => pure ())
-              let result ← EIO.toIO
-                (fun f => IO.Error.userError (toString f))
-                (Core.verify coreProgram dir
-                  { VerifyOptions.default with
-                    stopOnFirstError := false,
-                    verbose := .quiet,
-                    solver := "z3",
-                    solverTimeout := timeoutVal,
-                    useArrayTheory := useArrays })
+                else if ← e.path.isDir then
+                  IO.FS.removeDirAll e.path |>.catchExceptions (fun _ => pure ())
+              let result ← verifyIn dir
               pure (result, dir)
             else
-              let r ← IO.FS.withTempDir (fun tempDir =>
-                EIO.toIO
-                  (fun f => IO.Error.userError (toString f))
-                  (Core.verify coreProgram tempDir
-                    { VerifyOptions.default with
-                      stopOnFirstError := false,
-                      verbose := .quiet,
-                      solver := "z3",
-                      solverTimeout := timeoutVal,
-                      useArrayTheory := useArrays }))
+              let r ← IO.FS.withTempDir verifyIn
               pure (r, ("" : System.FilePath))
 
-        let vcResults := vcResults.filter (!isPassingPreludeVc ·)
+        let located := located.filter (!isPassingPreludeVc ·.1)
+        let vcResults := located.map (·.1)
 
         -- Print results
         if pipelineJson then
-          let obligations ← vcResults.toList.mapM fun (r : VCResult) => do
+          let obligations ← located.toList.mapM fun ((r : VCResult), smtDir) => do
             let status := if r.isSuccess then "pass"
               else if r.isFailure then "fail"
               else "unknown"

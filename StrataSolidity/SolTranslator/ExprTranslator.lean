@@ -887,6 +887,9 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
                 | .some_type_name _ tn => translateTypeNode ctx tn
                 | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
               prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType (some (mkStmtExprMd .Hole)))]
+              -- The returned value is a value of its Solidity type.
+              if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier pName.val)) then
+                prelude := prelude ++ [mkStmtExprMd (mkAssume c)]
             | _ => pure ()
         | _ => pure ()
         let b ← translateStmt ctx block
