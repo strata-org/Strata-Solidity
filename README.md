@@ -51,6 +51,14 @@ lake build
 
 `bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow).
 
+Lean panics are errors in CI. A `panic!` prints a message and continues with
+a default value, which in the verifier could mean a wrong verdict, so every
+step that compiles or runs StrataSolidity sets `LEAN_ABORT_ON_PANIC=1`. One
+upstream module, `Strata.DL.Lambda.LExprEvalProps`, is built first without
+it: Lean 4.31 panics while writing that module (a known upstream issue that
+does not affect the checked proofs), and CI reports it as a warning. Set
+`LEAN_ABORT_ON_PANIC=1` locally to get the same behavior.
+
 ## Quick start
 
 ```bash

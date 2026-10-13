@@ -20,7 +20,10 @@ permissions:
 jobs:
   build-and-test:
     name: build + test (ubuntu)
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: z3 comes from the image's apt archive and
+    # solc from a PPA built per Ubuntu release, so a new image can change
+    # both. Move to a newer image deliberately, in its own change.
+    runs-on: ubuntu-24.04
 
     steps:
       # Strata is vendored as a git submodule at ./Strata (REQ-STRATA-001).
@@ -28,7 +31,7 @@ jobs:
       # nested submodules, should they appear later) is initialized at the
       # SHA recorded in this repo's tree.
       - name: Checkout StrataSolidity (with Strata submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -64,7 +67,7 @@ jobs:
             strata-lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           # Match the documented minimum (README.md, docs/guide/src/installation.md
           # both list Python 3.12+ as a prerequisite). Ubuntu runners ship 3.12
@@ -103,7 +106,7 @@ jobs:
       # ---- Stages 2 + 3: lake build + lake test ----
       # leanprover/lean-action handles elan install, .lake caching
       # (keyed on lean-toolchain + lake-manifest.json), `lake build`,
-      # and `lake test` in one step.
+      # and `lake test`.
       #
       # The dialect is now declared directly in Lean
       # (StrataSolidity/SolidityDialect.lean, `#dialect … #end` +
@@ -111,8 +114,41 @@ jobs:
       # track and no stale-olean hazard: any dialect edit is an ordinary
       # .lean change that Lake invalidates like any other. The former
       # restore→bust→build→save cache dance is gone.
+      #
+      # Panics are errors. A Lean `panic!` prints a message and carries on
+      # with a default value: in StrataSolidity, or in the Strata code the
+      # verifier runs, that can mean a wrong verdict. With
+      # LEAN_ABORT_ON_PANIC=1 a panic aborts instead, in every step below
+      # that compiles or runs our code.
+      #
+      # One upstream module is the exception: Lean 4.31 panics (an
+      # assertion in `isOptionFixpoint`) while writing
+      # Strata.DL.Lambda.LExprEvalProps, after the module has been checked.
+      # It is built first, before panics become fatal (Lake then only
+      # replays it). Drop the exception when the panic is gone upstream.
+      - name: Install Lean
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+          use-github-cache: false
+
+      - name: Build the upstream module with a known Lean panic
+        run: |
+          set -o pipefail
+          lake build +Strata.DL.Lambda.LExprEvalProps 2>&1 | tee "$RUNNER_TEMP/upstream-build.log"
+          if grep -q 'PANIC at' "$RUNNER_TEMP/upstream-build.log"; then
+            echo "::warning title=Known upstream Lean panic::Lean 4.31 panics while writing Strata.DL.Lambda.LExprEvalProps (isOptionFixpoint: defnInfo.hasValue); built before panics become fatal, see ci.yml"
+          else
+            echo "::notice title=Upstream panic gone::Strata.DL.Lambda.LExprEvalProps no longer panics: remove this step from ci.yml"
+          fi
+
       - name: lake build + lake test
         uses: leanprover/lean-action@v1
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
         with:
           build: true
           test: true
@@ -134,6 +170,8 @@ jobs:
       # loop it invokes test/run_exit_code_tests.sh which pins the
       # REQ-PBT-007 exit-code contract (REQ-CLI-050..REQ-CLI-052).
       - name: test/run_tests.sh (golden + REQ-PBT-007)
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
         run: bash test/run_tests.sh
 
       # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
@@ -152,4 +190,6 @@ jobs:
       # prints a Skip with a reason); this stage fails only on a real
       # schema violation.
       - name: pytest Tools/Solidity/test (REQ-PBT-004 SARIF schema)
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
         run: python3 -m pytest Tools/Solidity/test -v
