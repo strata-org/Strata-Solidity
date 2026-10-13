@@ -65,6 +65,21 @@ structure StorageAlias where
   /-- Ordered list of (field name, field type) pairs. -/
   fields : List (String × HighType)
 
+/-- What an internal call site needs to know about its callee, so that it
+    passes the callee's implicit inputs in their declared order and binds
+    its state outputs (see `translateFunction` for the signature). -/
+structure FnSig where
+  isPure : Bool
+  isView : Bool
+  /-- Per user parameter: whether it is a memory or calldata array, which
+      the callee takes together with a `<name>_length` input. -/
+  memArrayParams : List Bool := []
+  /-- Types of the declared return values. -/
+  returnTypes : List HighTypeMd := []
+  /-- Names of the user parameters, in declaration order (for calls with
+      named arguments). -/
+  paramNames : List String := []
+
 /-- Translation context carrying the source file URI for metadata
     and struct field orders for argument reordering. -/
 structure TransCtx where
@@ -105,6 +120,8 @@ structure TransCtx where
       Internal calls to these functions need `self` threaded through. -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
   nonPureFunctions : List String := []
+  /-- Signatures of the contract's internally callable functions. -/
+  functionSigs : List (String × FnSig) := []
   /-- Names of in-scope local variables and function parameters.
       Checked before `stateVarNames` so that locals/params shadow state variables. -/
   -- TODO: Use HashSet for O(1) lookup if contracts grow large.
@@ -146,6 +163,9 @@ structure TransCtx where
       these get the sum axioms (a quantified assumption that otherwise keeps
       the solver from producing counterexamples). -/
   summedMappings : List String := []
+  /-- Source text of each contract invariant, parallel to
+      `contractInvariantNatspec`; used to name its obligations. -/
+  contractInvariantTexts : List String := []
   /-- Modifier definitions: maps modifier name to its parameter names and
       the raw require statement DDM nodes extracted from the modifier body
       (pre-`_;` only). Translated in each function's context for correct

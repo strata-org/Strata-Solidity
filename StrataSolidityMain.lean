@@ -70,15 +70,13 @@ private def printWarning (sourcePath : String) (sourceOpt : Option (String × St
     | none => sourcePath
   IO.eprintln s!"{loc}: warning: {w.message}"
 
-/-- Format counterexample for plain-text output. -/
-private def formatPlainCounterexample (cex : LExprModel) : String :=
-  if cex.isEmpty then ""
-  else
-    let entries := cex.map fun (id, e) =>
-      let name := StrataSolidity.Sarif.cleanVarName (toString id)
-      let val := toString e
-      s!"        {name} = {val}"
-    "\n" ++ "\n".intercalate entries
+/-- Format a counterexample for plain-text output (`inputs`: see
+    `Obligations.displayVarName`). -/
+private def formatPlainCounterexample (vcr : VCResult) (inputs : Std.HashSet String)
+    (source? : Option String) : String :=
+  let entries := StrataSolidity.Obligations.counterexample vcr inputs source?
+  if entries.isEmpty then ""
+  else "\n".intercalate (entries.map fun (name, val) => s!"        {name} = {val}")
 
 /-- A passing obligation located in Laurel's prelude
     (`CoreDefinitionsForLaurel.lean`), which contributes well-formedness
@@ -114,7 +112,7 @@ private def statusLabel (vcr : VCResult) : String :=
     is whether the run must fail: a refuted obligation or a verification
     error (REQ-CLI-050). -/
 private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
-    (sourceOpt : Option (String × String)) : String × Bool := Id.run do
+    (sourceOpt : Option (String × String)) (inputs : Std.HashSet String) : String × Bool := Id.run do
   let count (p : Verdict → Bool) := (vcResults.filter (p <| verdict ·)).size
   let nPass := count (· matches .pass)
   let nFail := count (· matches .fail)
@@ -136,13 +134,13 @@ private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
       if !s.isEmpty then s := s ++ "\n"
       s := s ++ s!"{emoji} {header} ({n}):\n"
     let locStr := match resolvePosition vcr sourceOpt with
-      | some (line, col) => s!" at line {line}, col {col}"
+      | some (line, col) => s!" at line {line}, col {col + 1}"
       | none => ""
-    s := s ++ s!"  {vcr.obligation.label}{locStr}\n"
+    s := s ++ s!"  {StrataSolidity.Obligations.name vcr sourceOpt}{locStr}\n"
     match verdict vcr with
     | .fail =>
       -- Counterexample for failures
-      let cex := formatPlainCounterexample vcr.lexprModel
+      let cex := formatPlainCounterexample vcr inputs (sourceOpt.map (·.2))
       if !cex.isEmpty then s := s ++ cex ++ "\n"
     | .error e => s := s ++ s!"        {e}\n"
     | _ => pure ()
@@ -156,11 +154,12 @@ private def formatJsonResults (vcResults : Array Core.VCResult)
   let arr := vcResults.map fun vcr =>
     let baseFields : Array (String × Json) := #[
       ("name", Json.str vcr.obligation.label),
+      ("description", Json.str (StrataSolidity.Obligations.name vcr sourceOpt)),
       ("status", Json.str (statusLabel vcr))
     ]
     let fields := match resolvePosition vcr sourceOpt with
     | some (line, col) =>
-      baseFields.push ("line", toJson line) |>.push ("col", toJson col)
+      baseFields.push ("line", toJson line) |>.push ("col", toJson (col + 1))
     | none => baseFields
     Json.mkObj fields.toList
   (Json.arr arr).pretty
@@ -403,7 +402,9 @@ def main (args : List String) : IO Unit := do
           IO.println (formatJsonResults vcResults solSourceOpt)
         else
           IO.println "\n==== Verification Results ===="
-          let (s, hasFailures) := formatVcResultsWithLocation vcResults solSourceOpt
+          let inputs := Std.HashSet.ofList (laurelProgram.staticProcedures.flatMap
+            (·.inputs.map (·.name.text)))
+          let (s, hasFailures) := formatVcResultsWithLocation vcResults solSourceOpt inputs
           IO.println s
           if !warnings.isEmpty then
             IO.println s!"⚠️  {warnings.length} annotation(s) or function(s) not verified (see warnings)"

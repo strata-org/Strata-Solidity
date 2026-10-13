@@ -121,6 +121,91 @@ def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val :
     return mkStmtExprMd (mkCall "update" [rootExpr, idx, innerUpdate])
 
 
+/-- Whether evaluating a translated expression does more than compute a
+    value: anything but literals, variables, conditionals, map reads and
+    operators without a precondition (so `k++`, an assignment, a call, a
+    division). Laurel lifts such parts out of the expression, evaluating
+    them before it. -/
+def hasEffects (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun e => match e.val with
+    | .LiteralInt _ | .LiteralBool _ | .LiteralString _ | .Var (.Local _) | .Var (.Field ..)
+    | .IfThenElse .. => false
+    | .StaticCall callee _ _ =>
+      match asPrimOp? e.val with
+      | some (op, _) => (op matches .Div | .Mod | .DivT | .ModT)
+      | none => !["select", "mapConst"].contains callee.text
+    | _ => true) e
+
+/-- A local `x` declared with the value `e`. -/
+def declareLocal (x : String) (e : StmtExprMd) : StmtExprMd :=
+  mkStmtExprMd (.Assign [{ val := .Declare { name := x, type := none }, source := .unknown }] e)
+
+/-- Evaluate expressions once each, in order: if any of them has effects,
+    bind every one to a fresh local `<pre>_<i>` (declarations to run first)
+    and use the locals instead; otherwise use the expressions as they are. -/
+def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List StmtExprMd :=
+  if !es.any hasEffects then ([], es) else
+    let named := es.zipIdx.map fun (e, i) => (s!"{pre}_{i}", e)
+    (named.map fun (x, e) => declareLocal x e,
+     named.map fun (x, _) => mkStmtExprMd (mkIdentifier x))
+
+/-- An internal call `f(args)` to a function with signature `sig`.
+
+    The arguments follow the callee's input order exactly (see
+    `translateFunction`): `self` and the pre-state `<f>_in` of each scalar
+    state variable (for a non-pure callee in a contract with scalar state),
+    `msg_sender` and `msg_value` (non-pure), the current value of each
+    mapping and array state variable with its `_length` (non-pure), then the
+    user arguments, each memory-array argument followed by its length.
+
+    A mutating callee (neither pure nor view) also returns the post-state of
+    every mapping and array state variable after its declared return values.
+    Those outputs are bound back to the caller's variables by a
+    multi-target assignment inside a block expression, which yields the
+    single declared return value, if any; Laurel lifts it out of the
+    surrounding expression. Dropping them would make the caller reason
+    about stale mappings after the call. -/
+def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) (sig : FnSig)
+    (argNodes : List (Solidity.node SourceRange)) (args : List StmtExprMd)
+    : Except TranslationError StmtExprMd := do
+  let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  -- User arguments, each memory-array argument followed by its length.
+  let mut userArgs : List StmtExprMd := []
+  for ((node, arg), i) in (argNodes.zip args).zipIdx do
+    userArgs := userArgs ++ [arg]
+    if sig.memArrayParams.getD i false then
+      match node with
+      | .Identifier _ nameAnn =>
+        if ctx.memoryArrayParams.contains nameAnn.val || ctx.arrayStateVars.contains nameAnn.val then
+          userArgs := userArgs ++ [ident s!"{nameAnn.val}_length"]
+        else throw (.unsupported
+          s!"array argument `{nameAnn.val}` to `{callee}` has no known length")
+      | _ => throw (.unsupported s!"array argument to `{callee}` must be a variable")
+  if sig.isPure then return mkStmtExprMd (mkCall callee userArgs)
+  let scalars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
+  let mut implicitArgs : List StmtExprMd := []
+  if !scalars.isEmpty then
+    if !ctx.hasSelfParam then
+      throw (.unsupported s!"internal call to `{callee}` from a function without contract state access (e.g. the constructor)")
+    implicitArgs := implicitArgs ++ [ident "self"] ++
+      scalars.map fun n => mkStmtExprMd (mkFieldSelect (ident "self") n)
+  implicitArgs := implicitArgs ++ [ident "msg_sender", ident "msg_value"]
+  let stateVars := ctx.mappingStateVars.flatMap fun m =>
+    if ctx.arrayStateVars.contains m then [m, s!"{m}_length"] else [m]
+  implicitArgs := implicitArgs ++ stateVars.map ident
+  let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee (implicitArgs ++ userArgs)))
+  if sig.isView || stateVars.isEmpty then return call
+  -- Mutating callee: bind the declared returns to fresh locals and the
+  -- state outputs to the caller's state variables.
+  let temps := sig.returnTypes.zipIdx.map fun (ty, i) => (s!"__ret{sr.start.byteIdx}_{i}", ty)
+  let targets : List (AstNode Variable) :=
+    temps.map (fun (n, ty) => { val := .Declare { name := n, type := some ty }, source := .unknown }) ++
+    stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
+  let assign := withSourceRange ctx sr (mkStmtExprMd (.Assign targets call))
+  match temps with
+  | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
+  | _ => return mkStmtExprMd (.Block [assign] none)
+
 /-- Source range of an expression node (`none` for other node kinds). -/
 def exprRange : Solidity.node SourceRange → SourceRange
   | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
@@ -352,28 +437,19 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | funcName =>
         -- Internal call: prefix with contract name to match procedure declaration
         let qualifiedName := s!"{ctx.contractName}_{funcName}"
-        if ctx.nonPureFunctions.contains funcName then
-          let mut implicitArgs : List StmtExprMd := []
-          let nonMappingStateVars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
-          if !nonMappingStateVars.isEmpty then
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "self")]
-          implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_sender")]
-          implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier "msg_value")]
-          -- Pass current self.<name> as the callee's `<name>_in` pre-state
-          -- for each scalar state var. This matches the synthetic `_in`
-          -- inputs added by StmtTranslator for non-pure, non-constructor
-          -- functions and lets `old(<name>)` resolve correctly inside the
-          -- callee's specs.
-          for name in nonMappingStateVars do
-            implicitArgs := implicitArgs ++
-              [mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) name)]
-          for name in ctx.mappingStateVars do
-            implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier name)]
-            if ctx.arrayStateVars.contains name then
-              implicitArgs := implicitArgs ++ [mkStmtExprMd (mkIdentifier s!"{name}_length")]
-          return mkStmtExprMd (mkCall qualifiedName (implicitArgs ++ args))
-        else
-          return mkStmtExprMd (mkCall qualifiedName args)
+        match ctx.functionSigs.lookup funcName with
+        | none => return mkStmtExprMd (mkCall qualifiedName args)
+        | some sig =>
+          -- Named arguments (`f({to: a, amount: x})`) bind by name: put
+          -- them in declaration order.
+          let names := namesSeq.val.toList.map (·.val)
+          let (argNodes, args) ← if names.isEmpty then pure (argsSeq.val.toList, args) else do
+            let named := names.zip (argsSeq.val.toList.zip args)
+            let ordered ← sig.paramNames.mapM fun p => match named.lookup p with
+              | some a => pure a
+              | none => throw (.typeError s!"call to `{funcName}` has no argument named `{p}`")
+            pure (ordered.map (·.1), ordered.map (·.2))
+          translateInternalCall ctx sr qualifiedName sig argNodes args
     | .MemberAccess _ baseNode memberAnn =>
       -- Handle array.push(val) on array state variables
       -- User-defined value type wrap/unwrap (`Wei.wrap(x)`, `Wei.unwrap(w)`)
@@ -575,11 +651,21 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment _ lhs rhs opAnn => do
     let rhsExpr ← translateExpr ctx rhs
+    -- Solidity evaluates the right-hand side first, then the indices, then
+    -- reads the target (for `op=`). If any of them has effects (a call
+    -- that writes the same mapping, `k++`), they are bound to locals in
+    -- that order, so the write sees the state they leave.
+    let off := (exprRange n).start.byteIdx
+    let rhsVar := s!"__rhs{off}"
     -- Handle IndexAccess on LHS: map/array writes via select/update
     match collectIndexChain lhs with
     | some (rootNode, indices) => do
       let rootExpr ← translateExpr ctx rootNode
       let idxExprs ← indices.mapM (translateExpr ctx)
+      let inPlace := !(rhsExpr :: idxExprs).any hasEffects
+      let (binds, rhsExpr, idxExprs) := if inPlace then ([], rhsExpr, idxExprs) else
+        let (idxBinds, keys) := bindInOrder s!"__k{off}" idxExprs
+        (declareLocal rhsVar rhsExpr :: idxBinds, mkStmtExprMd (mkIdentifier rhsVar), keys)
       -- Build the read expression: select(select(root, k1), k2) ...
       let readExpr := idxExprs.foldl (fun acc idx =>
         mkStmtExprMd (mkCall "select" [acc, idx])) rootExpr
@@ -600,9 +686,14 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- Build nested update: for m[k1][k2] = v, produce
       --   Assign [root] (update(root, k1, update(select(root, k1), k2, v)))
       let updateExpr ← buildNestedUpdate rootExpr idxExprs rhs'
-      return mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
+      let assign := mkStmtExprMd (.Assign [toAssignTarget rootExpr] updateExpr)
+      if binds.isEmpty then return assign
+      return mkStmtExprMd (.Block (binds ++ [assign]) none)
     | none =>
     let lhsExpr ← translateExpr ctx lhs
+    -- `x op= f()`: the target is read after the right-hand side runs.
+    let (binds, rhsExpr) := if opAnn.val == "=" || !hasEffects rhsExpr then ([], rhsExpr) else
+      ([declareLocal rhsVar rhsExpr], mkStmtExprMd (mkIdentifier rhsVar))
     let rhs' ← match opAnn.val with
       | "=" => pure rhsExpr
       | "+=" => pure (mkStmtExprMd (mkPrimOp .Add [lhsExpr, rhsExpr]))
@@ -616,7 +707,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [lhsExpr, rhsExpr]))
       | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
-    return mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
+    let assign := mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
+    if binds.isEmpty then return assign
+    return mkStmtExprMd (.Block (binds ++ [assign]) none)
 
   -- Call with {value:, gas:} options: the options don't affect verification
   -- semantics (ETH transfer is external/opaque). Translate the wrapped call.

@@ -57,9 +57,15 @@ def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtE
     invs.map (rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars [] · ctx.constantDefs)
 
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
-    Positional argument contract for non-pure functions (must match call site in translateExpr):
-      [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args_as_name_param...]
-    where `self` is present only if there are non-mapping state variables. -/
+    Inputs, in order (internal call sites must match, see
+    `translateInternalCall`): `self` and `<scalar>_in` for each scalar state
+    variable (non-pure functions of contracts with scalar state, not
+    constructors), `msg_sender` and `msg_value` (non-pure), each mapping or
+    array state variable (`<m>_in`, or `<m>` for view functions) with its
+    `_length` (non-pure, not constructors), then `<p>_param` for each user
+    parameter, followed by `<p>_length` for memory arrays. Outputs: the
+    declared returns, then the post-state of each mapping and array state
+    variable (mutating functions) or of every state variable (constructors). -/
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
@@ -251,10 +257,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       ctx.arrayStateVars.map (· ++ "_length")
     else []
     -- Parse @custom:strata annotations from NatSpec documentation
-    let annotations := parseStrataAnnotations docAnn.val
-    let natspecLoopInvStrs := annotations.filterMap fun
-      | .loopInvariant e => some e | _ => none
-    let natspecLoopInvExprs ← natspecLoopInvStrs.mapM parseSpecExpr
+    -- Each annotation is paired with the source range of its NatSpec line,
+    -- so every clause's obligations report that line.
+    let annotationsAt := parseStrataAnnotationsAt ctx.source docAnn
+    let annotations := annotationsAt.map (·.1)
+    let natspecLoopInvs := annotationsAt.filterMap fun
+      | (.loopInvariant e, r) => some (e, r) | _ => none
+    let natspecLoopInvExprs ← natspecLoopInvs.mapM fun (e, _) => parseSpecExpr e
     -- Rewrite state var refs in loop invariants
     let specLocalNames := userParamInfo.map (·.1) ++
       (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
@@ -264,6 +273,9 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     let natspecLoopInvExprs := natspecLoopInvExprs.map
       (processOldMarkers ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
     let natspecLoopInvExprs := natspecLoopInvExprs.map rewriteSVGlobal
+    -- Located after rewriting: a rewrite may rebuild the root node.
+    let natspecLoopInvExprs := (natspecLoopInvExprs.zip natspecLoopInvs).map fun (e, (_, r)) =>
+      withSourceRangeDeep ctx r (withSourceRange ctx r e)
     -- Valued-return desugaring: when the procedure ends up with MULTIPLE
     -- output parameters (a declared return value plus mapping-state
     -- outputs), Laurel's EliminateValueReturns rejects `return e`. Record
@@ -280,10 +292,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                               loopInvariantExprs := natspecLoopInvExprs }
     let (specPres, _specPosts, body, contractInvariants) ← match bodyOpt with
       | .some_node _ bodyNode => do
-        let natspecPres := annotations.filterMap fun
-          | .requires e => if hasStructAccess e then none else some e | _ => none
-        let natspecPosts := annotations.filterMap fun
-          | .ensures e => if hasStructAccess e then none else some e | _ => none
+        let natspecPresAt := annotationsAt.filterMap fun
+          | (.requires e, r) => if hasStructAccess e then none else some (e, r) | _ => none
+        let natspecPostsAt := annotationsAt.filterMap fun
+          | (.ensures e, r) => if hasStructAccess e then none else some (e, r) | _ => none
+        let natspecPres := natspecPresAt.map (·.1)
+        let natspecPosts := natspecPostsAt.map (·.1)
 
         -- Parse NatSpec spec expressions
         let specPreExprs ← natspecPres.mapM parseSpecExpr
@@ -308,6 +322,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         let specPreExprs := if !isPure && !isView && !isConstructor then
           specPreExprs.map (rewriteOldMappingRefs ctx.mappingStateVars ctx.arrayStateVars ctx.stateVarNames)
         else specPreExprs
+        let specPreExprs := (specPreExprs.zip natspecPresAt).map fun (e, (_, r)) =>
+          withSourceRangeDeep ctx r (withSourceRange ctx r e)
         -- Rewrite postcondition expressions: user parameter names → _param names
         let specPostExprs := specPostExprs.map (rewriteParamRefs userParamNames)
         -- Translate body statements
@@ -480,15 +496,15 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- of a function share the function's range, so without distinct
         -- summaries every `ensures` of a function would collapse into one
         -- reported obligation.
-        let mkPost (summary : String) (p : StmtExprMd) : Condition :=
-          { condition := withSourceRangeDeep ctx fnSr (withSourceRange ctx fnSr p),
+        let mkPost (sr : SourceRange) (summary : String) (p : StmtExprMd) : Condition :=
+          { condition := withSourceRangeDeep ctx sr (withSourceRange ctx sr p),
             summary := some summary }
-        let specConds := (specPostExprs.zip natspecPosts).map fun (p, src) =>
-          mkPost s!"ensures {src}" p
+        let specConds := (specPostExprs.zip natspecPostsAt).map fun (p, (src, r)) =>
+          mkPost r s!"ensures {src}" p
         let frameConds := frameConditions.map fun (name, p) =>
-          mkPost s!"modifies frame ({name})" p
+          mkPost fnSr s!"modifies frame ({name})" p
         let invariantConds := contractInvariants.zipIdx.map fun (p, i) =>
-          mkPost s!"invariant #{i + 1}" p
+          mkPost fnSr s!"invariant {ctx.contractInvariantTexts.getD i s!"#{i + 1}"}" p
         let allPostsConds : List Condition := specConds ++ frameConds ++ invariantConds
         -- One unguarded frame group. An empty target list means "changes
         -- nothing" (`ModifiesGroup.nothingChanges`); Laurel reads an empty

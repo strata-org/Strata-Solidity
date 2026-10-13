@@ -9,4 +9,5 @@
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
 import StrataSolidity.Solidity
+import StrataSolidity.Obligations
 import StrataSolidity.SarifOutput

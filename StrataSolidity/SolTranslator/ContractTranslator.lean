@@ -286,14 +286,35 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           | _ => pure ()
       | _ => pure ()
     let mut nonPureFunctions : List String := []
+    let mut functionSigs : List (String × FnSig) := []
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ _ _ _ _ _ =>
+      | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ params retParams _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
         let fnIsConstructor := fnKindAnn.val == "constructor"
         let fnIsExternal := fnVisAnn.val == "external"
         if !fnIsPure && !fnIsConstructor && !fnIsExternal then
           nonPureFunctions := nonPureFunctions ++ [fnNameAnn.val]
+        if !fnIsConstructor && !fnIsExternal then
+          let tctx := { ctx with enumDefs, udvtNames }
+          let decls : Solidity.node SourceRange → List (Solidity.node SourceRange)
+            | .ParameterList _ seq => seq.val.toList
+            | _ => []
+          let memArrayParams := (decls params).map fun
+            | .VariableDeclaration _ _ (.some_type_name _ tn) _ _ _ _ _ storageLoc _ _ =>
+              (translateTypeNode tctx tn).solName == "array" &&
+                (storageLoc.val == "memory" || storageLoc.val == "calldata")
+            | _ => false
+          let returnTypes := (decls retParams).map fun
+            | .VariableDeclaration _ _ (.some_type_name _ tn) _ _ _ _ _ _ _ _ =>
+              (translateTypeNode tctx tn).highType
+            | _ => mkHighTypeMd .TInt
+          let paramNames := (decls params).map fun
+            | .VariableDeclaration _ nameAnn .. => nameAnn.val
+            | _ => ""
+          functionSigs := functionSigs ++ [(fnNameAnn.val,
+            { isPure := fnIsPure, isView := fnMutAnn.val == "view", memArrayParams, returnTypes,
+              paramNames })]
       | _ => pure ()
 
     -- Pass 3: Parse contract invariants from NatSpec and set up function context
@@ -307,6 +328,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  arrayStateVars := arrayStateVars
                  fixedArrayLengths := fixedArrayLengths
                  nonPureFunctions := nonPureFunctions
+                 functionSigs := functionSigs
                  enumDefs := enumDefs
                  udvtNames := udvtNames
                  constantDefs := constantDefs
@@ -346,6 +368,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let invariants := if ctorSkipped then [] else natspecInvariantExprs
     let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
                                    summedMappings := summed.eraseDups,
+                                   contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
