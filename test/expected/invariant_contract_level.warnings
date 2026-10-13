@@ -1,0 +1,3 @@
+invariant_contract_level.sol:35:5: warning: `@custom:strata invariant` has no effect on interface `IPool`: an interface has no state, so it is ignored
+invariant_contract_level.sol:40:5: warning: `@custom:strata invariant` has no effect on library `Math`: a library has no state, so it is ignored
+invariant_contract_level.sol:44:9: warning: `@custom:strata invariant` has no effect on state variable `LIMIT`: a library has no state, so it is ignored

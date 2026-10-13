@@ -45,23 +45,100 @@ private def extractModifierRequires (stmts : List (Solidity.node SourceRange))
       if nameAnn.val == "require" then argsSeq.val.toList.head? else none
     | _ => none
 
+/-- Warnings for `@custom:strata` lines in `doc` that are not verified:
+    unrecognized keywords, recognized ones that have no effect on the
+    declaration `doc` is attached to (`allowed` lists the keywords that do;
+    `reason` explains why a keyword has no effect, if it can), and text on
+    the lines after an annotation, which NatSpec treats as part of it but the
+    translator does not read. -/
+private def annotationWarnings (source? : Option String) (declDesc : String)
+    (allowed : List String) (doc : StrataDDM.Ann String SourceRange)
+    (reason : String → Option String := fun _ => none) : List TranslationWarning :=
+  let lines := strataAnnotationLinesAt source? doc
+  let unrecognized := (unrecognizedStrataAnnotationsAt source? doc).map fun (line, r) =>
+    { range := r, message :=
+        if line.isEmpty then
+          s!"`@custom:strata` with no annotation on the same line ({declDesc}) is ignored: " ++
+            "each annotation must fit on one line"
+        else s!"unrecognized annotation `@custom:strata {line}` on {declDesc} is ignored" }
+  let misplaced := (parseStrataAnnotationsAt source? doc).filterMap fun (ann, r) =>
+    if allowed.contains ann.keyword then none
+    else
+      let why := match reason ann.keyword with
+        | some w => s!": {w}"
+        | none => " and is ignored"
+      some { range := r, message := s!"`@custom:strata {ann.keyword}` has no effect on {declDesc}{why}" }
+  let continued := (continuedStrataAnnotations doc.val).filterMap fun i =>
+    (lines[i]?.filter (!·.1.isEmpty)).map fun (line, r) =>
+      { range := r, message :=
+          s!"the text on the line after `@custom:strata {line}` is ignored: " ++
+          "each annotation must fit on one line" }
+  unrecognized ++ misplaced ++ continued
+
+/-- Names `m` of every `sum(m)` in the annotations of a NatSpec comment. -/
+private def summedNames (doc : String) : List String :=
+  (strataAnnotationLines doc).flatMap fun line =>
+    let toks := SpecParser.tokenize line
+    (toks.zip (toks.drop 1 |>.zip (toks.drop 2 |>.zip (toks.drop 3)))).filterMap
+      fun (t0, t1, t2, t3) => if t0 == "sum" && t1 == "(" && t3 == ")" then some t2 else none
+
+/-- How warnings name a function. solc gives `receive` and `fallback` an
+    empty name. -/
+private def functionDesc (kind name : String) : String :=
+  match kind with
+  | "constructor" => "the constructor"
+  | "receive" => "the receive function"
+  | "fallback" => "the fallback function"
+  | _ => s!"function `{name}`"
+
+/-- Whether the `repr` of an AST has an `Identifier` node `name` (not a
+    string literal, member name or declared name that happens to read
+    `name`). An identifier renders as `node.Identifier <range> { …, val :=
+    "<name>" }`. -/
+private def reprMentions (astRepr name : String) : Bool :=
+  (astRepr.splitOn "Strata.Solidity.node.Identifier").drop 1 |>.any fun chunk =>
+    (chunk.startsWith " " || chunk.startsWith "\n") &&
+    match (chunk.splitOn "val := \"").drop 1 |>.head? with
+    | some rest => (rest.splitOn "\"").head? == some name
+    | none => false
+
+/-- Whether the `repr` of an AST contains a loop statement. -/
+private def reprHasLoop (astRepr : String) : Bool :=
+  ["ForStatement", "WhileStatement", "DoWhileStatement"].any fun c =>
+    (astRepr.splitOn s!"Strata.Solidity.node.{c}").length > 1
+
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
     functions are emitted as static procedures.
-    Two-pass: first collect struct definitions (for field order), then translate functions. -/
+    Two-pass: first collect struct definitions (for field order), then translate functions.
+    Also returns a warning for every annotation or function that is not verified. -/
 def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
-    : Except TranslationError (List Procedure × List TypeDefinition) := do
+    : Except TranslationError (List Procedure × List TypeDefinition × List TranslationWarning) := do
   match contract with
-  | .ContractDefinition _ nameAnn _kindAnn _abstractAnn nodesSeq _contractDocAnn _baseContracts => do
+  | .ContractDefinition contractSr nameAnn kindAnn _abstractAnn nodesSeq contractDocAnn _baseContracts => do
+    let mut warnings : List TranslationWarning := []
     let mut procedures : List Procedure := []
     let mut fields : List Field := []
     let mut types : List TypeDefinition := []
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
     let mut udvtNames : List String := ctx.udvtNames
-    let mut stateVarInvariants : List StrataAnnotation := []
+    -- Contract invariants may be attached to the contract itself or to any
+    -- of its state variables; solc attaches each NatSpec block to one
+    -- declaration, so there is no ambiguity between contracts in a file.
+    -- Interfaces and libraries have no state to keep invariant.
+    let isContract := kindAnn.val == "contract"
+    let mut stateVarInvariants : List StrataAnnotation :=
+      if isContract then
+        (parseStrataAnnotations contractDocAnn.val).filter (·.keyword == "invariant")
+      else []
+    warnings := warnings ++ annotationWarnings ctx.source s!"{kindAnn.val} `{nameAnn.val}`"
+      (if isContract then ["invariant"] else []) contractDocAnn
+      (fun _ => if isContract then none else
+        some s!"{if kindAnn.val == "interface" then "an" else "a"} {kindAnn.val} has no state, so it is ignored")
     let mut constantDefs : List (String × StmtExprMd) := []
     let mut fieldSolTypes : List (String × String) := []
+    let mut stateVarInits : List (String × Solidity.node SourceRange) := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -102,11 +179,15 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           -- Collect @custom:strata invariant from state variable NatSpec
-          let varAnnotations := parseStrataAnnotations docAnn.val
-          for ann in varAnnotations do
-            match ann with
-            | .invariant _ => stateVarInvariants := stateVarInvariants ++ [ann]
-            | _ => pure ()
+          -- (a library's constants are not contract state)
+          warnings := warnings ++ annotationWarnings ctx.source
+            s!"state variable `{nameAnn.val}`" (if isContract then ["invariant"] else []) docAnn
+            (fun _ => if isContract then none else some s!"a {kindAnn.val} has no state, so it is ignored")
+          if isContract then
+            for ann in parseStrataAnnotations docAnn.val do
+              match ann with
+              | .invariant _ => stateVarInvariants := stateVarInvariants ++ [ann]
+              | _ => pure ()
           if constAnn.val == "true" then
             -- Constant state variable: record name→value for constant folding
             match valueOpt with
@@ -119,6 +200,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
             fields := fields ++ [field]
             if let .some_type_name _ tn := typeNameOpt then
               fieldSolTypes := fieldSolTypes ++ [(nameAnn.val, (translateTypeNode { ctx with enumDefs } tn).solName)]
+            if let .some_node _ valNode := valueOpt then
+              stateVarInits := stateVarInits ++ [(nameAnn.val, valNode)]
         else
           pure ()
       | .EnumDefinition _ eNameAnn eMembersSeq =>
@@ -131,15 +214,36 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
 
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
-    let mut modifierRequireNodes : List (String × List (Solidity.node SourceRange)) := []
+    let mut modifierRequireNodes : List (String × List String × List (Solidity.node SourceRange)) := []
+    -- Modifiers with statements that are not modelled, with how many.
+    let mut partialModifiers : List (String × Nat) := []
     for member in nodesSeq.val do
       match member with
-      | .ModifierDefinition _ modNameAnn _ bodyOpt =>
-        let reqStmts := match bodyOpt with
-          | .some_node _ (.Block _ stmtsSeq) =>
-            extractModifierRequires stmtsSeq.val.toList
+      | .ModifierDefinition _ modNameAnn paramsNode bodyOpt =>
+        let stmts := match bodyOpt with
+          | .some_node _ (.Block _ stmtsSeq) => stmtsSeq.val.toList
           | _ => []
-        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, reqStmts)]
+        let reqStmts := extractModifierRequires stmts
+        let params := match paramsNode with
+          | .ParameterList _ ps => ps.val.toList.filterMap fun
+            | .VariableDeclaration _ n .. => some n.val
+            | _ => none
+          | _ => []
+        modifierRequireNodes := modifierRequireNodes ++ [(modNameAnn.val, params, reqStmts)]
+        -- Only the top-level `require`s before `_;` become preconditions of
+        -- the functions using the modifier; anything else (state writes,
+        -- statements after `_`, asserts, nested requires) is not modelled.
+        let isPlaceholder : Solidity.node SourceRange → Bool
+          | .ExpressionStatement _ (.Literal _ valAnn _ _) => valAnn.val == "_"
+          | _ => false
+        let isRequire : Solidity.node SourceRange → Bool
+          | .ExpressionStatement _ (.FunctionCall _ (.Identifier _ nameAnn) _ _ _) =>
+            nameAnn.val == "require"
+          | _ => false
+        let dropped := (stmts.takeWhile (!isPlaceholder ·)).filter (!isRequire ·) ++
+          (stmts.dropWhile (!isPlaceholder ·)).drop 1
+        if !dropped.isEmpty then
+          partialModifiers := partialModifiers ++ [(modNameAnn.val, dropped.length)]
       | _ => pure ()
 
     -- Pass 2: collect non-pure function names for internal call resolution
@@ -169,13 +273,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- We re-scan the DDM nodes to distinguish ArrayTypeName from MappingType,
     -- since both translate to TMap in HighType.
     let mut arrayStateVars : List String := []
+    let mut fixedArrayLengths : List (String × Nat) := []
     for member in nodesSeq.val do
       match member with
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ _ _ _ =>
         if stateVarAnn.val == "true" then
           match typeNameOpt with
-          | .some_type_name _ (.ArrayTypeName _ _) =>
+          | .some_type_name _ (.ArrayTypeName _ _ lengthAnn) =>
             arrayStateVars := arrayStateVars ++ [nameAnn.val]
+            if let some n := lengthAnn.val.toNat? then
+              fixedArrayLengths := fixedArrayLengths ++ [(nameAnn.val, n)]
           | _ => pure ()
       | _ => pure ()
     let mut nonPureFunctions : List String := []
@@ -198,36 +305,118 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  stateVarNames := activeStateVarNames
                  mappingStateVars := mappingStateVars
                  arrayStateVars := arrayStateVars
+                 fixedArrayLengths := fixedArrayLengths
                  nonPureFunctions := nonPureFunctions
                  enumDefs := enumDefs
                  udvtNames := udvtNames
                  constantDefs := constantDefs
-                 fieldSolTypes := fieldSolTypes }
-    -- Collect @custom:strata invariant only from state variable NatSpec (inside the contract).
-    -- Contract-level NatSpec (above the contract keyword) is intentionally ignored
-    -- to avoid ambiguity in files with multiple contracts.
+                 fieldSolTypes := fieldSolTypes
+                 stateVarInits := stateVarInits }
     let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
-    let natspecInvariantExprs ← natspecInvariantStrs.mapM parseSpecExpr
+    let natspecInvariantExprs ← natspecInvariantStrs.mapM fun e => do
+      -- An invariant relates the state at every function boundary to itself;
+      -- there is no "old" state to refer to.
+      let toks := SpecParser.tokenize e
+      if (toks.zip (toks.drop 1)).any (· == ("old", "(")) then
+        throw (.unsupported s!"`old(...)` is not allowed in an invariant (`{e}`); use `ensures` for two-state properties")
+      parseSpecExpr e
 
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
-    let fnCtx := { baseFnCtx with contractInvariantNatspec := natspecInvariantExprs,
+    -- Mappings some annotation of this contract sums.
+    let summed := (contractDocAnn :: nodesSeq.val.toList.filterMap fun
+        | .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _ => some doc
+        | .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc => some doc
+        | _ => none).flatMap (summedNames ·.val)
+    -- A constructor that is not verified (it uses a struct-valued mapping)
+    -- establishes nothing, so the invariants are neither assumed nor
+    -- checked: assuming them would make every obligation that relies on
+    -- them pass.
+    let ctorSkipped := nodesSeq.val.any fun
+      | .FunctionDefinition _ _ k _ _ _ _ _ bodyOpt _ _ =>
+        k.val == "constructor" && match bodyOpt with
+          | .some_node _ _ => structMappingNames.any (reprMentions (toString (repr bodyOpt)) ·)
+          | _ => false
+      | _ => false
+    if ctorSkipped && !natspecInvariantExprs.isEmpty then
+      warnings := warnings ++ [{ range := contractSr, message :=
+        s!"the invariants of contract `{nameAnn.val}` are not verified: its constructor, which must establish them, is not verified" }]
+    let invariants := if ctorSkipped then [] else natspecInvariantExprs
+    let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
+                                   summedMappings := summed.eraseDups,
                                    modifierDefs := modifierRequireNodes }
     for member in nodesSeq.val do
       match member with
-      | .FunctionDefinition _ _fnNameAnn _ _ _ _ _ _ bodyOpt _ _ => do
-          -- Skip functions that reference struct-valued mappings (unsupported in Core)
+      | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn fnModifiers => do
+          let fnDesc := functionDesc fnKindAnn.val fnNameAnn.val
+          -- Each use of a partly modelled modifier is reported.
+          for inv in fnModifiers.val do
+            if let .ModifierInvocation invSr modName _ := inv then
+              if let some n := partialModifiers.lookup modName.val then
+                warnings := warnings ++ [{ range := invSr, message :=
+                  s!"modifier `{modName.val}` is only partly modelled: {fnDesc} is verified " ++
+                  s!"as if the modifier consisted of its `require`s before `_` alone ({n} other statement(s) ignored)" }]
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
             | _ => ""
-          let usesStructMapping := structMappingNames.any fun name => (bodyText.splitOn name).length > 1
-          if usesStructMapping then pure ()
+          let hasBody := !(bodyOpt matches .missing_node _)
+          let isCtor := fnKindAnn.val == "constructor"
+          -- Keywords translateFunction honors for this function, and why the
+          -- others have no effect.
+          let allowed := if !hasBody then [] else
+            ["requires", "ensures"] ++ (if isCtor then [] else ["modifies"]) ++
+              (if reprHasLoop bodyText then ["loop-invariant"] else [])
+          let reason : String → Option String := fun kw =>
+            if !hasBody then some "it has no body, so it is not checked"
+            else if kw == "modifies" && isCtor then some "frames are not checked for constructors"
+            else if kw == "loop-invariant" then some "it has no loop"
+            else none
+          warnings := warnings ++ annotationWarnings ctx.source fnDesc allowed fnDocAnn reason
+          let fnAnnotations := parseStrataAnnotationsAt ctx.source fnDocAnn
+          -- Specs through struct-valued mappings are dropped by translateFunction.
+          for (ann, r) in fnAnnotations do
+            match ann with
+            | .requires e | .ensures e =>
+              if hasStructAccess e then
+                warnings := warnings ++ [{ range := r, message :=
+                  s!"`@custom:strata {ann.keyword} {e}` on {fnDesc} is ignored: struct fields accessed through a mapping are not supported" }]
+            | .modifies vars =>
+              for (m, key) in SpecParser.unreadableModifiesKeys vars do
+                warnings := warnings ++ [{ range := r, message :=
+                  s!"`@custom:strata modifies {m}[{key}]` on {fnDesc}: the key cannot be read, so the frame of `{m}` is not checked" }]
+            | _ => pure ()
+          -- Skip functions that reference struct-valued mappings (unsupported in Core)
+          let usedStructMappings := structMappingNames.filter (reprMentions bodyText ·)
+          if !usedStructMappings.isEmpty then
+            let names := ", ".intercalate (usedStructMappings.map (s!"`{·}`"))
+            warnings := warnings ++ [{ range := fnSr, message :=
+              s!"{fnDesc} is not verified: it uses the struct-valued mapping {names}, which is not supported" }]
           else do
             let proc ← translateFunction fnCtx member
             procedures := procedures ++ [proc]
       | _ => pure ()
+
+    -- Without an explicit constructor, deployment runs only the default
+    -- initialization and the state-variable initializers. Check that this
+    -- initial state satisfies the invariants with an implicit, empty
+    -- constructor; otherwise every function would assume invariants that
+    -- nothing establishes (an unsatisfiable invariant would make every
+    -- obligation pass). An abstract contract is checked the same way, as
+    -- the initial state of the contracts that derive from it.
+    let hasCtor := nodesSeq.val.any fun
+      | .FunctionDefinition _ _ k _ _ _ _ _ _ _ _ => k.val == "constructor"
+      | _ => false
+    if !invariants.isEmpty && !hasCtor && kindAnn.val == "contract" then
+      let str (v : String) : StrataDDM.Ann String SourceRange := ⟨contractSr, v⟩
+      let noParams : Solidity.node SourceRange := .ParameterList contractSr ⟨contractSr, #[]⟩
+      let implicitCtor : Solidity.node SourceRange :=
+        .FunctionDefinition contractSr (str "") (str "constructor") (str "nonpayable")
+          (str "public") (str "false") noParams noParams
+          (.some_node contractSr (.Block contractSr ⟨contractSr, #[]⟩)) (str "")
+          ⟨contractSr, #[]⟩
+      procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
 
     -- Contract invariants are checked via injection into public functions'
     -- pre/postconditions. No separate invariant procedure is needed.
@@ -244,21 +433,89 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       }
       types := types ++ [contractType]
 
-    return (procedures, types)
+    return (procedures, types, warnings)
   | _ => throw (.internalError "Expected ContractDefinition")
+
+/-! ## Annotations Nobody Reads -/
+
+/-- Source ranges of the bodies of every function (including file-level
+    functions) and modifier in `cmd`. -/
+private def bodyRanges (cmd : Solidity.Command SourceRange) : List SourceRange :=
+  let bodyOf : Solidity.node SourceRange → Option SourceRange
+    | .FunctionDefinition _ _ _ _ _ _ _ _ (.some_node _ (.Block sr _)) _ _ => some sr
+    | .ModifierDefinition _ _ _ (.some_node _ (.Block sr _)) => some sr
+    | _ => none
+  match cmd with
+  | .SourceUnit _ nodesSeq =>
+    nodesSeq.val.toList.flatMap fun
+      | .ContractDefinition _ _ _ _ members _ _ => members.val.toList.filterMap bodyOf
+      | n => (bodyOf n).toList
+
+/-- The NatSpec comments whose annotations are accounted for: those of
+    contracts, of their functions and state variables (read by the
+    translator, or warned about one by one), and of file-level functions
+    (warned about as unverified). -/
+private def accountedDocs (cmd : Solidity.Command SourceRange)
+    : List (StrataDDM.Ann String SourceRange) :=
+  let docOf : Solidity.node SourceRange → Option (StrataDDM.Ann String SourceRange)
+    | .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _ => some doc
+    | .VariableDeclaration _ _ _ stateVar _ _ _ _ _ _ doc =>
+      if stateVar.val == "true" then some doc else none
+    | _ => none
+  match cmd with
+  | .SourceUnit _ nodesSeq =>
+    nodesSeq.val.toList.flatMap fun
+      | .ContractDefinition _ _ _ _ members doc _ => doc :: members.val.toList.filterMap docOf
+      | n => (docOf n).toList
+
+/-- Warn about every annotation in the source that no accounted-for NatSpec
+    comment contains: annotations inside function or modifier bodies (such
+    as a `loop-invariant` above a loop), in `//` comments, in NatSpec that
+    solc attaches to something the translator does not read (modifiers,
+    events, errors, structs, enums) or to nothing (a detached block, text
+    after the last member, a comment above `pragma`). solc attaches NatSpec
+    only to the next declaration, so none of these reach the translator. -/
+def unattachedAnnotations (cmd : Solidity.Command SourceRange) (source : String)
+    : List TranslationWarning :=
+  let docs := accountedDocs cmd |>.filter (!·.val.isEmpty)
+  -- A comment solc gave no source range (an old solc) is matched by the
+  -- text of its annotation lines instead.
+  let unlocatedLines := docs.filter (·.ann == default) |>.flatMap (strataAnnotationLines ·.val)
+  let bodies := bodyRanges cmd
+  let midline := (midlineTagsInSource source).map fun r =>
+    { range := r, message :=
+        "`@custom:strata` in the middle of a comment line is ignored; " ++
+        "an annotation must start its line" : TranslationWarning }
+  midline ++ (annotationLinesInSource source).filterMap fun (r, lead) =>
+    if docs.any (rangesOverlap r ·.ann) then none
+    else if unlocatedLines.contains ((afterStrataTag? (textAt source r)).getD "") then none
+    else
+      let message :=
+        if bodies.any (rangesOverlap r ·) then
+          "`@custom:strata` annotation inside a function or modifier body is ignored; " ++
+            "put it in the NatSpec comment above the function"
+        else if lead == "//" || lead == "/*" then
+          "`@custom:strata` annotation in a plain comment is ignored; " ++
+            "NatSpec comments start with `///` or `/**`"
+        else
+          "`@custom:strata` annotation is not attached to a contract, function or state " ++
+            "variable and is ignored"
+      some { range := r, message }
 
 /-! ## Top-Level Translation -/
 
 /-- Translate a Solidity SourceUnit (top-level AST) to a Laurel Program.
     `solFilePath` is the path to the original .sol file, used for source location metadata.
     Pass `none` to skip metadata construction. -/
-def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option String := none)
-    : Except TranslationError Laurel.Program := do
-  let ctx : TransCtx := { uri := solFilePath.map .file }
+def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
+    (solFilePath : Option String := none) (source : Option String := none)
+    : Except TranslationError (Laurel.Program × List TranslationWarning) := do
+  let ctx : TransCtx := { uri := solFilePath.map .file, source }
   match cmd with
   | .SourceUnit _ nodesSeq => do
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
+    let mut allWarnings : List TranslationWarning := []
 
     -- Pre-pass: collect top-level user-defined value types (`type Wei is uint256`)
     -- so contracts can resolve UDVT-typed locals/params/mappings to TInt.
@@ -273,21 +530,31 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     for node in nodesSeq.val do
       match node with
       | .ContractDefinition _ _ _ _ _ _ _ => do
-        let (procs, types) ← translateContract ctx node
+        let (procs, types, warnings) ← translateContract ctx node
         allProcedures := allProcedures ++ procs
         allTypes := allTypes ++ types
+        allWarnings := allWarnings ++ warnings
+      | .FunctionDefinition fnSr fnNameAnn _ _ _ _ _ _ _ _ _ =>
+        allWarnings := allWarnings ++ [{ range := fnSr, message :=
+          s!"file-level function `{fnNameAnn.val}` is not verified: functions outside a contract are not supported" }]
       | .PragmaDirective _ _ => pure ()  -- Skip pragmas
       | _ => pure ()  -- Skip unsupported top-level nodes
 
     -- Collect all mapping state variable names from procedure parameters.
-    -- Mapping state vars appear as "<name>_in : Map[int, ...]" input parameters.
+    -- Mapping state vars appear as "<name>_in : Map[int, ...]" inputs of
+    -- mutating functions, "<name>" inputs of view functions, and "<name>"
+    -- outputs (a constructor has only the latter).
     let allMappingNames := allProcedures.foldl (fun acc proc =>
       acc ++ (proc.inputs.filterMap fun param =>
-        if param.name.text.endsWith "_in" then
-          match param.type.val with
-          | .TMap _ _ => some (param.name.text.dropEnd 3 |>.toString)  -- strip "_in"
-          | _ => none
-        else none)) ([] : List String)
+        match param.type.val with
+        | .TMap _ _ =>
+          let n := param.name.text
+          some (if n.endsWith "_in" then (n.dropEnd 3).toString else n)
+        | _ => none) ++
+      (proc.outputs.filterMap fun param =>
+        match param.type.val with
+        | .TMap _ _ => some param.name.text
+        | _ => none)) ([] : List String)
     let allMappingNames := allMappingNames.eraseDups
 
     -- Declare uninterpreted functions used by the translator.
@@ -386,12 +653,17 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
         }
       else none
 
-    return {
+    return ({
       staticProcedures := uninterpFunctions ++ sumFunctions ++ allProcedures
       staticFields := []
       types := allTypes
       constants := []
-    }
+    }, allWarnings)
+
+/-- `solidityToLaurelWithWarnings` without the warnings. -/
+def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option String := none)
+    : Except TranslationError Laurel.Program :=
+  (·.1) <$> solidityToLaurelWithWarnings cmd solFilePath
 
 end Strata.Solidity
 

@@ -69,6 +69,9 @@ structure StorageAlias where
     and struct field orders for argument reordering. -/
 structure TransCtx where
   uri : Option Uri
+  /-- Text of the source file, used to locate individual NatSpec annotation
+      lines (each spec clause then reports its own line). -/
+  source : Option String := none
   /-- Map from struct name to ordered list of (field name, field type) pairs. -/
   structFields : List (String × List (String × HighType)) := []
   /-- Enclosing contract name (for constructor naming). -/
@@ -92,6 +95,9 @@ structure TransCtx where
   /-- Names of array-typed state variables (subset of mappingStateVars).
       These get an additional `name_length` parameter for tracking length. -/
   arrayStateVars : List String := []
+  /-- The fixed-size array state variables (`uint256[3] a`), with their
+      length, which never changes. -/
+  fixedArrayLengths : List (String × Nat) := []
   /-- Names of memory array parameters in the current function.
       These get a paired `name_length` parameter for `.length` access. -/
   memoryArrayParams : List String := []
@@ -136,12 +142,20 @@ structure TransCtx where
   /-- Contract-level invariant expressions parsed from NatSpec `@custom:strata invariant`.
       These are pre-parsed StmtExprMd and don't need re-translation per function. -/
   contractInvariantNatspec : List StmtExprMd := []
-  /-- Modifier definitions: maps modifier name to list of raw require statement
-      DDM nodes extracted from the modifier body (pre-`_;` only).
-      Translated in each function's context for correct state var resolution. -/
-  modifierDefs : List (String × List (Solidity.node SourceRange)) := []
+  /-- Mappings whose `sum(...)` some annotation of the contract uses; only
+      these get the sum axioms (a quantified assumption that otherwise keeps
+      the solver from producing counterexamples). -/
+  summedMappings : List String := []
+  /-- Modifier definitions: maps modifier name to its parameter names and
+      the raw require statement DDM nodes extracted from the modifier body
+      (pre-`_;` only). Translated in each function's context for correct
+      state var resolution, with the parameters bound to the arguments. -/
+  modifierDefs : List (String × List String × List (Solidity.node SourceRange)) := []
   /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
   fieldSolTypes : List (String × String) := []
+  /-- Initializers of (non-constant) state variables, in declaration order:
+      Solidity runs them before the constructor body. -/
+  stateVarInits : List (String × Solidity.node SourceRange) := []
   /-- Constant state variable definitions: maps constant name to its
       compile-time value expression for constant folding. -/
   constantDefs : List (String × StmtExprMd) := []
@@ -289,6 +303,13 @@ def TranslationError.toString : TranslationError → String
 instance : ToString TranslationError where
   toString := TranslationError.toString
 
+/-- Something in the source that the translator does not verify: an
+    annotation it cannot use, or a function it skips. Reported to the user so
+    that nothing is dropped silently. -/
+structure TranslationWarning where
+  range : SourceRange
+  message : String
+
 /-! ## Type Translation -/
 
 /-- Solidity type info: Laurel type + whether it needs uint256 bounds. -/
@@ -296,6 +317,8 @@ structure SolType where
   highType : HighTypeMd
   /-- Original Solidity type name for bounds generation. -/
   solName : String
+  /-- The length of a fixed-size array (`uint256[3]`). -/
+  arrayLength : Option Nat := none
 deriving Inhabited
 
 /-- Translate a Solidity type name string to Laurel HighType.
@@ -321,12 +344,13 @@ def translateTypeNode (ctx : TransCtx) (tn : Solidity.type_name SourceRange) : S
     let k := (translateTypeNode ctx keyTn).highType
     let v := (translateTypeNode ctx valTn).highType
     { highType := mkHighTypeMd (.TMap k v), solName := "mapping" }
-  | .ArrayTypeName _ baseTn =>
+  | .ArrayTypeName _ baseTn lengthAnn =>
     let elem := (translateTypeNode ctx baseTn).highType
     -- NOTE: Design doc specifies `TMap Nat T` but Laurel's HighType has no TNat variant,
     -- so we use TInt as the key type. This means array indices can be negative in the SMT
     -- encoding; we compensate by asserting idx >= 0 at each IndexAccess site.
-    { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array" }
+    { highType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) elem), solName := "array",
+      arrayLength := lengthAnn.val.toNat? }
   | .FunctionTypeName _ _ _ _ _ =>
     -- First-class function types are modeled as an opaque user-defined type.
     -- Verification doesn't reason about function-pointer values; this keeps

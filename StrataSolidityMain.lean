@@ -60,6 +60,16 @@ private def resolvePosition (vcr : VCResult) (sourceOpt : Option (String × Stri
       | none => none
   | none => none
 
+/-- Print a translation warning to stderr as `<file>:<line>:<col>: warning: …`. -/
+private def printWarning (sourcePath : String) (sourceOpt : Option (String × String))
+    (w : Strata.Solidity.TranslationWarning) : IO Unit := do
+  let loc := match sourceOpt with
+    | some (_, text) =>
+      let pos := (Lean.FileMap.ofString text).toPosition w.range.start
+      s!"{sourcePath}:{pos.line}:{pos.column + 1}"
+    | none => sourcePath
+  IO.eprintln s!"{loc}: warning: {w.message}"
+
 /-- Format counterexample for plain-text output. -/
 private def formatPlainCounterexample (cex : LExprModel) : String :=
   if cex.isEmpty then ""
@@ -83,59 +93,62 @@ private def isPassingPreludeVc (vcr : VCResult) : Bool :=
   | some { file := .file path, .. } => path.endsWith "/CoreDefinitionsForLaurel.lean"
   | none => false
 
-/-- Classify a VCResult into 0=fail, 1=unknown, 2=pass. -/
-private def statusOrder (vcr : VCResult) : Nat :=
-  if vcr.isFailure then 0
-  else if vcr.isSuccess then 2
-  else 1
+open StrataSolidity.Sarif (Verdict verdict)
 
-private def statusEmoji (vcr : VCResult) : String :=
-  if vcr.isFailure then "❌"
-  else if vcr.isSuccess then "✅"
-  else "❓"
+/-- Section order in text output: errors, failures, unknown, passed. -/
+private def statusOrder (vcr : VCResult) : Nat :=
+  match verdict vcr with
+  | .error _ => 0
+  | .fail => 1
+  | .unknown => 2
+  | .pass => 3
 
 private def statusLabel (vcr : VCResult) : String :=
-  match vcr.outcome with
+  match verdict vcr with
+  | .pass => "pass"
+  | .fail => "fail"
+  | .unknown => "unknown"
   | .error _ => "implementation_error"
-  | .ok _ =>
-    if vcr.isFailure then "fail"
-    else if vcr.isSuccess then "pass"
-    else "unknown"
 
-/-- Format verification results grouped by status with summary. -/
+/-- Format verification results grouped by status with summary. The flag
+    is whether the run must fail: a refuted obligation or a verification
+    error (REQ-CLI-050). -/
 private def formatVcResultsWithLocation (vcResults : Array Core.VCResult)
     (sourceOpt : Option (String × String)) : String × Bool := Id.run do
-  let mut nPass := 0
-  let mut nFail := 0
-  let mut nUnknown := 0
-  for vcr in vcResults do
-    if vcr.isSuccess then nPass := nPass + 1
-    else if vcr.isFailure then nFail := nFail + 1
-    else nUnknown := nUnknown + 1
+  let count (p : Verdict → Bool) := (vcResults.filter (p <| verdict ·)).size
+  let nPass := count (· matches .pass)
+  let nFail := count (· matches .fail)
+  let nUnknown := count (· matches .unknown)
+  let nError := count (· matches .error _)
   let sorted := vcResults.toList.toArray |>.qsort
     (fun a b => statusOrder a < statusOrder b)
   let mut s := ""
-  let mut curSection := 3  -- sentinel
+  let mut curSection := 4  -- sentinel
   for vcr in sorted do
     let sec := statusOrder vcr
     if sec != curSection then
       curSection := sec
-      let (emoji, header, count) :=
-        if vcr.isFailure then ("❌", "Failures", nFail)
-        else if vcr.isSuccess then ("✅", "Passed", nPass)
-        else ("❓", "Unknown", nUnknown)
+      let (emoji, header, n) := match verdict vcr with
+        | .error _ => ("⚠️", "Errors", nError)
+        | .fail => ("❌", "Failures", nFail)
+        | .unknown => ("❓", "Unknown", nUnknown)
+        | .pass => ("✅", "Passed", nPass)
       if !s.isEmpty then s := s ++ "\n"
-      s := s ++ s!"{emoji} {header} ({count}):\n"
+      s := s ++ s!"{emoji} {header} ({n}):\n"
     let locStr := match resolvePosition vcr sourceOpt with
       | some (line, col) => s!" at line {line}, col {col}"
       | none => ""
     s := s ++ s!"  {vcr.obligation.label}{locStr}\n"
-    -- Counterexample for failures
-    if vcr.isFailure then
+    match verdict vcr with
+    | .fail =>
+      -- Counterexample for failures
       let cex := formatPlainCounterexample vcr.lexprModel
       if !cex.isEmpty then s := s ++ cex ++ "\n"
-  s := s ++ s!"\n{nPass} passed, {nFail} failed, {nUnknown} unknown out of {vcResults.size} total"
-  (s, nFail > 0)
+    | .error e => s := s ++ s!"        {e}\n"
+    | _ => pure ()
+  let errors := if nError > 0 then s!", {nError} errors" else ""
+  s := s ++ s!"\n{nPass} passed, {nFail} failed, {nUnknown} unknown{errors} out of {vcResults.size} total"
+  (s, nFail > 0 || nError > 0)
 
 /-- Produce flat JSON array of results for scripting. -/
 private def formatJsonResults (vcResults : Array Core.VCResult)
@@ -158,6 +171,7 @@ def main (args : List String) : IO Unit := do
   let sarifMode := args.contains "--sarif"
   let jsonMode := args.contains "--json"
   let pipelineJson := args.contains "--pipeline-json"
+  let strict := args.contains "--strict"
   -- Array theory is the default, as in Laurel's own verification entry
   -- points: maps become SMT arrays instead of quantified select/update
   -- axioms, which z3 (with MBQI off) often cannot refute. Without it,
@@ -173,7 +187,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol", "--strict"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
@@ -214,10 +228,19 @@ def main (args : List String) : IO Unit := do
         | none => filePath
 
     -- Translate Solidity AST → Laurel
-    match Strata.Solidity.solidityToLaurel cmd (some sourcePathForMetadata) with
+    match Strata.Solidity.solidityToLaurelWithWarnings cmd (some sourcePathForMetadata)
+        (solSourceOpt.map (·.2)) with
     | .error e =>
       exitFailure s!"Solidity to Laurel translation failed: {e}"
-    | .ok laurelProgram =>
+    | .ok (laurelProgram, translationWarnings) =>
+      -- Report everything the translator did not verify, so nothing is
+      -- dropped silently. Under `--strict` they make the run fail.
+      let bodyWarnings := match solSourceOpt with
+        | some (_, text) => Strata.Solidity.unattachedAnnotations cmd text
+        | none => []
+      let warnings := (translationWarnings ++ bodyWarnings).toArray.qsort
+        (fun a b => a.range.start.byteIdx < b.range.start.byteIdx) |>.toList
+      for w in warnings do printWarning sourcePathForMetadata solSourceOpt w
       let laurelStr := toString (f!"{laurelProgram}")
       if verbose then
         IO.println "\n==== Laurel Program ===="
@@ -283,20 +306,21 @@ def main (args : List String) : IO Unit := do
         let groups := userProcs.map fun name =>
           (name, coreNames.filter fun c => c == name || isOverloadOf name c)
         let perProcedure := groups.all (!·.2.isEmpty)
-        -- Each result is paired with the directory holding its SMT files.
-        let verifyIn (dir : System.FilePath) : IO (Array (VCResult × System.FilePath)) := do
-          let run (d : System.FilePath) (opts : VerifyOptions) := do
+        -- Each result is paired with the directory holding its SMT files and
+        -- the procedure it belongs to (empty if verified all at once).
+        let verifyIn (dir : System.FilePath) : IO (Array (VCResult × System.FilePath × String)) := do
+          let run (d : System.FilePath) (procName : String) (opts : VerifyOptions) := do
             let rs ← EIO.toIO (fun f => IO.Error.userError (toString f))
               (Core.verify coreProgram d opts)
-            pure (rs.map (·, d))
+            pure (rs.map (·, d, procName))
           if perProcedure then
             let mut acc := #[]
             for core in groups.flatMap (·.2) do
               let sub := dir / core
               IO.FS.createDirAll sub
-              acc := acc ++ (← run sub { verifyOpts with proceduresToVerify := some (core :: companions core) })
+              acc := acc ++ (← run sub core { verifyOpts with proceduresToVerify := some (core :: companions core) })
             pure acc
-          else run dir verifyOpts
+          else run dir "" verifyOpts
         let (located, _smtDir) ← match dumpVcDir with
           | some dir => do
             IO.FS.createDirAll ⟨dir⟩
@@ -329,10 +353,11 @@ def main (args : List String) : IO Unit := do
 
         -- Print results
         if pipelineJson then
-          let obligations ← located.toList.mapM fun ((r : VCResult), smtDir) => do
-            let status := if r.isSuccess then "pass"
-              else if r.isFailure then "fail"
-              else "unknown"
+          let obligations ← located.toList.mapM fun ((r : VCResult), smtDir, _) => do
+            let status := match verdict r with
+              | .pass => "pass"
+              | .fail => "fail"
+              | _ => "unknown"
             -- Try to read the SMT file for this obligation
             let smtContent ← do
               let candidates ← (smtDir.readDir).catchExceptions (fun _ => pure #[])
@@ -362,21 +387,36 @@ def main (args : List String) : IO Unit := do
             ("obligations", Json.arr obligations.toArray),
             ("summary", Json.mkObj [
               ("total", vcResults.size),
-              ("passed", (vcResults.filter VCResult.isSuccess).size),
-              ("failed", (vcResults.filter VCResult.isFailure).size),
-              ("unknown", (vcResults.filter VCResult.isUnknown).size)
+              ("passed", (vcResults.filter (verdict · matches .pass)).size),
+              ("failed", (vcResults.filter (verdict · matches .fail)).size),
+              -- Not proven and not refuted: timeouts and errors included,
+              -- so that total = passed + failed + unknown.
+              ("unknown", (vcResults.filter fun r =>
+                !(verdict r matches .pass) && !(verdict r matches .fail)).size)
             ])
           ]
           IO.println (toString pipeline)
         else if sarifMode then
-          IO.println (StrataSolidity.Sarif.toSarif vcResults solSourceOpt)
+          IO.println (StrataSolidity.Sarif.toSarif (located.map fun (r, _, p) => (r, p)) solSourceOpt
+            (warnings.map fun w => (w.range.start, w.message)))
         else if jsonMode then
           IO.println (formatJsonResults vcResults solSourceOpt)
         else
           IO.println "\n==== Verification Results ===="
           let (s, hasFailures) := formatVcResultsWithLocation vcResults solSourceOpt
           IO.println s
+          if !warnings.isEmpty then
+            IO.println s!"⚠️  {warnings.length} annotation(s) or function(s) not verified (see warnings)"
           if hasFailures then IO.Process.exit 1
+        -- `--strict`: succeed only if every obligation is proven and nothing
+        -- was left unverified, in every output mode (without it, machine
+        -- modes leave the verdict to the consumer and text mode fails only
+        -- on refuted obligations).
+        if strict then
+          let unproven := (vcResults.filter (!·.isSuccess)).size
+          if unproven > 0 || !warnings.isEmpty then
+            IO.eprintln s!"error: --strict: {unproven} obligation(s) not proven, {warnings.length} annotation(s) or function(s) not verified"
+            IO.Process.exit 1
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json]"
+    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json] [--strict]"
     IO.Process.exit 1

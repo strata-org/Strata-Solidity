@@ -28,7 +28,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STRATA_VERIFY="${STRATA_VERIFY:-$PROJECT_DIR/Tools/Solidity/scripts/strata-verify.sh}"
 TIMEOUT="${1:-15}"
 
-# Three curated fixtures: (fixture_path, expected_exit_code, description).
+# Curated fixtures: (fixture_path, expected_exit_code, description[, extra_args]).
 #
 # - test_assert_fail.sol: `assert(c == a)` after `c := a + b` fails when b != 0,
 #   producing an `Outcome.fail` ⇒ expected exit 1 (REQ-CLI-050).
@@ -37,10 +37,20 @@ TIMEOUT="${1:-15}"
 #   ⇒ expected exit 0 (REQ-CLI-051, REQ-CLI-052).
 # - b1_trivial.sol: trivial `ensures x == val` — all obligations pass
 #   ⇒ expected exit 0 (REQ-CLI-051).
+# - ignored_annotations.sol: all obligations pass but annotations are not
+#   verified (warned on stderr) ⇒ exit 0, and exit 1 under `--strict`.
+# - Under `--strict`, any unproven obligation (unknown, or refuted in a
+#   machine-readable mode) also exits 1, and the failure must name `--strict`.
+#
+# An optional fourth field carries extra CLI arguments.
 FIXTURES=(
   "$PROJECT_DIR/StrataSolidityTest/Solidity/tests/test_assert_fail.sol|1|fail  (REQ-CLI-050)"
   "$SCRIPT_DIR/examples/loop_invariant.sol|0|pass+unknown (REQ-CLI-051/052)"
   "$SCRIPT_DIR/examples/b1_trivial.sol|0|all pass (REQ-CLI-051)"
+  "$SCRIPT_DIR/examples/ignored_annotations.sol|0|pass, ignored annotations warned"
+  "$SCRIPT_DIR/examples/ignored_annotations.sol|1|ignored annotations under --strict|--strict"
+  "$SCRIPT_DIR/examples/loop_invariant.sol|1|unknown under --strict|--strict"
+  "$PROJECT_DIR/StrataSolidityTest/Solidity/tests/test_assert_fail.sol|1|fail under --strict --json|--strict --json"
 )
 
 echo "---- Exit-code contract sub-stage (REQ-PBT-007) ----"
@@ -48,7 +58,7 @@ echo "---- Exit-code contract sub-stage (REQ-PBT-007) ----"
 pass=0
 fail=0
 for entry in "${FIXTURES[@]}"; do
-  IFS='|' read -r sol expected_code label <<<"$entry"
+  IFS='|' read -r sol expected_code label extra_args <<<"$entry"
   name=$(basename "$sol")
 
   if [ ! -f "$sol" ]; then
@@ -57,8 +67,17 @@ for entry in "${FIXTURES[@]}"; do
     continue
   fi
 
-  bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" >/dev/null 2>&1
+  # shellcheck disable=SC2086  # extra_args is intentionally word-split
+  stderr=$(bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" ${extra_args:-} 2>&1 >/dev/null)
   actual_code=$?
+  # A --strict failure must come from --strict itself, not from a binary
+  # that does not know the flag (which also exits 1, with a usage message).
+  if [[ "${extra_args:-}" == *--strict* ]] && [ "$expected_code" -eq 1 ] && \
+     ! grep -q '^error: --strict:' <<<"$stderr"; then
+    echo "❌ $name [$label]: exit=$actual_code but no '--strict' error on stderr"
+    fail=$((fail + 1))
+    continue
+  fi
 
   if [ "$actual_code" -eq "$expected_code" ]; then
     echo "✅ $name [$label]: exit=$actual_code (expected $expected_code)"

@@ -42,6 +42,20 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
     { expr with val := mkExists param (rewriteParamRefs shadowed body) }
   | _ => expr
 
+/-- Resolve contract invariants for one function. Invariants are about
+    contract state, so they are resolved with no locals in scope: a
+    parameter or named return that shadows a state variable must not
+    capture the invariant (it would turn into an assumption about an
+    argument). Constructors read and write state through their output
+    parameters, which carry the state variables' names, so only named
+    constants are folded there. -/
+def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtExprMd)
+    : List StmtExprMd :=
+  if isConstructor then
+    invs.map (rewriteStateVarRefs [] [] [] · ctx.constantDefs)
+  else
+    invs.map (rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars [] · ctx.constantDefs)
+
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
     Positional argument contract for non-pure functions (must match call site in translateExpr):
       [self?, msg_sender, mapping_vars..., mapping_lengths..., user_args_as_name_param...]
@@ -49,7 +63,7 @@ partial def rewriteParamRefs (paramNames : List String) (expr : StmtExprMd) : St
 def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
     : Except TranslationError Procedure := do
   match fn with
-  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn _visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
+  | .FunctionDefinition fnSr nameAnn kindAnn mutAnn visAnn _virtualAnn params retParams bodyOpt docAnn modifiersSeq => do
     let isConstructor := kindAnn.val == "constructor"
     let funcName := if isConstructor then s!"{ctx.contractName}_ctor"
                     else if kindAnn.val == "receive" then s!"{ctx.contractName}_receive"
@@ -57,6 +71,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                     else s!"{ctx.contractName}_{nameAnn.val}"
     let isPure := mutAnn.val == "pure"
     let isView := mutAnn.val == "view"
+    -- Contract invariants hold between transactions, i.e. at external entry
+    -- points: public and external functions, receive and fallback assume
+    -- them on entry (constructors establish them instead) and re-establish
+    -- them on exit (view functions cannot change state). Internal and
+    -- private helpers run in the middle of an entry point, where an
+    -- invariant may be temporarily broken, so they neither assume nor
+    -- re-establish it; the calling entry point checks it on exit.
+    let isEntryPoint := visAnn.val == "public" || visAnn.val == "external" ||
+      kindAnn.val == "receive" || kindAnn.val == "fallback"
+    let checksInvariants := !isPure && !isView && (isConstructor || isEntryPoint)
 
     -- Translate parameters, tracking Solidity types for bounds
     let mut inputs : List Parameter := []
@@ -127,6 +151,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                            else s!"{field.name.text}_length_in"
             inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
             preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            -- A fixed-size array always has its declared length.
+            if let some n := ctx.fixedArrayLengths.lookup field.name.text then
+              typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
+                [mkStmtExprMd (mkIdentifier lenName), mkStmtExprMd (.LiteralInt n)]),
+                s!"length of {field.name.text} ({n})")]
 
     -- Track memory array parameters for paired length params
     let mut memoryArrayParamNames : List String := []
@@ -298,10 +327,39 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             let defaultVal := defaultValueForType field.type
             preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier field.name.text))]
               defaultVal)]
-            -- For array state vars, also initialize length to 0
+            -- For array state vars, also initialize the length: 0, or the
+            -- declared length of a fixed-size array
             if ctx.arrayStateVars.contains field.name.text then
+              let len := (ctx.fixedArrayLengths.lookup field.name.text).getD 0
               preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{field.name.text}_length"))]
-                (mkStmtExprMd (.LiteralInt 0)))]
+                (mkStmtExprMd (.LiteralInt len)))]
+          -- 2b. State-variable initializers (`uint256 x = 1000;`), in
+          -- declaration order, before the body. One the translator cannot
+          -- express gives the variable an unknown value (a sound
+          -- over-approximation) instead of failing the whole file: one it
+          -- cannot translate, a string or `bytes` value (modelled as an
+          -- integer, so `"Token"` would not type-check), or one reading
+          -- `this`. An array's length is that of an inline array literal,
+          -- unknown for other initializers.
+          let fresh := mkStmtExprMd (.Hole (deterministic := false))
+          for (name, initNode) in ctx.stateVarInits do
+            let opaqueType := ["string", "bytes"].contains ((ctx.fieldSolTypes.lookup name).getD "")
+            let value := match translateExpr bodyCtx initNode with
+              | .ok v =>
+                if opaqueType || anyStmtExpr (fun e => match e.val with
+                    | .LiteralString _ => true
+                    | .Var (.Local id) => id.text == "this"
+                    | _ => false) v then fresh
+                else v
+              | .error _ => fresh
+            preamble := preamble ++
+              [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier name))] value)]
+            if ctx.arrayStateVars.contains name then
+              let len := match initNode with
+                | .InlineArrayExpression _ elems => mkStmtExprMd (.LiteralInt elems.val.size)
+                | _ => fresh
+              preamble := preamble ++
+                [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))] len)]
         -- 3. Mapping state var init assigns (name := name_in)
         if !isPure && !isView && !isConstructor && !ctx.mappingStateVars.isEmpty then
           for name in ctx.mappingStateVars do
@@ -319,47 +377,14 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- Contract invariants only apply to non-pure, non-view functions (and constructors
         -- for postconditions only). View functions cannot modify state, so they need not
         -- re-establish the invariant.
-        let contractInvariants := if isPure || isView then []
-          else if isConstructor then ctx.contractInvariantNatspec else ctx.contractInvariantNatspec.map rewriteSV
-        -- Rewrite invariant expressions: user parameter names → _param names
-        let contractInvariants := contractInvariants.map (rewriteParamRefs userParamNames)
+        let contractInvariants := if !checksInvariants then [] else
+          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         -- Generate frame conditions from @custom:strata modifies
         let natspecModifies := annotations.filterMap fun
           | .modifies vars => some vars | _ => none
         let frameConditions := if natspecModifies.isEmpty || isPure || isView || isConstructor then []
           else
-            -- Parse comma-separated variable names from modifies annotation.
-            -- Each entry may be "varName" or "varName[keyExpr]". Split on
-            -- commas ONLY at bracket/paren depth 0 — key expressions may
-            -- themselves contain commas (e.g.
-            -- `positions[keccak256(abi.encodePacked(a, b, c))]`).
-            let splitTopLevel (s : String) : List String := Id.run do
-              let mut out : List String := []
-              let mut cur : String := ""
-              let mut depth : Nat := 0
-              for c in s.toList do
-                if c == '[' || c == '(' then
-                  depth := depth + 1; cur := cur.push c
-                else if c == ']' || c == ')' then
-                  depth := depth - 1; cur := cur.push c
-                else if c == ',' && depth == 0 then
-                  out := out ++ [cur]; cur := ""
-                else
-                  cur := cur.push c
-              if !cur.toSlice.trimAscii.isEmpty then out := out ++ [cur]
-              return out
-            let modifiedEntries := natspecModifies.foldl (fun acc s =>
-              acc ++ ((splitTopLevel s).map fun x => (x.toSlice.trimAscii).toString)) ([] : List String)
-            -- Split entries into (baseName, optionalKeyExpr) pairs. Only the
-            -- FIRST '[' separates base from key; the key runs to the final ']'.
-            let parseEntry (entry : String) : String × Option String :=
-              match entry.toList.findIdx? (· == '[') with
-              | none => (SolcAst.mangleName entry.trimAscii.toString, none)
-              | some i =>
-                let base := SolcAst.mangleName (entry.take i).trimAscii.toString
-                let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
-                (base, some keyPart.trimAscii.toString)
-            let parsedEntries := modifiedEntries.map parseEntry
+            let parsedEntries := natspecModifies.flatMap SpecParser.modifiesEntries
             let modifiedBaseNames := parsedEntries.map (·.1)
             -- For each mapping state variable NOT in modifies list, add var == var_in
             -- For key-scoped modifies (e.g., balances[msg.sender]), add:
@@ -376,17 +401,19 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               else
                 -- Collect all key expressions for this mapping
                 let keyExprs := entries.filterMap fun (_, k) => k
+                -- A key that cannot be read leaves the mapping unframed (the
+                -- caller warns about it).
                 let parsedKeys := keyExprs.filterMap fun keyStr =>
                   match SpecParser.parseExpr (SpecParser.tokenize keyStr) with
-                  | .ok (keyExpr, _) =>
+                  | .ok (keyExpr, []) =>
                     -- Fold constant state vars (e.g. `modifies roles[DEFAULT_ADMIN_ROLE]`)
                     -- and resolve scalar state vars in key position; then rename
                     -- user params to their `_param` form.
                     let keyExpr := rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars
                       (userParamInfo.map (·.1) ++ ["msg_sender", "msg_value"]) keyExpr ctx.constantDefs
                     some (rewriteParamRefs userParamNames keyExpr)
-                  | .error _ => none
-                if parsedKeys.isEmpty then none
+                  | _ => none
+                if parsedKeys.length != keyExprs.length then none
                 else
                   let kVar := mkStmtExprMd (mkIdentifier "__k")
                   let kParam : Parameter := { name := "__k", type := mkHighTypeMd .TInt }
@@ -471,40 +498,51 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
         -- No body: use NatSpec invariants (rewrite state var refs)
-        let specLocalNames := userParamInfo.map (·.1) ++
-          (outputs.map (·.name.text)) ++ ["msg_sender", "msg_value"]
-        let rewriteSV := fun e =>
-          rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars specLocalNames e ctx.constantDefs
-        let contractInvariants := if isPure || isView then []
-          else ctx.contractInvariantNatspec.map rewriteSV
+        let contractInvariants := if !checksInvariants then [] else
+          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
         let invariantsAsConds : List Condition :=
           contractInvariants.map fun p => { condition := p, summary := none }
         pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
           else .Abstract invariantsAsConds, contractInvariants)
 
-    -- Reuse the already-translated contract invariants for preconditions.
-    -- Contract invariants as preconditions apply to non-pure, non-constructor functions.
-    -- (Constructors establish the invariant; they don't assume it.)
-    -- Preconditions reference input state: rewrite mapping names to _in form.
-    let rewriteMapNamesToIn := rewriteMappingIdsToIn ctx.mappingStateVars
-    let applicableInvariantPres := if isPure || isView || isConstructor then []
+    -- Contract invariants as preconditions (see `isEntryPoint`). They
+    -- reference the input state: mapping names are rewritten to `_in` form.
+    let rewriteMapNamesToIn := (rewriteMappingIdsToIn ctx.mappingStateVars · ctx.arrayStateVars)
+    let applicableInvariantPres :=
+      if isPure || isConstructor || !isEntryPoint then []
+      -- View functions read mappings through their plain names (no `_in`).
+      else if isView then resolveInvariants ctx false ctx.contractInvariantNatspec
       else contractInvariants.map rewriteMapNamesToIn
     -- Collect modifier preconditions: for each applied modifier, translate its
     -- pre-_ require statement nodes in this function's context and add as assumes.
+    -- The modifier's parameters are bound to the invocation's arguments.
+    -- Like the function's own preconditions, these refer to its inputs
+    -- (`x_param`, `m_in`).
     let mut modifierPres : List StmtExprMd := []
     for modNode in modifiersSeq.val do
       match modNode with
-      | .ModifierInvocation _ modNameAnn _ =>
+      | .ModifierInvocation _ modNameAnn argsSeq =>
         match ctx.modifierDefs.lookup modNameAnn.val with
-        | some reqNodes =>
+        | some (params, reqNodes) =>
+          let args ← argsSeq.val.toList.mapM (translateExpr bodyCtx)
+          if args.length != params.length then
+            throw (.typeError s!"modifier `{modNameAnn.val}` takes {params.length} argument(s), given {args.length}")
+          let modCtx := { bodyCtx with localNames := bodyCtx.localNames ++ params }
+          let binding := params.zip args
           for reqNode in reqNodes do
-            let e ← translateExpr bodyCtx reqNode
+            let e ← translateExpr modCtx reqNode
+            let e := mapStmtExpr (fun n => match n.val with
+              | .Var (.Local id) => (binding.lookup id.text).getD n
+              | _ => n) e
+            let e := rewriteParamRefs (userParamInfo.map (·.1)) e
+            let e := if !isPure && !isView && !isConstructor then rewriteMapNamesToIn e else e
             modifierPres := modifierPres ++ [e]
         | none => pure ()
       | _ => pure ()
     -- Sum axioms: for each mapping, assume the update axiom as a precondition.
     -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
-    let sumAxioms := if isPure || isView then [] else ctx.mappingStateVars.map fun name =>
+    let sumAxioms := if isPure || isView then [] else
+      (ctx.mappingStateVars.filter ctx.summedMappings.contains).map fun name =>
       let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
       let mVar := mkStmtExprMd (mkIdentifier "m")
       let kVar := mkStmtExprMd (mkIdentifier "k")
@@ -520,6 +558,14 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           (mkStmtExprMd (mkForall { name := "v", type := mkHighTypeMd .TInt }
             (mkStmtExprMd (mkPrimOp .Eq [sumUpdated, rhs])))))))
 
+    -- A constructor starts from empty mappings, whose sum is zero; without
+    -- this, no constructor could establish a `sum(...)` invariant.
+    let sumEmptyAxioms := if !isConstructor then [] else
+      (ctx.mappingStateVars.filter ctx.summedMappings.contains).map fun name =>
+        mkStmtExprMd (mkPrimOp .Eq [
+          mkStmtExprMd (mkCall s!"sum_{name}" [mkStmtExprMd (mkCall "mapConst" [mkStmtExprMd (.LiteralInt 0)])]),
+          mkStmtExprMd (.LiteralInt 0)])
+
     -- Every precondition gets a distinct summary. Laurel names the check
     -- it emits at each call site after the callee's precondition, and Core
     -- merges results that share (summary, location): without summaries all
@@ -528,7 +574,8 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       ps.map fun p => (p, s!"{what} {Std.format p}")
     let allPreconditions :=
       described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
-      specPres ++ described "invariant" applicableInvariantPres ++ described "axiom" sumAxioms
+      specPres ++ described "invariant" applicableInvariantPres ++
+      described "axiom" (sumAxioms ++ sumEmptyAxioms)
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
     let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
       if acc.any (fun (q, _) => toString (repr p.val) == toString (repr q.val)) then acc

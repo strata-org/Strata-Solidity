@@ -71,7 +71,7 @@ Specifications are written as [NatSpec](https://docs.soliditylang.org/en/latest/
 |---|---|---|
 | `@custom:strata requires <expr>` | function | Precondition — must hold on entry |
 | `@custom:strata ensures <expr>` | function | Postcondition — must hold on exit; supports `old(expr)` for pre-state values |
-| `@custom:strata invariant <expr>` | state variable | Contract invariant (attach to the state variable it constrains) — assumed on entry and checked on exit of every mutating function, and checked after the constructor |
+| `@custom:strata invariant <expr>` | contract or state variable | Contract invariant — assumed on entry and checked on exit of every public/external state-changing function, assumed by view functions, and checked after the (explicit or implicit) constructor |
 | `@custom:strata modifies <vars>` | function | Frame condition — only listed state variables may change |
 | `@custom:strata loop-invariant <expr>` | function | Loop invariant — maintained across loop iterations |
 | `@custom:strata forall v : T :: <expr>` | function | Universal quantifier |

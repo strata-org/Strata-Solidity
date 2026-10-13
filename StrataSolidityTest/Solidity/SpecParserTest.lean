@@ -174,6 +174,58 @@ private def parseFail (s : String) : Bool := !parseOk s
   let anns := parseStrataAnnotations "@custom:strata requires x > 0\n@custom:strata ensures y == x + 1"
   assert! anns.length == 2
 
+-- Unrecognized keywords are surfaced (not silently dropped)
+#guard unrecognizedStrataAnnotations "@custom:strata ensure x > 0" == ["ensure x > 0"]
+#guard unrecognizedStrataAnnotations "@custom:strata lemma foo\n@custom:strata ensures x" == ["lemma foo"]
+#guard (unrecognizedStrataAnnotations
+  "@custom:strata requires x > 0\n * @custom:strata loop-invariant i <= n").isEmpty
+#guard (parseStrataAnnotations "@custom:strata loop-invariant i <= n").map (·.keyword) ==
+  ["loop-invariant"]
+-- Any whitespace separates the tag and the keyword, as in NatSpec
+#guard (parseStrataAnnotations "@custom:strata\tensures x == 1").map (·.keyword) == ["ensures"]
+#guard (parseStrataAnnotations "@custom:strata ensures\tx == 1").map (·.keyword) == ["ensures"]
+-- A bare tag or a keyword without a body is not an annotation, and is reported
+#guard unrecognizedStrataAnnotations "@custom:strata\n  ensures x" == [""]
+#guard unrecognizedStrataAnnotations "@custom:strata requires" == ["requires"]
+-- The tag must be followed by whitespace: `@custom:strataX` is a different tag
+#guard (strataAnnotationLines "@custom:strataX ensures x").isEmpty
+-- Text continuing an annotation on the next line is detected
+#guard continuedStrataAnnotations "@custom:strata ensures x == 1\n  && y == 2" == [0]
+#guard continuedStrataAnnotations "@custom:strata ensures x == 1\n@notice ok\nprose" == []
+#guard continuedStrataAnnotations "@custom:strata ensures x == 1\n\nprose" == []
+-- Source scan: only comment lines that start with the tag, also trailing
+-- comments and block-comment lines; not a tag in a string literal
+#guard ((annotationLinesInSource
+    "  /// @custom:strata ensures a\n  // @custom:strata ensures b\n  f(\"@custom:strata x\");\n").map (·.2)) ==
+  ["///", "//"]
+#guard ((annotationLinesInSource
+    "uint x; /// @custom:strata ensures a\n/**\n * @custom:strata ensures b\n */\ns = \"// @custom:strata c\";").map (·.2)) ==
+  ["///", "/**"]
+-- A tag in the middle of a NatSpec line (not of a plain comment, not in a string)
+private def midSrc : String :=
+  "/// Sets x. @custom:strata ensures x == 9\n// see @custom:strata docs\n/// @custom:strata ensures y\n"
+#guard (midlineTagsInSource midSrc).map (·.start.byteIdx) == [(("/// Sets x. ").utf8ByteSize)]
+
+-- Locating annotation lines in the source (byte ranges, tag to end of line)
+private def locSrc : String :=
+  "contract C {\n    /// doc é\n    /// @custom:strata ensures x > 0\r\n" ++
+  "    /// @custom:strata requires y\n    function f() {}\n}"
+private def locDoc : SourceRange :=
+  -- solc's comment range starts at the first `/` of the (indented) first line
+  { start := ⟨17⟩, stop := ⟨(locSrc.splitOn "function").head!.utf8ByteSize - 5⟩ }
+private def byteOf (needle : String) : Nat := ((locSrc.splitOn needle).head!).utf8ByteSize
+#guard (annotationLineRanges locSrc locDoc).map (·.start.byteIdx) ==
+  [byteOf "@custom:strata ensures", byteOf "@custom:strata requires"]
+-- the range ends before the CR of a CRLF line ending
+#guard (annotationLineRanges locSrc locDoc).head!.stop.byteIdx == byteOf "\r\n"
+#guard ((strataAnnotationLinesAt (some locSrc)
+  ⟨locDoc, "doc é\n@custom:strata ensures x > 0\n@custom:strata requires y"⟩).map (·.2.start.byteIdx)) ==
+  [byteOf "@custom:strata ensures", byteOf "@custom:strata requires"]
+-- when the comment text and the source disagree, every line falls back to the comment's range
+#guard ((strataAnnotationLinesAt (some locSrc) ⟨locDoc, "@custom:strata ensures x > 0"⟩).map (·.2)) ==
+  [locDoc]
+#guard ((strataAnnotationLinesAt none ⟨locDoc, "@custom:strata ensures x > 0"⟩).map (·.2)) == [locDoc]
+
 end Strata.Solidity.SpecParser.Tests
 
 /-! ## REQ-PBT-001 — Spec parser round-trip idempotence

@@ -24,17 +24,38 @@ TIMEOUT="${1:-15}"
 
 pass=0; fail=0; skip=0; update=0
 
+out_file=$(mktemp); err_file=$(mktemp)
+trap 'rm -f "$out_file" "$err_file"' EXIT
+
 for sol in "$EXAMPLES_DIR"/*.sol; do
     name=$(basename "$sol" .sol)
     expected="$EXPECTED_DIR/$name.expected"
+    expected_warnings="$EXPECTED_DIR/$name.warnings"
 
-    # Run verification, extract just the results summary: the section
-    # headers ("✅ Passed (3):") and the totals line ("3 passed, 0 failed,
-    # ..."). Anchored, so obligation names and counterexample variables
-    # (`ensures totalSupply ...`, `total_in@3 = 0`) do not leak into the
-    # comparison.
-    actual=$(bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" 2>&1 | \
-        grep -E "^(✅|❌|❓) (Passed|Failures|Unknown) \(|^[0-9]+ passed, [0-9]+ failed" || true)
+    bash "$STRATA_VERIFY" "$sol" --timeout="$TIMEOUT" >"$out_file" 2>"$err_file" || true
+    # Extract just the results summary: the section headers ("✅ Passed
+    # (3):") and the totals line ("3 passed, 0 failed, ..."). Anchored, so
+    # obligation names and counterexample variables (`ensures totalSupply
+    # ...`, `total_in@3 = 0`) do not leak into the comparison.
+    actual=$(grep -E "^(✅|❌|❓) (Passed|Failures|Unknown) \(|^[0-9]+ passed, [0-9]+ failed" \
+        "$out_file" || true)
+    # Warnings about unverified annotations (stderr), with the directory
+    # stripped from the `<path>:<line>:<col>:` prefix.
+    actual_warnings=$(grep ': warning: ' "$err_file" | sed -E 's|^[^ ]*/([^/ ]+\.sol:)|\1|' || true)
+
+    # Golden warnings: compared when the file exists, generated when a
+    # fixture first produces warnings.
+    if [ -f "$expected_warnings" ]; then
+        if [ "$actual_warnings" != "$(cat "$expected_warnings")" ]; then
+            echo "❌ $name (warnings)"
+            diff <(cat "$expected_warnings") <(echo "$actual_warnings") || true
+            fail=$((fail+1))
+        fi
+    elif [ -n "$actual_warnings" ]; then
+        echo "$actual_warnings" > "$expected_warnings"
+        echo "📝 $name: generated expected warnings"
+        update=$((update+1))
+    fi
 
     if [ ! -f "$expected" ]; then
         # No expected file — generate it

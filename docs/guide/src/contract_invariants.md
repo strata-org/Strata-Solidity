@@ -4,21 +4,39 @@ A contract invariant is a property that must hold at all times — after the con
 
 ## Declaring an Invariant
 
-Invariants are placed on **state variable declarations** inside the contract:
+Invariants go in the NatSpec of the contract itself or of one of its state
+variables; both placements mean the same thing:
 
 ```solidity
+/// @custom:strata invariant totalSupply == sum(balances)
 contract Token {
     mapping(address => uint256) public balances;
-    /// @custom:strata invariant totalSupply >= 0
-    /// @custom:strata invariant totalSupply == sum(balances)
+    /// @custom:strata invariant totalSupply <= 1000000
     uint256 public totalSupply;
 }
 ```
 
+solc attaches each NatSpec block to exactly one declaration, so every
+contract in a file has its own invariants. An invariant on an interface or a
+library (which have no state) is reported as having no effect.
+
+An invariant is a single-state property about contract state: it may use
+state variables, named constants, `sum(...)` and quantifiers, but not
+`old(...)` (use `ensures` for two-state properties). A function parameter
+that shadows a state variable does not capture an invariant.
+
 StrataSolidity checks that:
 1. The constructor **establishes** the invariant (checked as postcondition).
-2. Every public/external function **maintains** the invariant (assumed on entry, checked on exit).
-3. Pure and view functions are excluded (they don't modify state).
+   State-variable initializers (`uint256 cap = 1000;`) run before the
+   constructor body. A contract without a constructor gets an implicit empty
+   one, so the deployment state must satisfy the invariant too.
+2. Every public/external function, `receive` and `fallback` **maintains** the
+   invariant (assumed on entry, checked on exit).
+3. View functions may **rely** on the invariant (assumed on entry); they
+   cannot break it, so nothing is checked on exit. Pure functions do neither.
+4. Internal and private functions neither assume nor re-establish it: they run
+   in the middle of an entry point, where the invariant may be temporarily
+   broken. The entry point that calls them checks it on exit.
 
 ## The `sum()` Aggregate
 
@@ -41,7 +59,7 @@ This is enough for z3 to prove that `mint` (which increases both `totalSupply` a
 
 ## Constructor Behavior
 
-Constructors **establish** invariants — they must make the invariant true, but they don't assume it was true before (there is no "before" for a constructor):
+Constructors **establish** invariants — they must make the invariant true, but they don't assume it was true before (there is no "before" for a constructor). Mappings start empty, so `sum(m)` is 0 at the start of a constructor:
 
 ```solidity
 contract Counter {

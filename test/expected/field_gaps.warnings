@@ -1,0 +1,1 @@
+field_gaps.sol:9:9: warning: `@custom:strata ensures` has no effect on function `echo`: it has no body, so it is not checked

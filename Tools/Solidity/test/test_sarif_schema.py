@@ -60,6 +60,10 @@ _SCHEMA_PATH = _THIS_DIR / "schemas" / "sarif-schema-2.1.0.json"
 _FIXTURES = [
     Path("StrataSolidityTest") / "Solidity" / "tests" / "test_require_assert.sol",
     Path("test") / "examples" / "b1_trivial.sol",
+    # Has failing obligations, so counterexample-bearing results are covered.
+    Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol",
+    # Carries `strata/not-verified` results for ignored annotations.
+    Path("test") / "examples" / "ignored_annotations.sol",
 ]
 
 
@@ -170,3 +174,127 @@ def test_sarif_output_validates_against_schema(
 
     # Will raise jsonschema.ValidationError on any schema violation.
     jsonschema.validate(instance=payload, schema=sarif_schema)
+
+
+def _results(payload: dict) -> list[dict]:
+    return payload["runs"][0]["results"]
+
+
+def test_sarif_rule_index_points_at_rule_id() -> None:
+    """Every result's ``ruleIndex`` must name the rule its ``ruleId`` names."""
+    _require_built_binary()
+    _require_solc()
+    payload = _run_sarif(Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol")
+    rules = payload["runs"][0]["tool"]["driver"]["rules"]
+    for r in _results(payload):
+        assert rules[r["ruleIndex"]]["id"] == r["ruleId"], r
+
+
+def test_sarif_verdicts_agree_with_cli() -> None:
+    """Proven obligations are ``pass``, refuted ones ``fail``.
+
+    SARIF used to require a reachability check that is not run by default,
+    so every proven obligation was reported as ``open`` (unknown).
+    """
+    _require_built_binary()
+    _require_solc()
+
+    trivial = _results(_run_sarif(Path("test") / "examples" / "b1_trivial.sol"))
+    assert trivial and all(r["kind"] == "pass" for r in trivial), trivial
+    assert {r["ruleId"] for r in trivial} == {"strata/ensures-fail", "strata/frame-fail"}
+
+    failing = _results(_run_sarif(
+        Path("StrataSolidityTest") / "Solidity" / "tests" / "test_spec_failures.sol"))
+    failed = {(r["ruleId"], r["message"]["text"]) for r in failing if r["kind"] == "fail"}
+    assert ("strata/ensures-fail", "ensures res == a + b + 1: fail") in failed, failed
+    assert ("strata/invariant-fail", "invariant #1: fail") in failed, failed
+
+
+def test_sarif_reports_unverified_annotations() -> None:
+    """Every warning the CLI prints appears as a ``strata/not-verified`` result."""
+    _require_built_binary()
+    _require_solc()
+    fixture = Path("test") / "examples" / "ignored_annotations.sol"
+    payload = _run_sarif(fixture)
+    unverified = [r for r in _results(payload) if r["ruleId"] == "strata/not-verified"]
+    text = subprocess.run(
+        ["bash", str(_STRATA_VERIFY), str((_PROJECT_ROOT / fixture).resolve())],
+        capture_output=True, text=True, cwd=str(_PROJECT_ROOT), check=False)
+    warnings = [l for l in text.stderr.splitlines() if ": warning: " in l]
+    assert warnings and len(unverified) == len(warnings), (unverified, warnings)
+    assert all(r["kind"] == "fail" and r["level"] == "warning" and r["locations"]
+               for r in unverified), unverified
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES, ids=lambda p: p.name)
+def test_sarif_prose_rules(fixture: Path) -> None:
+    """Rules of SARIF 2.1.0 that its JSON schema cannot express.
+
+    - §3.27.10: if `kind` is not "fail", `level` is absent or "none".
+    - §3.14.27: a run with results over text artifacts has `columnKind`.
+    - Code scanning needs at least one location to display a result.
+    """
+    _require_built_binary()
+    _require_solc()
+    payload = _run_sarif(fixture)
+    run = payload["runs"][0]
+    assert run.get("columnKind") == "unicodeCodePoints", run.keys()
+    for r in run["results"]:
+        if r.get("kind", "fail") != "fail":
+            assert r.get("level", "none") == "none", r
+        assert r.get("locations"), r
+
+
+def _json_statuses(fixture: Path, *extra: str) -> list[str]:
+    completed = subprocess.run(
+        [str(_STRATA_BIN), str((_PROJECT_ROOT / fixture).resolve()), "--json", *extra],
+        capture_output=True, text=True, cwd=str(_PROJECT_ROOT), check=False)
+    return [r["status"] for r in json.loads(completed.stdout)]
+
+
+def test_sarif_matches_json_per_obligation() -> None:
+    """Each obligation has the same verdict in SARIF and in --json."""
+    _require_built_binary()
+    _require_solc()
+    expected = {"pass": ("pass", "none"), "fail": ("fail", "error"),
+                "unknown": ("fail", "warning"), "implementation_error": ("fail", "error")}
+    for fixture in _FIXTURES:
+        statuses = _json_statuses(fixture)
+        results = [r for r in _results(_run_sarif(fixture))
+                   if r["ruleId"] != "strata/not-verified"]
+        assert [(r["kind"], r["level"]) for r in results] == \
+            [expected[st] for st in statuses], (fixture, statuses)
+
+
+
+_FP_V1 = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract FP {
+    function a(uint256 x) external pure { assert(x > 5); }
+    function b(uint256 x) external pure { assert(x >= 0); }
+}
+"""
+# The same contract with a function, and a failing assert, inserted above.
+_FP_V2 = _FP_V1.replace(
+    "contract FP {\n",
+    "contract FP {\n    function n(uint256 x) external pure { assert(x > 9); }\n")
+
+
+def test_sarif_fingerprints_survive_unrelated_edits(tmp_path: Path) -> None:
+    """An unchanged obligation keeps its fingerprint when code is inserted
+    above it, and a new obligation does not take an old one's."""
+    _require_built_binary()
+    _require_solc()
+
+    def fingerprints(source: str, name: str) -> dict[int, str]:
+        path = tmp_path / name
+        path.write_text(source)
+        results = _results(_run_sarif(path))
+        return {r["locations"][0]["physicalLocation"]["region"]["startLine"]:
+                r["partialFingerprints"]["obligationId/v2"] for r in results}
+
+    v1 = fingerprints(_FP_V1, "v1.sol")
+    v2 = fingerprints(_FP_V2, "v2.sol")
+    # a and b moved down one line; n's assert is new.
+    assert v2[5] == v1[4] and v2[6] == v1[5], (v1, v2)
+    assert v2[4] not in v1.values(), (v1, v2)

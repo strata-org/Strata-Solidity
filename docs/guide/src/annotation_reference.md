@@ -8,7 +8,7 @@ All specifications are written as [NatSpec](https://docs.soliditylang.org/en/lat
 |---|---|---|
 | `@custom:strata requires <expr>` | above function | Precondition — must hold on entry |
 | `@custom:strata ensures <expr>` | above function | Postcondition — must hold on exit |
-| `@custom:strata invariant <expr>` | on state variable | Contract invariant — established by constructor, maintained by all functions |
+| `@custom:strata invariant <expr>` | on the contract or a state variable | Contract invariant — established by the constructor, maintained by public/external functions, assumed by view functions |
 | `@custom:strata modifies <vars>` | above function | Frame condition — only listed state variables may change |
 | `@custom:strata loop-invariant <expr>` | above function | Loop invariant — maintained across loop iterations |
 
@@ -43,7 +43,7 @@ State variables NOT listed in `modifies` get automatic frame conditions (their v
 ## Placement Rules
 
 - `requires`, `ensures`, `modifies`, `loop-invariant`: placed above the function they apply to
-- `invariant`: placed on a **state variable declaration** inside the contract (not above the contract)
+- `invariant`: placed in the NatSpec above the `contract` keyword or on a **state variable declaration** inside the contract
 - Use `@notice` for natural language documentation alongside specs
 - Both `///` single-line and `/** */` multi-line comment styles are supported
 

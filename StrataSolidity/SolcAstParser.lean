@@ -193,6 +193,18 @@ private def getDocText (j : Json) : String :=
     | _ => ""
   | _ => ""
 
+/-- NatSpec documentation text, annotated with the source range of the
+    comment itself (solc's `StructuredDocumentation.src`) so that individual
+    annotation lines can be located; falls back to the declaration's range
+    `sr` for the old string-valued `documentation` format. -/
+private def getDocAnn (sr : SourceRange) (j : Json) : StrataDDM.Ann String SourceRange :=
+  let docSr := match j.getObjVal? "documentation" with
+    | .ok doc@(Json.obj _) =>
+      let r := parseSrc doc
+      if r.isNone then sr else r
+    | _ => sr
+  ⟨docSr, getDocText j⟩
+
 /-- Extract base-contract names from a `ContractDefinition.baseContracts`
     array. Each entry has shape `{baseName: {name: <string>, ...}, ...}`.
     Mirrors the inline list-comp in `solast.py:ContractDefinition`. -/
@@ -486,10 +498,10 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let kind        := getStrOr j "contractKind" "contract"
     let abstract?   := getBoolStr j "abstract" false
     let members     ← convertSeqChildrenSkipping "ContractDefinition" "nodes" j
-    let doc         := getDocText j
+    let doc         := getDocAnn sr j
     let baseStrs    := getBaseContractNames j
     return node.ContractDefinition sr (annStr sr name) (annStr sr kind)
-      (annStr sr abstract?) (annNodes sr members) (annStr sr doc)
+      (annStr sr abstract?) (annNodes sr members) doc
       (annStrs sr (baseStrs.map (annStr sr)))
 
   | "ModifierDefinition" =>
@@ -527,12 +539,12 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let params       ← convertChild "FunctionDefinition" "parameters" j
     let returnParams ← convertChild "FunctionDefinition" "returnParameters" j
     let body         ← convertOptChild sr j "body"
-    let doc           := getDocText j
+    let doc           := getDocAnn sr j
     let modifiers    ← convertSeqChildrenSkipping "FunctionDefinition" "modifiers" j
     return node.FunctionDefinition sr (annStr sr name) (annStr sr kind)
       (annStr sr mut') (annStr sr vis) (annStr sr virtual?)
       params returnParams body
-      (annStr sr doc) (annNodes sr modifiers)
+      doc (annNodes sr modifiers)
 
   | "ParameterList" =>
     -- solc: { nodeType: "ParameterList", parameters: [<VariableDeclaration>, ...], src: ... }
@@ -553,11 +565,11 @@ partial def convertNode (j : Json) : ConvertM (node SourceRange) := do
     let indexed?  := getBoolStr j "indexed" false
     let storLoc   := getStrOr   j "storageLocation"
     let value    ← convertOptChild sr j "value"
-    let doc       := getDocText j
+    let doc       := getDocAnn sr j
     return node.VariableDeclaration sr (annStr sr name) typeName
       (annStr sr stateVar) (annStr sr const?)
       (annStr sr mut') (annStr sr vis) (annStr sr indexed?)
-      (annStr sr storLoc) value (annStr sr doc)
+      (annStr sr storLoc) value doc
 
   | "StructDefinition" =>
     -- solc: { nodeType: "StructDefinition", name, members: [<VariableDeclaration>, ...], src: ... }
@@ -742,13 +754,21 @@ partial def convertTypeName (j : Json) : ConvertM (type_name SourceRange) := do
     | _, .error _ => throw (.missingField "Mapping" "valueType")
 
   | "ArrayTypeName" =>
-    -- solc: { nodeType: "ArrayTypeName", baseType: <type-name node>, src: ... }
-    -- The optional `length` field (for fixed-size arrays) is intentionally
-    -- ignored — matches solast.py.
+    -- solc: { nodeType: "ArrayTypeName", baseType: <type-name node>,
+    --        length?: <expression>, typeDescriptions: { typeString: "uint256[3]" } }
+    -- The length of a fixed-size array is read from the type string, which
+    -- has it evaluated (`uint256[N]` with a constant `N`); empty if dynamic.
     match j.getObjVal? "baseType" with
     | .ok baseJ =>
       let baseTy ← convertTypeName baseJ
-      return type_name.ArrayTypeName sr baseTy
+      let typeStr := match (j.getObjVal? "typeDescriptions").toOption with
+        | some td => getStrOr td "typeString"
+        | none => ""
+      -- The last `[…]` of e.g. `uint256[3] storage ref`.
+      let length := match (typeStr.splitOn "[").getLast?.bind (·.splitOn "]" |>.head?) with
+        | some n => if !n.isEmpty && n.all Char.isDigit then n else ""
+        | none => ""
+      return type_name.ArrayTypeName sr baseTy (annStr sr length)
     | .error _ => throw (.missingField "ArrayTypeName" "baseType")
 
   | "FunctionTypeName" =>

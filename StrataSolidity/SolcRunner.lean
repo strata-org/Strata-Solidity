@@ -20,7 +20,7 @@ the Ion intermediate from the default verification path.
 ## Status
 
 Subprocess runner only. JSON output is captured as `Lean.Json` and returned;
-the AST extraction (`getAst`) does the minimal navigation `solc-output → sources[*].ast`.
+the AST extraction (`getAst`) does the minimal navigation `solc-output → sources[<input>].ast`.
 Translation from the JSON AST to the Lean Solidity ADT is in `SolcAstParser.lean`
 (scaffold for now).
 
@@ -151,27 +151,30 @@ def invokeSolc (solPath : System.FilePath) : IO (Except Error Json) := do
     if fatals.isEmpty then return .ok j
     else return .error (.fatalDiagnostics fatals)
 
-/-- Extract the AST node from solc's standard-json output. solc returns
-    `{"sources": {"<file>": {"ast": <node>}}}`; we return the first AST
-    we find, matching `solast.py:get_ast`. -/
-def getAst (solcOutput : Json) : Except Error Json :=
+/-- Extract the AST of source `sourceName` from solc's standard-json output
+    (`{"sources": {"<file>": {"ast": <node>}}}`). With imports, `sources`
+    also holds every imported unit, keyed by path and ordered by key, so
+    the first entry is not necessarily the input file: taking it verified
+    an imported file instead of the input whenever its path sorted first. -/
+def getAst (solcOutput : Json) (sourceName : String) : Except Error Json :=
   match (solcOutput.getObjVal? "sources").toOption with
   | none => .error .noAst
   | some sources =>
-    match sources with
-    | Json.obj entries =>
-      let asts : Array Json := entries.toArray.filterMap fun (_name, info) =>
-        (info.getObjVal? "ast").toOption
-      match asts.toList with
-      | [] => .error .noAst
-      | a :: _ => .ok a
-    | _ => .error .noAst
+    match (sources.getObjVal? sourceName).toOption.bind (·.getObjVal? "ast" |>.toOption) with
+    | some ast => .ok ast
+    | none => .error .noAst
 
-/-- One-shot helper: invoke solc on `solPath` and return the AST `Json`. -/
+/-- One-shot helper: invoke solc on `solPath` and return the AST `Json` of
+    `solPath` itself (registered under its file name, see
+    `buildStandardJsonInput`). -/
 def parseFile (solPath : System.FilePath) : IO (Except Error Json) := do
   match ← invokeSolc solPath with
   | .error e => return .error e
-  | .ok output => return getAst output
+  | .ok output =>
+    -- `invokeSolc` registers the file under its resolved name (a symlink's
+    -- target may be named differently).
+    let realPath ← IO.FS.realPath solPath
+    return getAst output (realPath.fileName.getD realPath.toString)
 
 end Strata.Solidity.Solc
 

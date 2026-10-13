@@ -197,8 +197,9 @@ op MappingType (
     keyName : Str,
     valueName : Str) : type_name =>
   "MappingType(" keyType ", " valueType ", " keyName ", " valueName ")";
-op ArrayTypeName (baseType : type_name) : type_name =>
-  "ArrayTypeName(" baseType ")";
+// `length` is the fixed length (`uint256[3]`), empty for a dynamic array.
+op ArrayTypeName (baseType : type_name, length : Str) : type_name =>
+  "ArrayTypeName(" baseType ", " length ")";
 op FunctionTypeName (
     parameterTypes : node,
     returnParameterTypes : node,

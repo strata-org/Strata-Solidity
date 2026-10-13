@@ -1,0 +1,2 @@
+invariant_no_constructor.sol:57:1: warning: the invariants of contract `SkippedConstructor` are not verified: its constructor, which must establish them, is not verified
+invariant_no_constructor.sol:65:5: warning: the constructor is not verified: it uses the struct-valued mapping `payments`, which is not supported

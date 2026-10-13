@@ -20,32 +20,217 @@ inductive StrataAnnotation where
   | modifies (vars : String)
   | loopInvariant (expr : String)
 
+/-- The NatSpec tag that introduces a StrataSolidity annotation. -/
+def strataTag : String := "@custom:strata"
+
+/-- Split off leading whitespace and NatSpec comment markers (`/`, `*`):
+    `("   /// ", "@custom:strata …")`. -/
+def splitCommentLead (line : String) : String × String :=
+  let chars := line.toList
+  let lead := chars.takeWhile fun c => c == ' ' || c == '\t' || c == '/' || c == '*'
+  (String.ofList lead, String.ofList (chars.drop lead.length))
+
+/-- If `line` (comment markers already removed) is an annotation line — the
+    tag followed by whitespace or the end of the line, as in NatSpec tag
+    syntax — the trimmed text after the tag (`""` for a bare tag). -/
+def afterStrataTag? (line : String) : Option String :=
+  if line.startsWith strataTag then
+    let rest := (line.drop strataTag.length).toString
+    match rest.toList.head? with
+    | none => some ""
+    | some c => if c == ' ' || c == '\t' then some rest.trimAscii.toString else none
+  else none
+
+/-- The text after the tag on every annotation line of a NatSpec
+    documentation string, trimmed. -/
+def strataAnnotationLines (doc : String) : List String :=
+  (doc.splitOn "\n").filterMap fun line => afterStrataTag? (splitCommentLead line).2
+
+/-- Indices (into `strataAnnotationLines doc`) of annotations followed by a
+    non-empty line that is not a NatSpec tag. NatSpec continues a tag's text
+    on such lines, but StrataSolidity reads one line per annotation, so that
+    text would otherwise be dropped silently. -/
+def continuedStrataAnnotations (doc : String) : List Nat := Id.run do
+  let mut out : List Nat := []
+  let mut idx := 0
+  let mut open? : Option Nat := none
+  for line in doc.splitOn "\n" do
+    let text := (splitCommentLead line).2.trimAscii.toString
+    match afterStrataTag? text with
+    | some _ =>
+      open? := some idx
+      idx := idx + 1
+    | none =>
+      if let some i := open? then
+        if !text.isEmpty && !text.startsWith "@" && !out.contains i then out := out ++ [i]
+      if text.isEmpty || text.startsWith "@" then open? := none
+  return out
+
+/-- Parse the text after `@custom:strata` as `<keyword> <body>` (separated
+    by spaces or tabs). Returns `none` for an unknown keyword or an empty
+    body. -/
+def parseStrataAnnotation? (rest : String) : Option StrataAnnotation :=
+  let chars := rest.toList
+  let kw := String.ofList (chars.takeWhile fun c => c != ' ' && c != '\t')
+  let body := (String.ofList (chars.drop kw.length)).trimAscii.toString
+  if body.isEmpty then none
+  else match kw with
+    | "requires" => some (.requires body)
+    | "ensures" => some (.ensures body)
+    | "invariant" => some (.invariant body)
+    | "modifies" => some (.modifies body)
+    | "loop-invariant" => some (.loopInvariant body)
+    | _ => none
+
 /-- Parse `@strata` (or legacy `@custom:strata`) annotations from a NatSpec documentation string.
     Each line matching `@strata <keyword> <expr>` produces an annotation. -/
 def parseStrataAnnotations (doc : String) : List StrataAnnotation :=
-  let lines := doc.splitOn "\n" |>.map (·.trimAscii.toString)
-  lines.filterMap fun line =>
-    let tag := "@custom:strata "
-    let mtag := "* @custom:strata "
-    let rest? := if line.startsWith tag then
-        some ((line.drop tag.length).toString.trimAscii.toString)
-      else if line.startsWith mtag then
-        some ((line.drop mtag.length).toString.trimAscii.toString)
-      else none
-    match rest? with
-    | none => none
-    | some rest =>
-      if rest.startsWith "requires " then
-        some (.requires ((rest.drop "requires ".length).toString.trimAscii.toString))
-      else if rest.startsWith "ensures " then
-        some (.ensures ((rest.drop "ensures ".length).toString.trimAscii.toString))
-      else if rest.startsWith "invariant " then
-        some (.invariant ((rest.drop "invariant ".length).toString.trimAscii.toString))
-      else if rest.startsWith "modifies " then
-        some (.modifies ((rest.drop "modifies ".length).toString.trimAscii.toString))
-      else if rest.startsWith "loop-invariant " then
-        some (.loopInvariant ((rest.drop "loop-invariant ".length).toString.trimAscii.toString))
-      else none
+  (strataAnnotationLines doc).filterMap parseStrataAnnotation?
+
+/-- `@custom:strata` lines whose keyword is not recognized (typos such as
+    `ensure`, or unsupported annotations such as `lemma`). These are not
+    verified, so the caller reports them. -/
+def unrecognizedStrataAnnotations (doc : String) : List String :=
+  (strataAnnotationLines doc).filter (parseStrataAnnotation? · |>.isNone)
+
+/-- A comment of a Solidity source: the byte range of its text (after the
+    opening `//`, `///`, `/*` or `/**`, before a closing `*/`) and its
+    opening marker. -/
+structure CommentSpan where
+  start : Nat
+  stop : Nat
+  marker : String
+
+/-- The comments of `source`, in order. String literals are skipped, so a
+    tag inside a string is not in a comment. -/
+def commentSpans (source : String) : List CommentSpan := Id.run do
+  let b := source.toUTF8
+  let n := b.size
+  let byte (k : Nat) : UInt8 := if k < n then b[k]! else 0
+  let mut out : List CommentSpan := []
+  let mut i := 0
+  let mut fuel := n + 1
+  while i < n && fuel > 0 do
+    fuel := fuel - 1
+    let c := byte i
+    if c == 34 || c == 39 then  -- '"' or '\''
+      -- A string literal ends byte the matching quote or the end of the line.
+      let mut k := i + 1
+      while k < n && byte k != c && byte k != 10 do
+        k := if byte k == 92 then k + 2 else k + 1  -- '\\' escapes
+      i := k + 1
+    else if c == 47 && byte (i + 1) == 47 then  -- `//`
+      let marker := if byte (i + 2) == 47 then "///" else "//"
+      let mut k := i + 2
+      while k < n && byte k != 10 do k := k + 1
+      out := out ++ [{ start := i + marker.length, stop := k, marker }]
+      i := k
+    else if c == 47 && byte (i + 1) == 42 then  -- `/*`
+      let marker := if byte (i + 2) == 42 && byte (i + 3) != 47 then "/**" else "/*"
+      let mut k := i + 2
+      while k < n && !(byte k == 42 && byte (k + 1) == 47) do k := k + 1
+      out := out ++ [{ start := i + marker.length, stop := k, marker }]
+      i := k + 2
+    else i := i + 1
+  return out
+
+/-- The lines of every comment of `source`, as (range of the line's text
+    after leading whitespace — and a block comment's leading `*`s — up to
+    the end of the line, the comment's opening marker). -/
+def commentLines (source : String) : List (SourceRange × String) := Id.run do
+  let b := source.toUTF8
+  let byte (k : Nat) : UInt8 := if k < b.size then b[k]! else 0
+  let mut out : List (SourceRange × String) := []
+  for cmt in commentSpans source do
+    let mut ls := cmt.start
+    let mut first := true
+    let mut fuel := cmt.stop - cmt.start + 2
+    while ls <= cmt.stop && fuel > 0 do
+      fuel := fuel - 1
+      let mut le := ls
+      while le < cmt.stop && byte le != 10 do le := le + 1
+      let stop := if le > ls && byte (le - 1) == 13 then le - 1 else le
+      let mut k := ls
+      while k < stop && (byte k == 32 || byte k == 9 ||
+          (!first && cmt.marker.startsWith "/*" && byte k == 42)) do
+        k := k + 1
+      if k < stop then out := out ++ [({ start := ⟨k⟩, stop := ⟨stop⟩ }, cmt.marker)]
+      first := false
+      ls := le + 1
+  return out
+
+/-- The text of `source` in `r`. -/
+def textAt (source : String) (r : SourceRange) : String :=
+  String.fromUTF8! (source.toUTF8.extract r.start.byteIdx r.stop.byteIdx)
+
+/-- Every annotation line of `source`: a comment line whose text starts
+    with the tag as `strataAnnotationLines` requires, as (range from the tag
+    to the end of the line, the comment's opening marker). Trailing comments
+    count (`uint256 x; /// @custom:strata …`); a tag in prose or in a string
+    literal does not. -/
+def annotationLinesInSource (source : String) : List (SourceRange × String) :=
+  (commentLines source).filter fun (r, _) => (afterStrataTag? (textAt source r)).isSome
+
+/-- Tags in the middle of a NatSpec comment line (`/// Sets x.
+    @custom:strata …`). solc reads them as NatSpec tags, but an annotation
+    must start its line, so these are not verified. (In a plain `//`
+    comment, the tag is only prose.) -/
+def midlineTagsInSource (source : String) : List SourceRange :=
+  (commentLines source).flatMap fun (r, marker) =>
+    if marker != "///" && marker != "/**" then [] else
+    let parts := (textAt source r).splitOn strataTag
+    -- The tag after each part but the last, at its byte offset in the line;
+    -- one at offset 0 starts an annotation line.
+    let (_, tags) := parts.dropLast.foldl (fun (off, acc) part =>
+      let tagOff := off + part.utf8ByteSize
+      let afterSpace := !part.isEmpty && (part.back == ' ' || part.back == '\t')
+      let acc := if tagOff > 0 && afterSpace then
+          acc ++ [({ start := ⟨r.start.byteIdx + tagOff⟩,
+                     stop := ⟨r.start.byteIdx + tagOff + strataTag.utf8ByteSize⟩ } : SourceRange)]
+        else acc
+      (tagOff + strataTag.utf8ByteSize, acc)) (0, [])
+    tags
+
+/-- Whether two source ranges share a byte. -/
+def rangesOverlap (a b : SourceRange) : Bool :=
+  a.start.byteIdx < b.stop.byteIdx && b.start.byteIdx < a.stop.byteIdx
+
+/-- Byte ranges of the annotation lines of the comment at `docRange` in
+    `source`, in order (see `annotationLinesInSource`). -/
+def annotationLineRanges (source : String) (docRange : SourceRange) : List SourceRange :=
+  ((annotationLinesInSource source).map (·.1)).filter (rangesOverlap · docRange)
+
+/-- `strataAnnotationLines` of a NatSpec comment, each paired with its source
+    range when the comment can be located in `source?`; otherwise every line
+    gets the comment's (or its declaration's) range `doc.ann`. -/
+def strataAnnotationLinesAt (source? : Option String) (doc : StrataDDM.Ann String SourceRange)
+    : List (String × SourceRange) :=
+  let lines := strataAnnotationLines doc.val
+  let ranges := match source? with
+    | some src => annotationLineRanges src doc.ann
+    | none => []
+  if ranges.length == lines.length then lines.zip ranges
+  else lines.map (·, doc.ann)
+
+/-- `parseStrataAnnotations` with the source range of each annotation line. -/
+def parseStrataAnnotationsAt (source? : Option String) (doc : StrataDDM.Ann String SourceRange)
+    : List (StrataAnnotation × SourceRange) :=
+  (strataAnnotationLinesAt source? doc).filterMap fun (line, r) =>
+    (parseStrataAnnotation? line).map (·, r)
+
+/-- `unrecognizedStrataAnnotations` with the source range of each line. -/
+def unrecognizedStrataAnnotationsAt (source? : Option String)
+    (doc : StrataDDM.Ann String SourceRange) : List (String × SourceRange) :=
+  (strataAnnotationLinesAt source? doc).filter fun (line, _) =>
+    (parseStrataAnnotation? line).isNone
+
+/-- The keyword of an annotation, as written after `@custom:strata`. -/
+def StrataAnnotation.keyword : StrataAnnotation → String
+  | .requires _ => "requires"
+  | .ensures _ => "ensures"
+  | .invariant _ => "invariant"
+  | .modifies _ => "modifies"
+  | .loopInvariant _ => "loop-invariant"
 
 /-! ## Spec Expression Parser
 
@@ -367,6 +552,45 @@ where
       else match parseSciNotation tok with
         | some n => return (mkStmtExprMd (.LiteralInt n), rest)
         | none => return (mkStmtExprMd (mkIdentifier tok), rest)
+
+/-- The entries of a `modifies` annotation, as (variable, key text): `x`,
+    `m[k]`, separated by commas outside brackets and parentheses (a key may
+    contain commas: `positions[keccak256(abi.encodePacked(a, b))]`). Only
+    the first `[` separates the variable from its key, which runs to the
+    final `]`. -/
+def modifiesEntries (s : String) : List (String × Option String) :=
+  let splitTopLevel (s : String) : List String := Id.run do
+    let mut out : List String := []
+    let mut cur : String := ""
+    let mut depth : Nat := 0
+    for c in s.toList do
+      if c == '[' || c == '(' then
+        depth := depth + 1; cur := cur.push c
+      else if c == ']' || c == ')' then
+        depth := depth - 1; cur := cur.push c
+      else if c == ',' && depth == 0 then
+        out := out ++ [cur]; cur := ""
+      else
+        cur := cur.push c
+    if !cur.toSlice.trimAscii.isEmpty then out := out ++ [cur]
+    return out
+  (splitTopLevel s).map fun entry =>
+    let entry := entry.trimAscii.toString
+    match entry.toList.findIdx? (· == '[') with
+    | none => (SolcAst.mangleName entry, none)
+    | some i =>
+      let base := SolcAst.mangleName (entry.take i).trimAscii.toString
+      let keyPart := entry.drop (i+1) |>.dropEnd 1  -- strip trailing ]
+      (base, some keyPart.trimAscii.toString)
+
+/-- The keys of a `modifies` annotation that cannot be read as one spec
+    expression: with such a key, the frame of its mapping is not checked. -/
+def unreadableModifiesKeys (s : String) : List (String × String) :=
+  (modifiesEntries s).filterMap fun
+    | (base, some key) => match parseExpr (tokenize key) with
+      | .ok (_, []) => none
+      | _ => some (base, key)
+    | _ => none
 
 end SpecParser
 

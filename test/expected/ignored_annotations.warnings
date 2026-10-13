@@ -1,0 +1,14 @@
+ignored_annotations.sol:10:5: warning: `@custom:strata ensures` has no effect on contract `IgnoredAnnotations` and is ignored
+ignored_annotations.sol:14:9: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
+ignored_annotations.sol:16:9: warning: unrecognized annotation `@custom:strata ensure count == old(count) + 1` on function `increment` is ignored
+ignored_annotations.sol:23:8: warning: `@custom:strata` annotation in a plain comment is ignored; NatSpec comments start with `///` or `/**`
+ignored_annotations.sol:33:13: warning: `@custom:strata` annotation inside a function or modifier body is ignored; put it in the NatSpec comment above the function
+ignored_annotations.sol:39:9: warning: `@custom:strata loop-invariant` has no effect on function `noLoop`: it has no loop
+ignored_annotations.sol:44:9: warning: `@custom:strata modifies` has no effect on the constructor: frames are not checked for constructors
+ignored_annotations.sol:49:9: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
+ignored_annotations.sol:54:9: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
+ignored_annotations.sol:57:9: warning: `@custom:strata` with no annotation on the same line (function `bareTag`) is ignored: each annotation must fit on one line
+ignored_annotations.sol:63:9: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
+ignored_annotations.sol:76:17: warning: `@custom:strata` in the middle of a comment line is ignored; an annotation must start its line
+ignored_annotations.sol:83:9: warning: `@custom:strata modifies balance[who +]` on function `frame`: the key cannot be read, so the frame of `balance` is not checked
+ignored_annotations.sol:86:54: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
