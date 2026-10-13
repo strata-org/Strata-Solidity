@@ -4,9 +4,10 @@
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
 
-import Strata.Languages.Laurel.Laurel
-import Strata.Languages.Laurel.LaurelToCoreTranslator
-import Strata.Languages.Laurel.Grammar.ConcreteToAbstractTreeTranslator
+import StrataLaurel.Implementation.LaurelAST
+import StrataLaurel.Implementation.MapStmtExpr
+import StrataLaurel.Implementation.LaurelCompilationPipeline
+import StrataLaurel.Implementation.Grammar.ConcreteToAbstractTreeTranslator
 import Strata.Languages.Core.Verifier
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
@@ -43,11 +44,12 @@ open Laurel
 
 /-! ## Helpers -/
 
-/-- Convert a SourceRange and file URI to a Laurel `FileRange` (the new
-    AstNode source location). Returns none if the SourceRange is empty. -/
-def sourceRangeToFileRange (uri : Uri) (sr : SourceRange) : Option FileRange :=
-  if sr.isNone then none
-  else some { file := uri, range := sr }
+/-- Convert a SourceRange and file URI to a Laurel `FileRange` (the
+    AstNode source location). Returns `FileRange.unknown` if the SourceRange
+    is empty. -/
+def sourceRangeToFileRange (uri : Uri) (sr : SourceRange) : FileRange :=
+  if sr.isNone then .unknown
+  else { file := uri, range := sr }
 
 /-- Find the index of the first element satisfying a predicate. -/
 def List.findIndex? (p : α → Bool) : List α → Option Nat
@@ -120,7 +122,7 @@ structure TransCtx where
   loopInvariantExprs : List StmtExprMd := []
   /-- Whether we are currently inside an `unchecked { }` block.
       Solidity unchecked blocks disable overflow/underflow checks for arithmetic.
-      Currently arithmetic maps directly to PrimitiveOp.Add/Sub/Mul with no overflow
+      Currently arithmetic maps directly to the `$add`/`$sub`/`$mul` operators with no overflow
       checks, so this flag is a no-op. When overflow checks are added (Phase 3
       bitvector work), this flag should suppress them. -/
   isInsideUnchecked : Bool := false
@@ -150,10 +152,10 @@ structure TransCtx where
   valuedReturnTarget : Option String := none
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
-  { val := ty, source := none }
+  { val := ty, source := .unknown }
 
 def mkStmtExprMd (expr : StmtExpr) : StmtExprMd :=
-  { val := expr, source := none }
+  { val := expr, source := .unknown }
 
 /-! ### AST shape adapters
 
@@ -162,6 +164,10 @@ The Laurel AST changed shape across multiple upstream PRs:
 - `StmtExpr.FieldSelect t f` → `StmtExpr.Var (Variable.Field t f)` (#1077)
 - `StmtExpr.Forall/.Exists` → `StmtExpr.Quantifier mode param trigger body` (#1024)
 - `Identifier` gained `uniqueId` and `source` fields (#1028)
+- `StmtExpr.PrimitiveOp op args` → `StmtExpr.StaticCall op.procName args`:
+  operators are calls to the reserved `$add`/`$eq`/… wrapper procedures
+- `AstNode.source` became a non-optional `FileRange` (`.unknown` when absent)
+- `Variable.Declare` takes a `Parameter?` (optional type annotation)
 
 These helpers preserve the old call sites so the translator code reads
 naturally without churn at every construction site. -/
@@ -191,11 +197,11 @@ def mkExists (p : Parameter) (body : StmtExprMd) : StmtExpr :=
     With `init = none`, produces `Var (Declare param)`. With an initializer,
     produces `Assign [Declare param] init` (the new shape used by upstream). -/
 def mkLocalVar (name : String) (type : HighTypeMd) (init : Option StmtExprMd) : StmtExpr :=
-  let param : Parameter := { name := name, type := type }
+  let param : Parameter? := { name := name, type := some type }
   match init with
   | none => .Var (.Declare param)
   | some initVal =>
-    let target : AstNode Variable := { val := .Declare param, source := none }
+    let target : AstNode Variable := { val := .Declare param, source := .unknown }
     .Assign [target] initVal
 
 /-- Convert a StmtExprMd into an AstNode Variable suitable for use as an
@@ -213,24 +219,36 @@ def toAssignTarget (e : StmtExprMd) : AstNode Variable :=
   | .Var v => { val := v, source := e.source }
   | _ => { val := .Local (mkIdent "__invalid_target"), source := e.source }
 
-/-- Build an `Assert` StmtExpr from a boolean condition expression.
-    The new shape wraps the condition in a `Condition` record (with optional
-    summary); we leave the summary unset by default. -/
+/-- Build an `Assert` StmtExpr from a boolean condition expression,
+    with an optional human-readable summary (unset by default). -/
 def mkAssert (cond : StmtExprMd) (summary? : Option String := none) : StmtExpr :=
-  .Assert ({ condition := cond, summary := summary? } : Condition)
+  .Assert cond summary?
 
-/-- Build an `Assume` StmtExpr. The new Assume shape takes a StmtExprMd
-    directly (unlike Assert, which wraps in a Condition record). The
-    `summary?` argument is accepted for API parity with `mkAssert` but
-    discarded. -/
+/-- Build an `Assume` StmtExpr. The `summary?` argument is accepted for API
+    parity with `mkAssert` but discarded (Laurel's `Assume` has no summary). -/
 def mkAssume (cond : StmtExprMd) (_summary? : Option String := none) : StmtExpr :=
   .Assume cond
+
+/-- Build a call to a static procedure. Type arguments are left empty:
+    Laurel's resolution pass infers them for generic callees. -/
+def mkCall (callee : Identifier) (args : List StmtExprMd) : StmtExpr :=
+  .StaticCall callee args []
+
+/-- Build a primitive operation. Laurel represents `x + y` as a `StaticCall`
+    to the built-in wrapper procedure named by `Operation.procName` (`$add`). -/
+def mkPrimOp (op : Operation) (args : List StmtExprMd) : StmtExpr :=
+  mkCall (mkIdent op.procName) args
+
+/-- Recognize a primitive operation built by `mkPrimOp`. -/
+def asPrimOp? : StmtExpr → Option (Operation × List StmtExprMd)
+  | .StaticCall callee args _ => (Operation.ofProcName? callee.text).map (·, args)
+  | _ => none
 
 /-- Create a StmtExprMd with source location metadata. -/
 def mkStmtExprMdAnn (ctx : TransCtx) (sr : SourceRange) (expr : StmtExpr) : StmtExprMd :=
   match ctx.uri with
   | some uri => { val := expr, source := sourceRangeToFileRange uri sr }
-  | none => { val := expr, source := none }
+  | none => { val := expr, source := .unknown }
 
 /-- Attach source range metadata to an existing StmtExprMd. -/
 def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtExprMd :=
@@ -238,6 +256,13 @@ def withSourceRange (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtE
   else match ctx.uri with
   | some uri => { e with source := sourceRangeToFileRange uri sr }
   | none => e
+
+/-- Give every node of `e` without a source location the range `sr`. Used
+    for spec clauses parsed from NatSpec text, whose sub-expressions have no
+    locations of their own, so the checks Laurel generates for them (such as
+    `divisor is non-zero` for a division inside an `ensures`) are located. -/
+def withSourceRangeDeep (ctx : TransCtx) (sr : SourceRange) (e : StmtExprMd) : StmtExprMd :=
+  mapStmtExpr (fun n => if n.source == .unknown then withSourceRange ctx sr n else n) e
 
 /-! ## Translation Error -/
 
@@ -319,18 +344,18 @@ def SolType.isBytes (st : SolType) : Bool :=
   st.solName.startsWith "bytes"
 
 /-- Generate the Solidity default (zero) value for a given HighType.
-    Scalars get 0 or false; mappings get `const(defaultVal(valueType))`. -/
+    Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=
   match ty.val with
   | .TBool => mkStmtExprMd (.LiteralBool false)
-  | .TMap _ v => mkStmtExprMd (.StaticCall "const" [defaultValueForType v])
+  | .TMap _ v => mkStmtExprMd (mkCall "mapConst" [defaultValueForType v])
   | _ => mkStmtExprMd (.LiteralInt 0)
 
 /-- Generate a non-negative precondition: param >= 0 -/
 def mkNonNegPrecond (paramName : String) : StmtExprMd :=
   let ident := mkStmtExprMd (mkIdentifier paramName)
   let zero := mkStmtExprMd (.LiteralInt 0)
-  mkStmtExprMd (.PrimitiveOp .Geq [ident, zero])
+  mkStmtExprMd (mkPrimOp .Geq [ident, zero])
 
 
 end Strata.Solidity

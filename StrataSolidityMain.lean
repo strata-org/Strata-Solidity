@@ -6,8 +6,7 @@
 
 -- Standalone CLI for Solidity verification via the Laurel pipeline.
 import StrataSolidity
-import Strata.Languages.Laurel.LaurelToCoreTranslator
-import Strata.Languages.Laurel.LaurelCompilationPipeline
+import StrataLaurel.Implementation.LaurelCompilationPipeline
 import Strata.Languages.Core.Verifier
 import Strata.Languages.Core.Options
 import Strata.DL.Imperative.MetaData
@@ -70,6 +69,19 @@ private def formatPlainCounterexample (cex : LExprModel) : String :=
       let val := toString e
       s!"        {name} = {val}"
     "\n" ++ "\n".intercalate entries
+
+/-- A passing obligation located in Laurel's prelude
+    (`CoreDefinitionsForLaurel.lean`), which contributes well-formedness
+    checks for its own operator wrappers to every program. They are not
+    about the user's contract, so successful ones are not reported; failing
+    or inconclusive ones are kept so an upstream regression stays visible.
+    The prelude is matched by its file name, so a renamed prelude makes
+    these obligations reappear rather than hiding user ones. -/
+private def isPassingPreludeVc (vcr : VCResult) : Bool :=
+  vcr.isSuccess &&
+  match Imperative.getFileRange vcr.obligation.metadata with
+  | some { file := .file path, .. } => path.endsWith "/CoreDefinitionsForLaurel.lean"
+  | none => false
 
 /-- Classify a VCResult into 0=fail, 1=unknown, 2=pass. -/
 private def statusOrder (vcr : VCResult) : Nat :=
@@ -223,7 +235,7 @@ def main (args : List String) : IO Unit := do
             IO.FS.createDirAll ⟨dir⟩
             let r ← EIO.toIO
               (fun f => IO.Error.userError (toString f))
-              (Core.verify coreProgram ⟨dir⟩ .none
+              (Core.verify coreProgram ⟨dir⟩
                 { VerifyOptions.default with
                   stopOnFirstError := false,
                   verbose := .quiet,
@@ -247,7 +259,7 @@ def main (args : List String) : IO Unit := do
                   IO.FS.removeFile e.path |>.catchExceptions (fun _ => pure ())
               let result ← EIO.toIO
                 (fun f => IO.Error.userError (toString f))
-                (Core.verify coreProgram dir .none
+                (Core.verify coreProgram dir
                   { VerifyOptions.default with
                     stopOnFirstError := false,
                     verbose := .quiet,
@@ -259,7 +271,7 @@ def main (args : List String) : IO Unit := do
               let r ← IO.FS.withTempDir (fun tempDir =>
                 EIO.toIO
                   (fun f => IO.Error.userError (toString f))
-                  (Core.verify coreProgram tempDir .none
+                  (Core.verify coreProgram tempDir
                     { VerifyOptions.default with
                       stopOnFirstError := false,
                       verbose := .quiet,
@@ -267,6 +279,8 @@ def main (args : List String) : IO Unit := do
                       solverTimeout := timeoutVal,
                       useArrayTheory := useArrays }))
               pure (r, ("" : System.FilePath))
+
+        let vcResults := vcResults.filter (!isPassingPreludeVc ·)
 
         -- Print results
         if pipelineJson then
@@ -277,10 +291,18 @@ def main (args : List String) : IO Unit := do
             -- Try to read the SMT file for this obligation
             let smtContent ← do
               let candidates ← (smtDir.readDir).catchExceptions (fun _ => pure #[])
-              let matching := candidates.filter fun e =>
-                (e.fileName.splitOn r.obligation.label).length > 1 && e.fileName.endsWith ".smt2"
-              match matching.toList.head? with
-              | some entry => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
+              -- Core names each file `<sanitized label>_<counter>.smt2`;
+              -- match that shape exactly (a substring test also matched
+              -- other obligations' files, and nothing once labels gained
+              -- parentheses). Of several paths, take the first.
+              let pre := Core.SMT.sanitizeFilenameCapped r.obligation.label ++ "_"
+              let counterOf (name : String) : Option Nat :=
+                if name.startsWith pre && name.endsWith ".smt2" then
+                  ((name.drop pre.length).dropEnd ".smt2".length).toString.toNat?
+                else none
+              let matching := candidates.filterMap fun e => (counterOf e.fileName).map (·, e)
+              match (matching.qsort (·.1 < ·.1)).toList.head? with
+              | some (_, entry) => (IO.FS.readFile entry.path).catchExceptions (fun _ => pure "")
               | none => pure ""
             let smtResult := if r.isSuccess then "unsat" else if r.isFailure then "sat" else "unknown"
             return Json.mkObj [

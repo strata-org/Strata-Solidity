@@ -53,8 +53,8 @@ private def isLitBool (e : StmtExprMd) (v : Bool) : Bool :=
 /-! ## Helper: mkNonNegPrecond -/
 
 private def isGeqZero (e : StmtExprMd) (name : String) : Bool :=
-  match e.val with
-  | .PrimitiveOp .Geq [lhs, rhs] =>
+  match asPrimOp? e.val with
+  | some (.Geq, [lhs, rhs]) =>
     match lhs.val, rhs.val with
     | .Var (.Local n), .LiteralInt 0 => n.text == name
     | _, _ => false

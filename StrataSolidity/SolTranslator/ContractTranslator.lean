@@ -87,7 +87,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           let resultField := mkStmtExprMd (mkFieldSelect
             (mkStmtExprMd (mkIdentifier "__ctor_result")) f.name.text)
           let paramRef := mkStmtExprMd (mkIdentifier f.name.text)
-          mkStmtExprMd (.PrimitiveOp .Eq [resultField, paramRef])
+          mkStmtExprMd (mkPrimOp .Eq [resultField, paramRef])
         let postcondsAsConds : List Condition :=
           postconds.map fun p => { condition := p, summary := none }
         procedures := procedures ++ [{
@@ -96,7 +96,6 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           outputs := [ctorOutput]
           preconditions := []
           decreases := none
-          isFunctional := true
           body := .Abstract postcondsAsConds
         }]
       | .VariableDeclaration _ nameAnn _ stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
@@ -288,8 +287,11 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     let allMappingNames := allMappingNames.eraseDups
 
     -- Declare uninterpreted functions used by the translator.
-    -- These are abstract procedures with no body, giving the solver
-    -- functional consistency (same inputs → same output) but no other axioms.
+    -- Each is a transparent procedure whose body is a deterministic hole,
+    -- which Laurel lowers to an uninterpreted function of the inputs. This
+    -- gives the solver functional consistency (same inputs → same output)
+    -- but no other axioms. A bodiless procedure would instead be havocked
+    -- independently at every call.
     let mkUninterpBinary (name : String) : Procedure := {
       name := name
       inputs := [{ name := "a", type := mkHighTypeMd .TInt },
@@ -297,8 +299,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      isFunctional := true
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let mkUninterpUnary (name : String) : Procedure := {
       name := name
@@ -306,8 +307,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      isFunctional := true
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let mkUninterpN (name : String) (n : Nat) : Procedure := {
       name := name
@@ -316,8 +316,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
       outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
       preconditions := []
       decreases := none
-      isFunctional := true
-      body := .Abstract []
+      body := .Transparent (mkStmtExprMd (.Hole))
     }
     let uninterpFunctions := [
       mkUninterpBinary "bit_and", mkUninterpBinary "bit_or",
@@ -340,7 +339,7 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
     -- sum : Map[int, int] → int, with update axiom:
     --   forall m : Map[int,int], k : int, v : int ::
     --     sum(update(m, k, v)) == sum(m) - select(m, k) + v
-    -- Also: sum(const(0)) == 0  (empty mapping has zero sum)
+    -- Also: sum(mapConst(0)) == 0  (empty mapping has zero sum)
     let sumFunctions := allMappingNames.filterMap fun name =>
       if true then  -- declare sum for all mappings; unused ones don't affect z3
         let mapType := mkHighTypeMd (.TMap (mkHighTypeMd .TInt) (mkHighTypeMd .TInt))
@@ -348,30 +347,29 @@ def solidityToLaurel (cmd : Solidity.Command SourceRange) (solFilePath : Option 
         let kVar := mkStmtExprMd (mkIdentifier "k")
         let vVar := mkStmtExprMd (mkIdentifier "v")
         -- sum(update(m, k, v)) == sum(m) - select(m, k) + v
-        let updated := mkStmtExprMd (.StaticCall "update" [mVar, kVar, vVar])
-        let sumUpdated := mkStmtExprMd (.StaticCall s!"sum_{name}" [updated])
-        let sumM := mkStmtExprMd (.StaticCall s!"sum_{name}" [mVar])
-        let selMK := mkStmtExprMd (.StaticCall "select" [mVar, kVar])
-        let rhs := mkStmtExprMd (.PrimitiveOp .Add [
-          mkStmtExprMd (.PrimitiveOp .Sub [sumM, selMK]), vVar])
+        let updated := mkStmtExprMd (mkCall "update" [mVar, kVar, vVar])
+        let sumUpdated := mkStmtExprMd (mkCall s!"sum_{name}" [updated])
+        let sumM := mkStmtExprMd (mkCall s!"sum_{name}" [mVar])
+        let selMK := mkStmtExprMd (mkCall "select" [mVar, kVar])
+        let rhs := mkStmtExprMd (mkPrimOp .Add [
+          mkStmtExprMd (mkPrimOp .Sub [sumM, selMK]), vVar])
         let updateAxiom := mkStmtExprMd (mkForall
           { name := "m", type := mapType }
           (mkStmtExprMd (mkForall
             { name := "k", type := mkHighTypeMd .TInt }
             (mkStmtExprMd (mkForall
               { name := "v", type := mkHighTypeMd .TInt }
-              (mkStmtExprMd (.PrimitiveOp .Eq [sumUpdated, rhs])))))))
-        -- sum(const(0)) == 0
-        let emptyMap := mkStmtExprMd (.StaticCall "const" [mkStmtExprMd (.LiteralInt 0)])
-        let sumEmpty := mkStmtExprMd (.StaticCall s!"sum_{name}" [emptyMap])
-        let emptyAxiom := mkStmtExprMd (.PrimitiveOp .Eq [sumEmpty, mkStmtExprMd (.LiteralInt 0)])
+              (mkStmtExprMd (mkPrimOp .Eq [sumUpdated, rhs])))))))
+        -- sum(mapConst(0)) == 0
+        let emptyMap := mkStmtExprMd (mkCall "mapConst" [mkStmtExprMd (.LiteralInt 0)])
+        let sumEmpty := mkStmtExprMd (mkCall s!"sum_{name}" [emptyMap])
+        let emptyAxiom := mkStmtExprMd (mkPrimOp .Eq [sumEmpty, mkStmtExprMd (.LiteralInt 0)])
         some {
           name := s!"sum_{name}"
           inputs := [{ name := "m", type := mapType }]
           outputs := [{ name := "result", type := mkHighTypeMd .TInt }]
           preconditions := []
           decreases := none
-          isFunctional := true
           body := .Abstract [
             { condition := updateAxiom, summary := none },
             { condition := emptyAxiom, summary := none }

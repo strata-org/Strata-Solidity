@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-10-08 — Upstream Strata re-pin (Lean 4.31, StrataDDM / StrataLaurel)
+
+Re-pins the Strata submodule from `349b1cf4` (nightly-20260523) to
+`d1fc3a08` (nightly-20261008), 393 upstream commits. Behavior-preserving:
+per-fixture pass/fail/unknown counts and exit codes are unchanged across
+all 144 `.sol` fixtures; the golden suite passes unchanged.
+
+### What changed under the hood
+- **Lean toolchain**: 4.29.1 → 4.31.0.
+- **Packages**: DDM is now the `StrataDDM` package (namespace `StrataDDM`);
+  Laurel is the `StrataLaurel` library.
+- **Laurel AST**: operators are `StaticCall "$add"`/`"$eq"`/… (no more
+  `PrimitiveOp`); `StaticCall` carries inferred type arguments;
+  `AstNode.source` is a non-optional `FileRange`; `Declare` takes
+  `Parameter?`; `While` has a `postTest` flag; `isFunctional` is gone;
+  `modifies` is a list of `ModifiesGroup`s (empty list = unframed).
+- **Core**: `Core.verify` merges results by (summary, source range), so
+  every postcondition now carries a distinct summary
+  (`ensures <clause>`, `modifies frame (<var>)`, `invariant #n`).
+
+### Fixed (regressions exposed by the re-pin)
+- Constant mappings use the prelude's `mapConst` (Core's `const` is no
+  longer resolvable from Laurel).
+- Uninterpreted helpers (`keccak256`, `abi_encode*`, `bit_*`, …) keep
+  functional consistency (deterministic-hole bodies).
+- Passing well-formedness checks of Laurel's own prelude are no longer
+  reported.
+
+### Visible output changes
+- Obligation labels are now `assert(<n>)` instead of `postcondition_N` /
+  `callElimAssert_requires_N`.
+
 ## 2026-07-11 — Python-free pipeline (Solidity + Lean)
 
 The verification pipeline is now entirely Lean: the `strataSolidity`

@@ -5,19 +5,20 @@
 -/
 module
 
-import Strata.DDM.Ion
-import Strata.DDM.Util.Ion
+import StrataDDM.Ion
+import StrataDDM.Util.Ion
 public import StrataSolidity.SolidityDialect
 
 public section
 namespace Strata.Solidity
+open StrataDDM (SourceRange)
 
 /-- Read a Solidity Ion file and return the top-level DDM commands. -/
 private def readSolidityStrataBytes (strataPath : String) (bytes : ByteArray)
     : Except String (Array (Strata.Solidity.Command SourceRange)) := do
   if ! Ion.isIonFile bytes then
     throw s!"{strataPath} is not an Ion file."
-  match Strata.Program.fromIon Strata.Solidity.Solidity_map Strata.Solidity.Solidity.name bytes with
+  match StrataDDM.Program.fromIon Strata.Solidity.Solidity_map Strata.Solidity.Solidity.name bytes with
   | .ok pgm =>
     let cmds ← pgm.commands.mapM fun cmd =>
       match Strata.Solidity.Command.ofAst cmd with

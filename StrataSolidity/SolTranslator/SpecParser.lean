@@ -5,6 +5,7 @@
 -/
 
 import StrataSolidity.SolTranslator.Types
+import StrataSolidity.SolcAstParser
 
 namespace Strata.Solidity
 open Laurel
@@ -60,6 +61,10 @@ namespace SpecParser
 set_option linter.deprecated false in
 /-- Tokenize a spec expression string into a list of tokens. -/
 def tokenize (s : String) : List String :=
+  -- Identifiers get the same `$` renaming as the AST (`SolcAst.mangleName`).
+  (tokenizeRaw s).map SolcAst.mangleName
+where
+  tokenizeRaw (s : String) : List String :=
   let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=
     if fuel == 0 then (if cur.isEmpty then acc else acc ++ [cur]).reverse
     else if i >= s.length then (if cur.isEmpty then acc else acc ++ [cur])
@@ -161,7 +166,7 @@ where
     match rest with
     | "==>" :: rest' =>
       let (rhs, rest'') ← parseImplies rest'
-      return (mkStmtExprMd (.PrimitiveOp .Implies [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Implies [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseOr (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -169,7 +174,7 @@ where
     match rest with
     | "||" :: rest' =>
       let (rhs, rest'') ← parseOr rest'
-      return (mkStmtExprMd (.PrimitiveOp .Or [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Or [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseAnd (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -177,7 +182,7 @@ where
     match rest with
     | "&&" :: rest' =>
       let (rhs, rest'') ← parseAnd rest'
-      return (mkStmtExprMd (.PrimitiveOp .And [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .And [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseComparison (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -185,22 +190,22 @@ where
     match rest with
     | "==" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Eq [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Eq [lhs, rhs]), rest'')
     | "!=" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Neq [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Neq [lhs, rhs]), rest'')
     | ">=" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Geq [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Geq [lhs, rhs]), rest'')
     | "<=" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Leq [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Leq [lhs, rhs]), rest'')
     | ">" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Gt [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Gt [lhs, rhs]), rest'')
     | "<" :: rest' =>
       let (rhs, rest'') ← parseAddSub rest'
-      return (mkStmtExprMd (.PrimitiveOp .Lt [lhs, rhs]), rest'')
+      return (mkStmtExprMd (mkPrimOp .Lt [lhs, rhs]), rest'')
     | _ => return (lhs, rest)
 
   parseAddSub (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -211,10 +216,10 @@ where
     match tokens with
     | "+" :: rest =>
       let (rhs, rest') ← parseMul rest
-      parseAddSubTail (mkStmtExprMd (.PrimitiveOp .Add [lhs, rhs])) rest'
+      parseAddSubTail (mkStmtExprMd (mkPrimOp .Add [lhs, rhs])) rest'
     | "-" :: rest =>
       let (rhs, rest') ← parseMul rest
-      parseAddSubTail (mkStmtExprMd (.PrimitiveOp .Sub [lhs, rhs])) rest'
+      parseAddSubTail (mkStmtExprMd (mkPrimOp .Sub [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
 
   parseMul (tokens : List String) : Except TranslationError (StmtExprMd × List String) := do
@@ -225,13 +230,13 @@ where
     match tokens with
     | "*" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (.PrimitiveOp .Mul [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .Mul [lhs, rhs])) rest'
     | "/" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (.PrimitiveOp .Div [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .Div [lhs, rhs])) rest'
     | "%" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (.PrimitiveOp .Mod [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .Mod [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
 
   -- Prefix unary layer (`unary ::= ("!" | "-")? postfix` in SpecGrammar.lean).
@@ -243,12 +248,12 @@ where
     match tokens with
     | "!" :: rest =>
       let (operand, rest') ← parseUnary rest
-      return (mkStmtExprMd (.PrimitiveOp .Not [operand]), rest')
+      return (mkStmtExprMd (mkPrimOp .Not [operand]), rest')
     | "-" :: rest =>
       let (operand, rest') ← parseUnary rest
       let neg := match operand.val with
         | .LiteralInt n => mkStmtExprMd (.LiteralInt (-n))
-        | _ => mkStmtExprMd (.PrimitiveOp .Neg [operand])
+        | _ => mkStmtExprMd (mkPrimOp .Neg [operand])
       return (neg, rest')
     | _ => parsePostfix tokens
 
@@ -276,7 +281,7 @@ where
       let (idx, rest') ← parseExpr rest
       match rest' with
       | "]" :: rest'' =>
-        let sel := mkStmtExprMd (.StaticCall "select" [base, idx])
+        let sel := mkStmtExprMd (mkCall "select" [base, idx])
         parsePostfixTail sel rest''
       | _ => throw (.typeError "Expected ']' in index access")
     | "(" :: rest =>
@@ -299,7 +304,7 @@ where
       else if args.length > 1 && (fname == "abi_encodePacked" || fname == "abi_encode") then
         s!"{fname}{args.length}"
       else fname
-      let call := mkStmtExprMd (.StaticCall fname' args)
+      let call := mkStmtExprMd (mkCall fname' args)
       parsePostfixTail call rest'
     | "." :: member :: rest =>
       if member == "length" then
@@ -328,7 +333,7 @@ where
       | ")" :: rest'' =>
         -- Mark old() expressions with a StaticCall "__old" so they can be
         -- identified and rewritten by processOldMarkers later.
-        return (mkStmtExprMd (.StaticCall "__old" [inner]), rest'')
+        return (mkStmtExprMd (mkCall "__old" [inner]), rest'')
       | _ => throw (.typeError "Expected ')' after old(")
     | "address" :: "(" :: rest =>
       -- address(expr) is a type cast to address; treat as identity on the inner expr

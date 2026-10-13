@@ -7,6 +7,7 @@
 import Lean.Data.Json
 import Strata.Languages.Core.Verifier
 import Strata.DL.Imperative.MetaData
+import StrataSolidity.SolcAstParser
 
 open Lean (Json toJson)
 open Core (VCResult VCOutcome VCError)
@@ -20,7 +21,7 @@ def cleanVarName (name : String) : String :=
   let s := if s.endsWith "_param" then (s.dropEnd 6).toString else s
   let s := if s.endsWith "_in" then (s.dropEnd 3).toString else s
   let s := s.replace "__" "."
-  s
+  Strata.Solidity.SolcAst.unmangleName s
 
 private def mkRule (id desc : String) : Json :=
   Json.mkObj [

@@ -251,29 +251,6 @@ private def genNonKeywordIdentifier : Gen String := do
     make literal equality too strict). We compare structure only, matching
     the semantics the baseline parser cares about. -/
 
-/-- Structural equality on primitive operators. -/
-private def opEq : Laurel.Operation → Laurel.Operation → Bool
-  | .Eq, .Eq => true
-  | .Neq, .Neq => true
-  | .And, .And => true
-  | .Or, .Or => true
-  | .Not, .Not => true
-  | .Implies, .Implies => true
-  | .Neg, .Neg => true
-  | .Add, .Add => true
-  | .Sub, .Sub => true
-  | .Mul, .Mul => true
-  | .Div, .Div => true
-  | .Mod, .Mod => true
-  | .DivT, .DivT => true
-  | .ModT, .ModT => true
-  | .Lt, .Lt => true
-  | .Leq, .Leq => true
-  | .Gt, .Gt => true
-  | .Geq, .Geq => true
-  | .StrConcat, .StrConcat => true
-  | _, _ => false
-
 /-- Structural equality on `HighType`, restricted to the shapes the parser
     actually produces for quantifier parameters: `TBool` and `TInt`. -/
 private partial def highTypeStructEq (a b : HighType) : Bool :=
@@ -297,11 +274,9 @@ private partial def stmtExprStructEq (a b : StmtExprMd) : Bool :=
   | .LiteralInt x, .LiteralInt y => x == y
   | .LiteralBool x, .LiteralBool y => x == y
   | .Var (.Local x), .Var (.Local y) => x.text == y.text
-  | .PrimitiveOp op1 args1, .PrimitiveOp op2 args2 =>
-      opEq op1 op2 &&
-      args1.length == args2.length &&
-      (args1.zip args2).all (fun (x, y) => stmtExprStructEq x y)
-  | .StaticCall c1 args1, .StaticCall c2 args2 =>
+  -- Operators are `StaticCall`s to `$add`/`$eq`/…, so comparing callee
+  -- names also compares operators.
+  | .StaticCall c1 args1 _, .StaticCall c2 args2 _ =>
       c1.text == c2.text &&
       args1.length == args2.length &&
       (args1.zip args2).all (fun (x, y) => stmtExprStructEq x y)
@@ -364,12 +339,12 @@ private partial def canonicalSerialize (e : StmtExprMd) : String :=
   | .LiteralBool true => "true"
   | .LiteralBool false => "false"
   | .Var (.Local name) => name.text
-  | .PrimitiveOp op [lhs, rhs] =>
-      match opToken op with
-      | some t => s!"({canonicalSerialize lhs} {t} {canonicalSerialize rhs})"
-      | none => "__unsupported_op"
-  | .StaticCall callee args =>
-      if callee.text == "__old" then
+  | .StaticCall callee args _ =>
+      if let some (op, operands) := asPrimOp? e.val then
+        match operands, opToken op with
+        | [lhs, rhs], some t => s!"({canonicalSerialize lhs} {t} {canonicalSerialize rhs})"
+        | _, _ => "__unsupported_op"
+      else if callee.text == "__old" then
         match args with
         | [inner] => s!"old({canonicalSerialize inner})"
         | _ => "__unsupported_old"

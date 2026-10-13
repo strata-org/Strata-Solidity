@@ -50,7 +50,7 @@ private def isFieldSelect (e : StmtExprMd) (obj field : String) : Bool :=
 -- old(mapping) → mapping_in
 private def testOldMapping : Bool :=
   let inner := mkStmtExprMd (mkIdentifier "balances")
-  let expr := mkStmtExprMd (.StaticCall "__old" [inner])
+  let expr := mkStmtExprMd (mkCall "__old" [inner])
   let result := processOldMarkers ["balances"] [] [] expr
   isIdent result "balances_in"
 
@@ -59,7 +59,7 @@ private def testOldMapping : Bool :=
 -- old(scalar) → __old_count marker
 private def testOldScalar : Bool :=
   let inner := mkStmtExprMd (mkIdentifier "count")
-  let expr := mkStmtExprMd (.StaticCall "__old" [inner])
+  let expr := mkStmtExprMd (mkCall "__old" [inner])
   let result := processOldMarkers [] [] ["count"] expr
   isIdent result "__old_count"
 
