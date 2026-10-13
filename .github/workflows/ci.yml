@@ -20,7 +20,10 @@ permissions:
 jobs:
   build-and-test:
     name: build + test (ubuntu)
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: z3 comes from the image's apt archive and
+    # solc from a PPA built per Ubuntu release, so a new image can change
+    # both. Move to a newer image deliberately, in its own change.
+    runs-on: ubuntu-24.04
 
     steps:
       # Strata is vendored as a git submodule at ./Strata (REQ-STRATA-001).
@@ -28,7 +31,7 @@ jobs:
       # nested submodules, should they appear later) is initialized at the
       # SHA recorded in this repo's tree.
       - name: Checkout StrataSolidity (with Strata submodule)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -64,7 +67,7 @@ jobs:
             strata-lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain') }}-${{ hashFiles('lake-manifest.json') }}-
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           # Match the documented minimum (README.md, docs/guide/src/installation.md
           # both list Python 3.12+ as a prerequisite). Ubuntu runners ship 3.12
