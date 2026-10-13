@@ -42,6 +42,14 @@ contract Environment {
         r = address(this).balance;
     }
 
+    // Passes: `this` is the contract's address, a nonzero constant of the
+    // transaction, and a value of a contract type is an address.
+    /// @custom:strata ensures r == (address(e) == address(this))
+    /// @custom:strata ensures address(this) != address(0)
+    function isSelf(Environment e) external view returns (bool r) {
+        r = e == this;
+    }
+
     // Fails: a send may fail.
     /// @custom:strata ensures ok
     function pay(address payable to) external returns (bool ok) {

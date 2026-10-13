@@ -123,6 +123,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut constantDefs : List (String × StmtExprMd) := []
     let mut fieldSolTypes : List (String × String) := []
     let mut stateVarInits : List (String × Solidity.node SourceRange) := []
+    let mut immutableNames : List String := []
 
     -- Pass 1: collect struct definitions and state variables
     for member in nodesSeq.val do
@@ -160,8 +161,9 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           decreases := none
           body := .Abstract postcondsAsConds
         }]
-      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn _ _ _ _ valueOpt docAnn =>
+      | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn mutAnn _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
+          if mutAnn.val == "immutable" then immutableNames := immutableNames ++ [nameAnn.val]
           -- Collect @custom:strata invariant from state variable NatSpec
           -- (a library's constants are not contract state)
           warnings := warnings ++ annotationWarnings ctx.source
@@ -303,7 +305,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                  udvtNames := udvtNames
                  constantDefs := constantDefs
                  fieldSolTypes := fieldSolTypes
-                 stateVarInits := stateVarInits }
+                 stateVarInits := stateVarInits
+                 immutableNames := immutableNames }
     let natspecInvariantStrs := stateVarInvariants.filterMap fun
       | .invariant e => some e | _ => none
     let natspecInvariantExprs ← natspecInvariantStrs.mapM fun e => do
@@ -316,7 +319,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       -- Time and block values advance between transactions without any
       -- function running, so an invariant over them is not preserved by
       -- checking the contract's functions.
-      if let some (_, what, _) := envConstants.find? (readsConstant ·.1 parsed) then
+      if let some (_, what, _) := envConstants.find? fun (c, _, _) =>
+          c != "this_address" && readsConstant c parsed then
         throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
       pure parsed
 
@@ -509,10 +513,18 @@ def unattachedAnnotations (cmd : Solidity.Command SourceRange) (source : String)
 def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
     (solFilePath : Option String := none) (source : Option String := none)
     (exprTypes : Std.HashMap (Nat × Nat × String) String := {})
+    (assumeNoReentrancy : Bool := false)
     : Except TranslationError (Laurel.Program × List TranslationWarning) := do
-  let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes }
+  let ctx : TransCtx := { uri := solFilePath.map .file, source, exprTypes, assumeNoReentrancy }
   match cmd with
   | .SourceUnit _ nodesSeq => do
+    -- The contracts and interfaces, whose names are types of addresses.
+    let contractTypeNames := nodesSeq.val.toList.filterMap fun (node : Solidity.node SourceRange) =>
+      match node with
+      | .ContractDefinition _ nameAnn kindAnn .. =>
+        if kindAnn.val == "library" then none else some nameAnn.val
+      | _ => none
+    let ctx := { ctx with contractTypeNames }
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
     let mut allWarnings : List TranslationWarning := []

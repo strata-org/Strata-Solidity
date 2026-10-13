@@ -137,7 +137,7 @@ Don't state what the type system or the tool already guarantees:
 
 ## Supported Solidity features
 
-StrataSolidity accepts a subset of Solidity 0.8.x covering contracts and interfaces, functions and modifiers, common value and reference types (integers, `bool`, `address`, `bytes32`, mappings, arrays, structs, enums), standard control flow and expressions, and NatSpec-annotated specifications. Pipeline-specific conventions (events as no-ops, hashes and ABI encoders as uninterpreted functions, inline assembly under a havoc strategy) are part of the accepted subset.
+StrataSolidity accepts a subset of Solidity 0.8.x covering contracts and interfaces, functions and modifiers, common value and reference types (integers, `bool`, `address`, `bytes32`, mappings, arrays, structs, enums), standard control flow and expressions, and NatSpec-annotated specifications. Pipeline-specific conventions (events as no-ops, hashes and ABI encoders as uninterpreted functions, inline assembly and external calls under a havoc strategy) are part of the accepted subset.
 
 For the authoritative, per-feature enumeration, see [`.kiro/specs/strata-solidity-baseline/requirements.md`](.kiro/specs/strata-solidity-baseline/requirements.md) §3 — Supported Solidity Subset (REQ-SOL-001..REQ-SOL-100). That document is the source of truth; this README intentionally does not duplicate the list to avoid drift.
 
@@ -175,6 +175,7 @@ Requires `lake build` to have been run first.
 | `--timeout=<s>` | Per-obligation solver timeout (default 10) |
 | `--no-array-theory` | Encode mappings with quantified select/update axioms instead of SMT arrays (the default since the 2026-10 Strata re-pin; `--array-theory` is accepted and has no effect) |
 | `--dump-vc=<dir>` | Keep the generated `.smt2` files in `<dir>/<procedure>/` |
+| `--assume-no-reentrancy` | Trust that external calls do not call back into the contract, so they leave its state unchanged (see [Contract Invariants](docs/guide/src/contract_invariants.md#external-calls-and-reentrancy)) |
 
 ## Directory layout
 

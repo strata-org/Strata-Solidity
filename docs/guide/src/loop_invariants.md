@@ -14,20 +14,29 @@ A loop invariant is a condition that must be true:
 Loop invariants are placed on the function containing the loop:
 
 ```solidity
-/// @custom:strata loop-invariant i <= users.length
-/// @custom:strata loop-invariant sum >= 0
-/// @custom:strata ensures sum >= 0
-function sumBalances(address[] calldata users) external view returns (uint256 sum) {
-    for (uint i = 0; i < users.length; i++) {
-        sum += balances[users[i]];
+uint256 constant FEE_PER_ITEM = 5;
+
+/// @custom:strata loop-invariant i <= items
+/// @custom:strata loop-invariant fee == i * FEE_PER_ITEM
+/// @custom:strata ensures fee == items * FEE_PER_ITEM
+function totalFee(uint256 items) external pure returns (uint256 fee) {
+    for (uint256 i = 0; i < items; i++) {
+        fee += FEE_PER_ITEM;
     }
 }
 ```
 
 StrataSolidity checks that:
-- `i <= users.length` and `sum >= 0` hold before the loop starts.
-- If they hold at the start of an iteration, they still hold at the end.
-- When the loop exits (`i == users.length`), the invariants plus the exit condition are sufficient to prove the postcondition.
+- `i <= items` and `fee == i * FEE_PER_ITEM` hold before the loop starts
+  (`i` and `fee` are both 0).
+- If they hold at the start of an iteration, they still hold at the end: the
+  body adds `FEE_PER_ITEM` to `fee` and 1 to `i`.
+- When the loop exits (`i == items`), the invariants imply the postcondition.
+
+The invariant `fee == i * FEE_PER_ITEM` connects the loop body to the
+postcondition: it states how far the accumulator has progressed. Without it,
+`fee == items * FEE_PER_ITEM` cannot be proven, and a body that added the
+wrong amount would break it.
 
 ## Why loop invariants matter for smart contracts
 

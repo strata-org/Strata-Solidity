@@ -7,11 +7,11 @@ pragma solidity ^0.8.0;
 // ignored_annotations.warnings); `--strict` turns them into a failing exit.
 // Mentioning @custom:strata in prose, as here, is not an annotation.
 
-/// @custom:strata ensures count >= 0
+/// @custom:strata ensures count == 1
 contract IgnoredAnnotations {
     uint256 public count;
 
-    /// @custom:strata invariant count >= 0
+    /// @custom:strata invariant count <= 100
 
     /// @custom:strata ensure count == old(count) + 1
     /// @custom:strata ensures count == old(count) + 1

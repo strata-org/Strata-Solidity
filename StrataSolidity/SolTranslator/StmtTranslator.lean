@@ -315,7 +315,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       if outputs.length > 1 && !isConstructor then
         baseOutputs.head?.map (·.name.text)
       else none
+    -- An entry point that may change state keeps the invariants across a
+    -- call that may re-enter the contract (see `externalCallModel`).
+    let reentryInvariants := if !checksInvariants || isConstructor then [] else
+      (resolveInvariants ctx false ctx.contractInvariantNatspec).zip ctx.contractInvariantTexts
     let bodyCtx := { ctx with localNames := ctx.localNames ++ paramNames ++ outputNames ++ mappingOutputNames ++ arrayLengthOutputNames ++ userParamInfo.map (·.1),
+                              reentryInvariants := reentryInvariants,
                               memoryArrayParams := memoryArrayParamNames,
                               hasSelfParam := !isPure && hasNonMappingState && !isConstructor,
                               mayWriteState := !isPure && !isView,
@@ -417,7 +422,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- 2. Constructor default storage initialization (Solidity zero-inits all state)
         if isConstructor then
           for field in ctx.contractFields do
-            let defaultVal := defaultValueForType field.type
+            let defaultVal := storageZero ctx.structFields field.type
             preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier field.name.text))]
               defaultVal)]
             -- For array state vars, also initialize the length: 0, or the
@@ -430,19 +435,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           -- declaration order, before the body. One the translator cannot
           -- express gives the variable an unknown value (a sound
           -- over-approximation) instead of failing the whole file: one it
-          -- cannot translate, a string or `bytes` value (modelled as an
-          -- integer, so `"Token"` would not type-check), or one reading
-          -- `this`. An array's length is that of an inline array literal,
-          -- unknown for other initializers.
+          -- cannot translate, or a string or `bytes` value (modelled as an
+          -- integer, so `"Token"` would not type-check). An array's length
+          -- is that of an inline array literal, unknown for other
+          -- initializers.
           let fresh := mkStmtExprMd (.Hole (deterministic := false))
           for (name, initNode) in ctx.stateVarInits do
             let opaqueType := ["string", "bytes"].contains ((ctx.fieldSolTypes.lookup name).getD "")
             let value := match translateExpr bodyCtx initNode with
               | .ok v =>
-                if opaqueType || anyStmtExpr (fun e => match e.val with
-                    | .LiteralString _ => true
-                    | .Var (.Local id) => id.text == "this"
-                    | _ => false) v then fresh
+                if opaqueType || anyStmtExpr (fun e => e.val matches .LiteralString _) v then fresh
                 else v
               | .error _ => fresh
             -- Located at the initializer (its checks too, see `.Return`).

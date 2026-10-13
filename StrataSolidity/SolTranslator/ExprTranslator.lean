@@ -132,18 +132,19 @@ def buildNestedUpdate (rootExpr : StmtExprMd) (indices : List StmtExprMd) (val :
 
 
 /-- Whether evaluating a translated expression does more than compute a
-    value: anything but literals, variables, conditionals, map reads and
-    operators without a precondition (so `k++`, an assignment, a call, a
-    division). Laurel lifts such parts out of the expression, evaluating
-    them before it. -/
+    value: anything but literals, variables, conditionals, map reads,
+    transaction constants (`block.timestamp`, `this`) and operators without
+    a precondition (so `k++`, an assignment, a call, a division). Laurel
+    lifts such parts out of the expression, evaluating them before it. -/
 def hasEffects (e : StmtExprMd) : Bool :=
   anyStmtExpr (fun e => match e.val with
     | .LiteralInt _ | .LiteralBool _ | .LiteralString _ | .Var (.Local _) | .Var (.Field ..)
     | .IfThenElse .. => false
-    | .StaticCall callee _ _ =>
+    | .StaticCall callee args _ =>
       match asPrimOp? e.val with
       | some (op, _) => (op matches .Div | .Mod | .DivT | .ModT)
-      | none => !["select", "mapConst"].contains callee.text
+      | none => !["select", "mapConst"].contains callee.text &&
+          !(args.isEmpty && envConstants.any (·.1 == callee.text))
     | _ => true) e
 
 /-- A local `x` declared with the value `e`. -/
@@ -362,13 +363,37 @@ def assemblyAssignable (ctx : TransCtx) : List String :=
   let stateNames := ctx.mappingStateVars ++ ctx.arrayStateVars.map (· ++ "_length")
   ctx.localNames.filter (!stateNames.contains ·) |>.eraseDups
 
+/-- Statements giving the contract's state unknown values of their
+    Solidity types: every state variable but the immutables (a scalar is a
+    field of `self`, except in constructors, where it is an output variable
+    like mapping state), the length of each dynamic array, and the locals
+    holding the fields of storage references (`d__value`), which read that
+    state. -/
+def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
+  let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  let assume (c : StmtExprMd) := mkStmtExprMd (mkAssume c)
+  let vars := ctx.stateVarNames.filter (!ctx.immutableNames.contains ·)
+  let state := vars.flatMap fun n =>
+    let v := if ctx.hasSelfParam && !ctx.mappingStateVars.contains n
+      then mkStmtExprMd (mkFieldSelect (ident "self") n) else ident n
+    let len := ident s!"{n}_length"
+    assign v :: (((ctx.fieldSolTypes.lookup n).bind (mkRangeCond · v)).toList.map assume) ++
+    if ctx.arrayStateVars.contains n && (ctx.fixedArrayLengths.lookup n).isNone then
+      [assign len, assume (mkStmtExprMd (mkPrimOp .Geq [len, mkStmtExprMd (.LiteralInt 0)]))]
+    else []
+  state ++ ctx.storageAliases.flatMap fun (a, info) =>
+    info.fields.map fun (f, _) => assign (ident s!"{a}__{f}")
+
 /-- The model of an inline-assembly block with summary `s`. Yul is not
     interpreted: whatever the block may write is unknown afterwards, and
     it may end the function there.
     - The Solidity variables it assigns get fresh values, a memory array
       with its length; so does every variable in memory if it writes memory.
-    - If it may write storage, so does all of the contract's state, where
-      solc lets assembly write it (not in `view` and `pure` functions).
+    - If it may write storage, so does all of the contract's state
+      (`stateHavoc`), where solc lets assembly write it (not in `view` and
+      `pure` functions).
     - If it may end the function, it does so on some paths, with unknown
       return values.
     Fresh values are nondeterministic holes: a deterministic hole is a
@@ -389,20 +414,122 @@ def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError St
   let vars := (assemblyAssignable ctx).filter fun n => s.assigned.contains n || memory.contains n
   let vars := vars.flatMap fun n =>
     if ctx.memoryArrayParams.contains n then [n, s!"{n}_length"] else [n]
-  let state := if !(s.writesStorage && ctx.mayWriteState) then [] else
-    ctx.stateVarNames.flatMap fun n =>
-      if ctx.arrayStateVars.contains n then [n, s!"{n}_length"] else [n]
-  -- Scalar state is a field of `self`, except in constructors, where it
-  -- is an output variable like mapping state.
-  let (fields, stateVars) := state.partition fun n =>
-    ctx.hasSelfParam && ctx.stateVarNames.contains n && !ctx.mappingStateVars.contains n
-  let havocs := (vars ++ stateVars).eraseDups.map (assign ∘ ident) ++
-    fields.map fun n => assign (mkStmtExprMd (mkFieldSelect (ident "self") n))
+  let state := if s.writesStorage && ctx.mayWriteState then stateHavoc ctx else []
+  let havocs := vars.eraseDups.map (assign ∘ ident) ++ state
   let exit := if !s.exits then [] else
     [mkStmtExprMd (.IfThenElse fresh
       (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))
       none)]
   return mkStmtExprMd (.Block (havocs ++ exit) none)
+
+/-- How a call of code outside the contract may change the contract. -/
+inductive ExternalCallKind where
+  /-- `staticcall`, or a `view` or `pure` external function: it cannot
+      change any state. -/
+  | static
+  /-- A mutating external function, `call`, or the creation of a contract:
+      the code it runs may call back into the contract (re-enter it) and
+      change its state through its external functions. -/
+  | call
+  /-- `delegatecall`: the code it runs works on the contract's storage,
+      which it may change arbitrarily. -/
+  | delegate
+  deriving BEq
+
+/-- The attributes of a function type as solc writes it, the words between
+    its parameter list and `returns`: `[view, external]` for
+    `function (address) view external returns (uint256)`. -/
+def functionTypeAttributes (ts : String) : List String :=
+  if !ts.startsWith "function " then [] else
+    let rest := String.ofList (afterParams (ts.drop 9).toString.toList 0)
+    ((rest.splitOn " returns ").headD "").splitOn " " |>.filter (!·.isEmpty)
+where
+  /-- What follows the parenthesized list the characters start with. -/
+  afterParams : List Char → Nat → List Char
+    | [], _ => []
+    | '(' :: cs, d => afterParams cs (d + 1)
+    | ')' :: cs, 1 => cs
+    | ')' :: cs, d => afterParams cs (d - 1)
+    | _ :: cs, d => afterParams cs d
+
+/-- The kind of a call of a function of solc type `fnType?` (`member?`: the
+    member called, in `a.f(…)`) if it runs code outside the contract: a
+    call of an external function (another contract's, `this.f()`, through
+    an external function pointer), or an address's low-level `call`,
+    `delegatecall` or `staticcall`. Calls of internal and library
+    functions, and `send`/`transfer`, whose callee gets too little gas to
+    change any state, are not. -/
+def externalCallKind? (fnType? : Option String) (member? : Option String) : Option ExternalCallKind :=
+  let attrs := (fnType?.map functionTypeAttributes).getD []
+  if attrs.contains "external" then
+    some (if attrs.contains "view" || attrs.contains "pure" then .static else .call)
+  else match member? with
+    | some "call" => some .call
+    | some "delegatecall" => some .delegate
+    | some "staticcall" => some .static
+    | _ => none
+
+/-- The model of running code outside the contract by a call of kind
+    `kind` at `sr`, after its target and arguments are evaluated:
+    - `static`: no state changes;
+    - `call`: the code may call back into the contract (re-enter it), so
+      the contract's state is unknown afterwards (`stateHavoc`). The
+      contract's external functions keep its invariants: at an entry point
+      (which assumes them), the invariants are checked before the call and
+      assumed after it. Nothing changes in a constructor (nothing can call
+      a contract that has no code yet), nor under `--assume-no-reentrancy`;
+    - `delegate`: the code works on the contract's storage, which is
+      unknown afterwards, invariants included.
+    State changes only where solc lets the function change it (not in
+    `view` and `pure` functions). -/
+def externalCallModel (ctx : TransCtx) (sr : SourceRange) (kind : ExternalCallKind)
+    : List StmtExprMd :=
+  let changesState := ctx.mayWriteState && match kind with
+    | .static => false
+    | .call => !ctx.isConstructor && !ctx.assumeNoReentrancy
+    | .delegate => true
+  if !changesState then []
+  else if kind == .delegate then stateHavoc ctx
+  else
+    let invs := ctx.reentryInvariants.map fun (inv, text) => (withSourceRangeDeep ctx sr inv, text)
+    invs.map (fun (inv, text) => mkStmtExprMdAnn ctx sr
+        (mkAssert inv (some s!"invariant {text} holds before the external call"))) ++
+      stateHavoc ctx ++ invs.map (fun (inv, _) => mkStmtExprMd (mkAssume inv))
+
+/-- The value returned by the external call at `sr`, by solc's type of the
+    call: a value of the returned elementary type, held in a fresh local
+    `__ret<offset>_0` (the statements declaring it, and the value), an
+    unknown value for another type or several values (which only a tuple
+    declaration takes, see `translateTupleDecl`), and none for no value. -/
+def externalResult (ctx : TransCtx) (sr : SourceRange) : List StmtExprMd × Option StmtExprMd :=
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  match ctx.typeAt? sr "FunctionCall" with
+  | some "tuple()" => ([], none)
+  | some ts =>
+    let solName := if ts.startsWith "contract " then "address" else (ts.splitOn " ").headD ""
+    if solName == "bool" || (solTypeRange? solName).isSome then
+      let x := s!"__ret{sr.start.byteIdx}_0"
+      let v := mkStmtExprMd (mkIdentifier x)
+      (mkStmtExprMd (mkLocalVar x (translateTypeName solName).highType (some fresh)) ::
+        (mkRangeCond solName v).toList.map (mkStmtExprMd ∘ mkAssume), some v)
+    else ([], some fresh)
+  | none => ([], some fresh)
+
+/-- A call that runs code outside the contract, in parts (a `try` runs them
+    on different paths). -/
+structure ExternalCall where
+  /-- The evaluation of its target, call options and arguments. -/
+  effects : List StmtExprMd
+  /-- The call itself (see `externalCallModel`). -/
+  call : List StmtExprMd
+  /-- The statements declaring its value, and the value, if any. -/
+  result : List StmtExprMd × Option StmtExprMd
+
+/-- The call as an expression. -/
+def ExternalCall.toExpr (c : ExternalCall) : StmtExprMd :=
+  match c.effects ++ c.call ++ c.result.1, c.result.2 with
+  | [], some v => v
+  | stmts, v => mkStmtExprMd (.Block (stmts ++ v.toList) none)
 
 /-- The loop condition and the statements to run at the top of each
     iteration. Laurel lifts the effects of a condition (a call, `k++`, an
@@ -545,6 +672,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       return mkStmtExprMd (mkIdentifier nameAnn.val)
     else if ctx.stateVarNames.contains nameAnn.val then
       return mkStmtExprMd (mkFieldSelect (mkStmtExprMd (mkIdentifier "self")) nameAnn.val)
+    else if nameAnn.val == "this" then
+      -- The contract's address: a constant of the transaction
+      return mkStmtExprMd (mkCall "this_address" [])
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 
@@ -737,13 +867,18 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | o => throw (.unsupported s!"Postfix unary operator: {o}")
 
   -- `new T(args)` parses as FunctionCall(NewExpression(T), args). Contract
-  -- creation is an opaque external effect and dynamic memory arrays
-  -- (`new uint[](n)`) yield a fresh unconstrained value. Model as a Hole.
-  -- Must precede the general FunctionCall arm (matched top-to-bottom).
-  | .FunctionCall _ (.NewExpression _ _) _ _ _ =>
-    return mkStmtExprMd (.Hole (deterministic := false))
+  -- creation runs the new contract's constructor, outside this contract
+  -- (see `translateExternalCall?`); a dynamic memory array
+  -- (`new uint[](n)`) is a fresh unconstrained value. Must precede the
+  -- general FunctionCall arm (matched top-to-bottom).
+  | .FunctionCall sr (.NewExpression _ _) argsSeq _ _ => do
+    if let some c ← translateExternalCall? ctx n then return c.toExpr
+    let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+    return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
+      (some (mkStmtExprMd (.Hole (deterministic := false))))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
+    if let some c ← translateExternalCall? ctx n then return c.toExpr
     -- Check the FunctionCall kind
     match kindAnn.val with
     | "structConstructorCall" =>
@@ -893,12 +1028,6 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
         return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
           (some (mkStmtExprMd (mkCall "send_result" [])))
-      else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
-              || memberAnn.val == "staticcall" then do
-        -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
-        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
-          (some (mkStmtExprMd (.Hole (deterministic := false))))
       else do
         -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
         match baseNode with
@@ -1146,6 +1275,38 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     return mkStmtExprMd (.Hole (deterministic := false))
 
   | _ => throw (.unsupported s!"Expression node type")
+
+/-- The model of `n` if it is a call that runs code outside the contract
+    (see `externalCallKind?`) or creates a contract (`new C(…)`, which runs
+    `C`'s constructor): its target, call options and arguments are
+    evaluated in order (only their effects matter: the call's result is
+    unknown), then the call runs (`externalCallModel`) and returns its
+    result (`externalResult`). `none` for other calls. A `try` call
+    (`isTry`) of unknown kind is taken for a mutating external call. -/
+partial def translateExternalCall? (ctx : TransCtx) (n : Solidity.node SourceRange)
+    (isTry : Bool := false) : Except TranslationError (Option ExternalCall) := do
+  let .FunctionCall sr fnExpr argsSeq kindAnn _ := n | return none
+  if kindAnn.val != "functionCall" then return none
+  -- `f{value: v}(…)`: the options are evaluated with the callee.
+  let (callee, options) := match fnExpr with
+    | .FunctionCallOptions _ e _ opts => (e, opts.val.toList)
+    | e => (e, [])
+  let fnType := ctx.typeAt? (exprRange fnExpr) (exprKind fnExpr)
+  let (kind?, target) := match callee with
+    | .NewExpression _ (.UserDefinedTypeName ..) => (some ExternalCallKind.call, [])
+    | .NewExpression .. => (none, [])
+    | .MemberAccess _ base m => (externalCallKind? fnType (some m.val), [base])
+    | _ => (externalCallKind? fnType none, [])
+  let some kind := kind? <|> (if isTry then some .call else none) | return none
+  let operands ← (target ++ options ++ argsSeq.val.toList).mapM (translateExpr ctx)
+  let effectful := operands.filter hasEffects
+  for (a, i) in effectful.zipIdx do
+    if (effectful.drop (i + 1)).any (operandsConflict ctx a ·) then
+      throw (.unsupported "the operands of an external call: one changes a variable another reads, and solc's evaluation order is unspecified")
+  return some {
+    effects := effectful.zipIdx.map fun (e, i) => declareLocal s!"__arg{sr.start.byteIdx}_{i}" e
+    call := externalCallModel ctx sr kind
+    result := externalResult ctx sr }
 
 /-- Translate a list of statements in a block, threading storage alias context.
     Storage reference declarations (`Voter storage sender = voters[msg.sender]`)
@@ -1474,12 +1635,14 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | none => throw (.unsupported "continue outside of a loop")
 
   | .TryStatement _ externalCall clausesSeq => do
-    -- Model try/catch as a nondeterministic choice between the success path
-    -- (clause 0, the call's `returns` body) and the catch path(s). The
-    -- external call result and any revert reason are unknown, so each clause's
-    -- parameters are introduced as havoc'd locals and both branches explored.
-    -- Sound over-approximation: any state either branch reaches is reachable.
-    let _ ← translateExpr ctx externalCall
+    -- try/catch: the call's target and arguments are evaluated, then the
+    -- call either succeeds, with its effects (see `externalCallModel`),
+    -- and runs clause 0 (the `returns` body), or reverts, undoing them,
+    -- and runs one of the catch clauses: a nondeterministic choice. The
+    -- values returned and the revert reason are unknown, so each clause's
+    -- parameters are fresh locals of their type.
+    let some call ← translateExternalCall? ctx externalCall (isTry := true)
+      | throw (.unsupported "a `try` of something other than an external call")
     let clauses := clausesSeq.val.toList
     let mut branches : List StmtExprMd := []
     for clause in clauses do
@@ -1504,13 +1667,16 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
             | _ => pure ()
         | _ => pure ()
         let b ← translateStmt ctx block
-        branches := branches ++ [mkStmtExprMd (.Block (prelude ++ [b]) none)]
+        let onSuccess := if branches.isEmpty then call.call else []
+        branches := branches ++ [mkStmtExprMd (.Block (onSuccess ++ prelude ++ [b]) none)]
       | _ => pure ()
-    -- Nondeterministic selection: nest each branch under an `if *` (Hole cond).
-    let nondet := branches.foldr (fun br acc =>
-      mkStmtExprMd (.IfThenElse (mkStmtExprMd (.Hole (deterministic := false))) br (some acc)))
-      (mkStmtExprMd (.Block [] none))
-    return nondet
+    -- Nondeterministic selection: each branch but the last under an `if *`
+    -- (a revert that no catch clause catches propagates).
+    let nondet := match branches.reverse with
+      | [] => mkStmtExprMd (.Block [] none)
+      | last :: rest => rest.foldl (fun acc br =>
+          mkStmtExprMd (.IfThenElse (mkStmtExprMd (.Hole (deterministic := false))) br (some acc))) last
+    return mkStmtExprMd (.Block (call.effects ++ [nondet]) none)
 
   | .ForStatement _ initOpt condOpt loopOpt body => do
     -- Desugar: for (init; cond; loop) body → { init; while (cond) { body; loop } }

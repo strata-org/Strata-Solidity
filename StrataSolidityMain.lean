@@ -201,6 +201,9 @@ def main (args : List String) : IO Unit := do
   let jsonMode := args.contains "--json"
   let pipelineJson := args.contains "--pipeline-json"
   let strict := args.contains "--strict"
+  -- Trust that external calls do not call back into the contract: they
+  -- then leave its state unchanged (see `externalCallModel`).
+  let assumeNoReentrancy := args.contains "--assume-no-reentrancy"
   -- Array theory is the default, as in Laurel's own verification entry
   -- points: maps become SMT arrays instead of quantified select/update
   -- axioms, which z3 (with MBQI off) often cannot refute. Without it,
@@ -216,7 +219,7 @@ def main (args : List String) : IO Unit := do
   let timeoutVal : Nat := match args.filter (·.startsWith "--timeout=") with
     | t :: _ => (t.drop "--timeout=".length).toNat?.getD 10
     | _ => 10
-  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol", "--strict"]
+  let flags := ["--verbose", "--sarif", "--json", "--array-theory", "--no-array-theory", "--pipeline-json", "--from-sol", "--strict", "--assume-no-reentrancy"]
   let files := args.filter (fun a => !flags.contains a && !a.startsWith "--timeout=" && !a.startsWith "--dump-vc=" && !a.startsWith "--sol-source=")
   match files with
   | [filePath] =>
@@ -259,8 +262,10 @@ def main (args : List String) : IO Unit := do
         | none => filePath
 
     -- Translate Solidity AST → Laurel
+    if assumeNoReentrancy then
+      IO.eprintln s!"{sourcePathForMetadata}: note: external calls are assumed not to re-enter the contract (--assume-no-reentrancy)"
     match Strata.Solidity.solidityToLaurelWithWarnings cmd (some sourcePathForMetadata)
-        (solSourceOpt.map (·.2)) exprTypes with
+        (solSourceOpt.map (·.2)) exprTypes assumeNoReentrancy with
     | .error e =>
       failRun sarifMode jsonMode pipelineJson filePath s!"Solidity to Laurel translation failed: {e}"
     | .ok (laurelProgram, translationWarnings) =>
@@ -464,5 +469,5 @@ def main (args : List String) : IO Unit := do
             IO.eprintln s!"error: --strict: {unproven} obligation(s) not proven, {warnings.length} annotation(s) or function(s) not verified"
             IO.Process.exit 1
   | _ =>
-    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json] [--strict]"
+    IO.eprintln "Usage: strataSolidity <file.sol | file.solidity.st.ion> [--verbose] [--sarif] [--json] [--strict] [--assume-no-reentrancy]"
     IO.Process.exit 1

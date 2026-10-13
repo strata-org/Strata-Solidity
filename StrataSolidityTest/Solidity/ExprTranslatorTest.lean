@@ -50,4 +50,28 @@ private def summary? (payload : String) : Option (List String × Bool × Bool ×
 #guard summary? "{\"statements\":[]}" == none
 #guard summary? "\"sstore(0, 1)\"" == none
 
+/-! ## Which calls run code outside the contract -/
+
+#guard functionTypeAttributes "function (address) view external returns (uint256)" == ["view", "external"]
+#guard functionTypeAttributes "function () payable external" == ["payable", "external"]
+#guard functionTypeAttributes "function (bytes memory) payable returns (bool,bytes memory)" == ["payable"]
+-- A function-typed parameter's attributes are not the function's.
+#guard functionTypeAttributes "function (function (uint256) external returns (uint256)) pure" == ["pure"]
+#guard functionTypeAttributes "uint256" == []
+
+private def kind? (ts : String) (member : Option String := none) : Option String :=
+  (externalCallKind? (some ts) member).map fun
+    | .static => "static" | .call => "call" | .delegate => "delegate"
+
+#guard kind? "function (address) view external returns (uint256)" == some "static"
+#guard kind? "function (address,uint256) external returns (bool)" == some "call"
+#guard kind? "function (bytes memory) payable returns (bool,bytes memory)" "call" == some "call"
+#guard kind? "function (bytes memory) returns (bool,bytes memory)" "delegatecall" == some "delegate"
+#guard kind? "function (bytes memory) view returns (bool,bytes memory)" "staticcall" == some "static"
+-- Internal and library functions, `send` and `transfer`.
+#guard kind? "function (uint256) pure returns (uint256)" == none
+#guard kind? "function (uint256) returns (uint256)" "extm" == none
+#guard kind? "function (uint256) returns (bool)" "send" == none
+#guard kind? "function (uint256)" "transfer" == none
+
 end Strata.Solidity.ExprTranslator.Tests
