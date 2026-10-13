@@ -118,4 +118,8 @@ Storage references to struct fields through mappings (`Voter storage sender = vo
 
 Mapping storage references (`mapping(...) storage ref = stateVar`) are not supported.
 
+A storage reference to a struct state variable (`Info storage d = data;`)
+can be read (its fields' values are then unknown), but writing through it
+(`d.value = 5`) is rejected: the write would not reach the storage.
+
 Direct state variable access without storage references works fully.

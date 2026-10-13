@@ -107,6 +107,16 @@ def collectIndexChain (n : Solidity.node SourceRange)
     some (go baseNode (idx :: []))
   | _ => none
 
+/-- The storage reference (`Info storage d = data;`) that an assignment
+    target such as `d.value` or `d.items[i]` writes through, if any. Writes
+    through a storage reference are not modelled: its fields are read into
+    locals, and writing those does not write the storage. -/
+def storageRefTarget? (ctx : TransCtx) : Solidity.node SourceRange → Option String
+  | .Identifier _ a => if ctx.storageAliases.any (·.1 == a.val) then some a.val else none
+  | .MemberAccess _ e _ => storageRefTarget? ctx e
+  | .IndexAccess _ e _ => storageRefTarget? ctx e
+  | _ => none
+
 /-- Build a nested map update expression.
     For a single index: `update(root, k, val)`
     For nested indices `[k1, k2]`: `update(root, k1, update(select(root, k1), k2, val))` -/
@@ -149,6 +159,50 @@ def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List 
     (named.map fun (x, e) => declareLocal x e,
      named.map fun (x, _) => mkStmtExprMd (mkIdentifier x))
 
+/-- The variables a translated expression may write (`x` for a local or
+    mapping, `#f` for the field `f` of the contract, `#*` for any field: a
+    call of a mutating internal function, which takes `self`), and those it
+    reads. Translator temporaries (`__…`) are not counted. -/
+def writesAndReads (ctx : TransCtx) (e : StmtExprMd) : List String × List String :=
+  let target : Variable → List String
+    | .Local id => if id.text.startsWith "__" then [] else [id.text]
+    | .Field _ f => [s!"#{f.text}"]
+    | _ => []
+  foldStmtExpr (fun n (w, r) => match n.val with
+    | .Assign targets _ => (w ++ targets.flatMap (target ·.val), r)
+    | .IncrDecr _ _ t => (w ++ target t.val, r)
+    | .StaticCall callee args _ =>
+      let isSelf (a : StmtExprMd) : Bool := match a.val with
+        | .Var (.Local id) => id.text == "self"
+        | _ => false
+      let readOnly := match ctx.functionSigs.lookup ((callee.text.drop (ctx.contractName.length + 1)).toString) with
+        | some sig => sig.isView || sig.isPure
+        | none => false
+      if args.any isSelf && !readOnly then (w ++ ["#*"], r) else (w, r)
+    | .Var v => (w, r ++ target v)
+    | _ => (w, r)) ([], []) e
+
+/-- Whether one operand writes something the other may read (`f() + x`
+    where `f` writes `x`, `++a + a`). -/
+def operandsConflict (ctx : TransCtx) (l r : StmtExprMd) : Bool :=
+  let (wl, rl) := writesAndReads ctx l
+  let (wr, rr) := writesAndReads ctx r
+  let hits (ws rs : List String) := ws.any fun w =>
+    rs.contains w || (w == "#*" && rs.any (·.startsWith "#")) || (w.startsWith "#" && rs.contains "#*")
+  hits wl rr || hits wr rl
+
+/-- Where an operation is not modelled (an event, an Ether transfer, a
+    low-level call), its arguments still run: those with effects (`x++`, an
+    internal call), each bound to a local `<pre>_<i>`, in order, before
+    `value` (the operation's result, if any). -/
+def withArgumentEffects (pre : String) (args : List StmtExprMd) (value : Option StmtExprMd)
+    : StmtExprMd :=
+  let effects := args.zipIdx.filterMap fun (e, i) =>
+    if hasEffects e then some (declareLocal s!"{pre}_{i}" e) else none
+  match effects, value with
+  | [], some v => v
+  | _, _ => mkStmtExprMd (.Block (effects ++ value.toList) none)
+
 /-- An internal call `f(args)` to a function with signature `sig`.
 
     The arguments follow the callee's input order exactly (see
@@ -167,8 +221,13 @@ def bindInOrder (pre : String) (es : List StmtExprMd) : List StmtExprMd × List 
     about stale mappings after the call. -/
 def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) (sig : FnSig)
     (argNodes : List (Solidity.node SourceRange)) (args : List StmtExprMd)
+    (dests : Option (List (AstNode Variable)) := none)
     : Except TranslationError StmtExprMd := do
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
+  -- The order in which solc evaluates arguments is unspecified too.
+  for (a, i) in args.zipIdx do
+    if (args.drop (i + 1)).any (operandsConflict ctx a ·) then
+      throw (.unsupported s!"the arguments of `{callee}`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
   -- User arguments, each memory-array argument followed by its length.
   let mut userArgs : List StmtExprMd := []
   for ((node, arg), i) in (argNodes.zip args).zipIdx do
@@ -181,7 +240,41 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
         else throw (.unsupported
           s!"array argument `{nameAnn.val}` to `{callee}` has no known length")
       | _ => throw (.unsupported s!"array argument to `{callee}` must be a variable")
-  if sig.isPure then return mkStmtExprMd (mkCall callee userArgs)
+  -- A memory array of the caller is passed by reference: the callee may
+  -- write its elements, which are unknown afterwards.
+  let memArgs := argNodes.zipIdx.filterMap fun (node, i) =>
+    if !sig.memArrayParams.getD i false then none else match node with
+      | .Identifier _ a => if ctx.memoryArrayParams.contains a.val then some a.val else none
+      | _ => none
+  let havocs := memArgs.map fun a => mkStmtExprMd (.Assign [toAssignTarget (ident a)]
+    (mkStmtExprMd (.Hole (deterministic := false))))
+  -- The call's statements, then the havocs, then its value (if any).
+  let finish (stmts : List StmtExprMd) (value : Option StmtExprMd) : StmtExprMd :=
+    match stmts, havocs, value with
+    | [], [], some v => v
+    | [s], [], none => s
+    | _, _, _ => mkStmtExprMd (.Block (stmts ++ havocs ++ value.toList) none)
+  -- A call used as a value, with the havocs after it.
+  let asValue (call : StmtExprMd) : StmtExprMd :=
+    if havocs.isEmpty then call
+    else if sig.returnTypes.isEmpty then finish [call] none
+    else
+      let tmp := s!"__ret{sr.start.byteIdx}_0"
+      finish [declareLocal tmp call] (some (ident tmp))
+  -- `(a, b) = f(…)`: the declared return values go to `dests`, and a
+  -- mutating callee's state outputs to the caller's state variables.
+  let assignTo (ds : List (AstNode Variable)) (call : StmtExprMd) (stateVars : List String) :
+      Except TranslationError StmtExprMd := do
+    if ds.length != sig.returnTypes.length then
+      throw (.typeError s!"`{callee}` returns {sig.returnTypes.length} value(s), not {ds.length}")
+    let stateTargets : List (AstNode Variable) :=
+      stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
+    return finish [withSourceRange ctx sr (mkStmtExprMd (.Assign (ds ++ stateTargets) call))] none
+  if sig.isPure then
+    let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee userArgs))
+    match dests with
+    | some ds => return ← assignTo ds call []
+    | none => return asValue call
   let scalars := ctx.stateVarNames.filter (!ctx.mappingStateVars.contains ·)
   let mut implicitArgs : List StmtExprMd := []
   if !scalars.isEmpty then
@@ -194,7 +287,9 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
     if ctx.arrayStateVars.contains m then [m, s!"{m}_length"] else [m]
   implicitArgs := implicitArgs ++ stateVars.map ident
   let call := withSourceRange ctx sr (mkStmtExprMd (mkCall callee (implicitArgs ++ userArgs)))
-  if sig.isView || stateVars.isEmpty then return call
+  if let some ds := dests then
+    return ← assignTo ds call (if sig.isView then [] else stateVars)
+  if sig.isView || stateVars.isEmpty then return asValue call
   -- Mutating callee: bind the declared returns to fresh locals and the
   -- state outputs to the caller's state variables.
   let temps := sig.returnTypes.zipIdx.map fun (ty, i) => (s!"__ret{sr.start.byteIdx}_{i}", ty)
@@ -203,8 +298,8 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
     stateVars.map fun n => { val := .Local (mkIdent n), source := .unknown }
   let assign := withSourceRange ctx sr (mkStmtExprMd (.Assign targets call))
   match temps with
-  | [(n, _)] => return mkStmtExprMd (.Block [assign, ident n] none)
-  | _ => return mkStmtExprMd (.Block [assign] none)
+  | [(n, _)] => return finish [assign] (some (ident n))
+  | _ => return finish [assign] none
 
 /-- What an inline-assembly block may do, read from solc's Yul AST (the
     `InlineAssembly` payload). -/
@@ -401,6 +496,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .BinaryOperation _ left right opAnn => do
     let l ← translateExpr ctx left
     let r ← translateExpr ctx right
+    -- solc's code generators evaluate the operands of a binary operator in
+    -- different orders, so when one writes what the other reads the result
+    -- depends on the compiler: rejected. (`&&` and `||` are ordered.)
+    if opAnn.val != "&&" && opAnn.val != "||" && operandsConflict ctx l r then
+      throw (.unsupported s!"the operands of `{opAnn.val}`: one changes a variable the other reads, and solc's evaluation order of operands differs between its code generators")
     let op ← match opAnn.val with
       | "+" => .ok Operation.Add
       | "-" => .ok Operation.Sub
@@ -426,6 +526,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     return mkStmtExprMd (mkPrimOp op [l, r])
 
   | .UnaryOperation _ sub opAnn prefixAnn => do
+    if ["++", "--", "delete"].contains opAnn.val then
+      if let some d := storageRefTarget? ctx sub then
+        throw (.unsupported s!"writing through the storage reference `{d}`")
     -- Handle delete before translating sub, since mapping delete needs raw AST
     if opAnn.val == "delete" then
       let zero := mkStmtExprMd (.LiteralInt 0)
@@ -481,7 +584,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   -- (`new uint[](n)`) yield a fresh unconstrained value. Model as a Hole.
   -- Must precede the general FunctionCall arm (matched top-to-bottom).
   | .FunctionCall _ (.NewExpression _ _) _ _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
     -- Check the FunctionCall kind
@@ -555,8 +658,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         -- `envProcedures`).
         return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
-        -- selfdestruct(addr) → deprecated, model as no-op
-        return mkStmtExprMd .Hole
+        -- selfdestruct(addr) ends the execution: an early return, with
+        -- unknown return values (no data is returned)
+        let fresh := mkStmtExprMd (.Hole (deterministic := false))
+        return mkStmtExprMd (.Block (ctx.returnNames.map (fun n =>
+          mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier n))] fresh)) ++
+          [mkStmtExprMd (.Return none)]) none)
       | funcName =>
         -- Internal call: prefix with contract name to match procedure declaration
         let qualifiedName := s!"{ctx.contractName}_{funcName}"
@@ -621,19 +728,22 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | _ => throw (.typeError "push() expects at most one argument")
       else if memberAnn.val == "transfer" then do
         let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        let pre := s!"__arg{sr.start.byteIdx}"
         -- payable(addr).transfer(amount) → no-op for verification; a
         -- contract's `transfer(to, amount)` (ERC-20) → unknown result
-        if args.length == 1 then return mkStmtExprMd (.Block [] none)
-        else return mkStmtExprMd .Hole
+        if args.length == 1 then return withArgumentEffects pre args none
+        else return withArgumentEffects pre args (some (mkStmtExprMd (.Hole (deterministic := false))))
       else if memberAnn.val == "send" then do
         -- payable(addr).send(amount) → a fresh bool: whether it succeeded
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd (mkCall "send_result" [])
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
+          (some (mkStmtExprMd (mkCall "send_result" [])))
       else if memberAnn.val == "call" || memberAnn.val == "delegatecall"
               || memberAnn.val == "staticcall" then do
         -- addr.call/delegatecall/staticcall → nondeterministic (modeled as Hole)
-        let _args ← argsSeq.val.toList.mapM (translateExpr ctx)
-        return mkStmtExprMd .Hole
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        return withArgumentEffects s!"__arg{sr.start.byteIdx}" args
+          (some (mkStmtExprMd (.Hole (deterministic := false))))
       else do
         -- abi.encode*, abi.decode → uninterpreted StaticCall "abi_<method>"
         match baseNode with
@@ -654,7 +764,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | [arg] => return arg  -- identity cast for Phase 1 (all integers are TInt)
       | _ => throw (.typeError s!"Type cast {typeNameAnn.val}() expects exactly one argument")
     | _ =>
-      return mkStmtExprMd .Hole  -- unsupported complex call target
+      throw (.unsupported "a call of this expression")
 
   | .MemberAccess _ exprNode memberAnn => do
     -- msg.sender → Identifier "msg_sender" (implicit parameter)
@@ -775,6 +885,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       throw (.unsupported "tuple expressions with several components are not supported here")
 
   | .Assignment _ lhs rhs opAnn => do
+    if let some d := storageRefTarget? ctx lhs then
+      throw (.unsupported s!"writing through the storage reference `{d}`")
     let rhsExpr ← translateExpr ctx rhs
     -- Solidity evaluates the right-hand side first, then the indices, then
     -- reads the target (for `op=`). If any of them has effects (a call
@@ -815,7 +927,30 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       if binds.isEmpty then return assign
       return mkStmtExprMd (.Block (binds ++ [assign]) none)
     | none =>
+    -- A memory array is a reference: `a = b` would make `a` and `b` the
+    -- same array, which the translation (arrays as values) cannot express.
+    let isMemArray (n : Solidity.node SourceRange) : Bool := match n with
+      | .Identifier _ a => ctx.memoryArrayParams.contains a.val ||
+          (ctx.memoryVars.lookup a.val).any (·.val matches .TMap ..)
+      | _ => false
+    if opAnn.val == "=" && isMemArray lhs && isMemArray rhs then
+      throw (.unsupported "assigning a memory array to another (they would alias)")
     let lhsExpr ← translateExpr ctx lhs
+    -- Assigning a whole array assigns its length too: the other array's, or
+    -- an unknown one.
+    let lengthOf (n : Solidity.node SourceRange) : Option String := match n with
+      | .Identifier _ a =>
+        if ctx.arrayStateVars.contains a.val || ctx.memoryArrayParams.contains a.val then
+          some s!"{a.val}_length" else none
+      | _ => none
+    let lengthAssign : List StmtExprMd := if opAnn.val != "=" then [] else
+      match lengthOf lhs with
+      | some lhsLen =>
+        [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier lhsLen))]
+          (match lengthOf rhs with
+            | some rhsLen => mkStmtExprMd (mkIdentifier rhsLen)
+            | none => mkStmtExprMd (.Hole (deterministic := false))))]
+      | none => []
     -- `x op= f()`: the target is read after the right-hand side runs.
     let (binds, rhsExpr) := if opAnn.val == "=" || !hasEffects rhsExpr then ([], rhsExpr) else
       ([declareLocal rhsVar rhsExpr], mkStmtExprMd (mkIdentifier rhsVar))
@@ -833,8 +968,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [lhsExpr, rhsExpr]))
       | o => throw (.unsupported s!"Assignment operator: {o}")
     let assign := mkStmtExprMd (.Assign [toAssignTarget lhsExpr] rhs')
-    if binds.isEmpty then return assign
-    return mkStmtExprMd (.Block (binds ++ [assign]) none)
+    if binds.isEmpty && lengthAssign.isEmpty then return assign
+    return mkStmtExprMd (.Block (binds ++ [assign] ++ lengthAssign) none)
 
   -- Call with {value:, gas:} options: the options don't affect verification
   -- semantics (ETH transfer is external/opaque). Translate the wrapped call.
@@ -842,7 +977,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   -- A bare NewExpression operand (no call args) — also opaque.
   | .NewExpression _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   -- Static array literal `[a, b, c]`. A faithful model requires the memory-
   -- array length-tracking representation the translator uses for other arrays;
@@ -854,7 +989,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
   -- Calldata/bytes slice `x[start:end]`. Opaque slice — fresh unconstrained
   -- value (sound over-approximation).
   | .IndexRangeAccess _ _ _ _ =>
-    return mkStmtExprMd .Hole
+    return mkStmtExprMd (.Hole (deterministic := false))
 
   | _ => throw (.unsupported s!"Expression node type")
 
@@ -913,6 +1048,13 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let rest' ← translateBlockStmts ctx' rest
       return fieldDecls ++ rest'
     | none =>
+      -- A tuple declaration `(uint a, uint b) = f(…);` declares its
+      -- variables in this block (not a nested one), for the statements after.
+      if let .VariableDeclarationStatement sr declsSeq initOpt := stmt then
+        if declsSeq.val.size > 1 then
+          let (stmts, names) ← translateTupleDecl ctx sr declsSeq.val.toList initOpt
+          let rest' ← translateBlockStmts { ctx with localNames := ctx.localNames ++ names } rest
+          return stmts ++ rest'
       -- Track local variable declarations for shadowing
       let ctx' := match stmt with
         | .VariableDeclarationStatement _ declsSeq _ =>
@@ -928,6 +1070,98 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let s ← translateStmt ctx' stmt
       let rest' ← translateBlockStmts ctx' rest
       return s :: rest'
+
+/-- A tuple declaration `(T1 a, , T3 c) = init;`: the statements that
+    declare and initialize its variables, and their names. The initializer:
+    - a call of an internal function binds its return values to the
+      variables (a skipped slot to a temporary), and a mutating callee's
+      state outputs to the caller's state, as `translateInternalCall`;
+    - a tuple `(e1, e2, e3)` initializes each variable with its component,
+      evaluated in order;
+    - anything else (an external call, `abi.decode`) gives the variables
+      unknown values; an initializer with effects there is rejected rather
+      than dropped. -/
+partial def translateTupleDecl (ctx : TransCtx) (sr : SourceRange)
+    (decls : List (Solidity.opt_node SourceRange)) (initOpt : Solidity.opt_node SourceRange)
+    : Except TranslationError (List StmtExprMd × List String) := do
+  let slots : List (Option (String × HighTypeMd)) := decls.map fun
+    | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+      let solTy := match typeNameOpt with
+        | .some_type_name _ tn => translateTypeNode ctx tn
+        | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+      some (nameAnn.val, solTy.highType)
+    | _ => none
+  let names := slots.filterMap (·.map (·.1))
+  let fresh := mkStmtExprMd (.Hole (deterministic := false))
+  match initOpt with
+  | .some_node _ (.FunctionCall csr (.Identifier _ fnAnn) argsSeq kindAnn namesSeq) =>
+    match kindAnn.val, ctx.functionSigs.lookup fnAnn.val with
+    | "functionCall", some sig =>
+      let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+      let argNames := namesSeq.val.toList.map (·.val)
+      let (argNodes, args) ← if argNames.isEmpty then pure (argsSeq.val.toList, args) else do
+        let named := argNames.zip (argsSeq.val.toList.zip args)
+        let ordered ← sig.paramNames.mapM fun p => match named.lookup p with
+          | some a => pure a
+          | none => throw (.typeError s!"call to `{fnAnn.val}` has no argument named `{p}`")
+        pure (ordered.map (·.1), ordered.map (·.2))
+      let dests : List (AstNode Variable) := (slots.zip sig.returnTypes).zipIdx.map fun ((slot, retTy), i) =>
+        match slot with
+        | some (n, ty) => { val := .Declare { name := n, type := some ty }, source := .unknown }
+        | none => { val := .Declare { name := s!"__ret{csr.start.byteIdx}_{i}", type := some retTy },
+                    source := .unknown }
+      if slots.length != sig.returnTypes.length then
+        throw (.typeError s!"`{fnAnn.val}` returns {sig.returnTypes.length} value(s), not {slots.length}")
+      let assign ← translateInternalCall ctx csr s!"{ctx.contractName}_{fnAnn.val}" sig argNodes args
+        (dests := some dests)
+      -- Spliced, so that the declarations are in the enclosing block.
+      return (match assign.val with
+        | .Block stmts none => stmts
+        | _ => [assign], names)
+    | _, _ => unknownInit
+  | .some_node _ (.TupleExpression _ compsSeq) =>
+    let comps := compsSeq.val.toList
+    if comps.length != slots.length then
+      throw (.typeError s!"tuple of {comps.length} component(s) for {slots.length} variable(s)")
+    let mut stmts : List StmtExprMd := []
+    for (slot, comp, i) in (slots.zip comps).zipIdx.map (fun ((s, c), i) => (s, c, i)) do
+      let e ← translateExpr ctx comp
+      match slot with
+      | some (n, ty) => stmts := stmts ++ [mkStmtExprMd (mkLocalVar n ty (some e))]
+      | none => if hasEffects e then stmts := stmts ++ [declareLocal s!"__ret{sr.start.byteIdx}_{i}" e]
+    return (stmts, names)
+  | .some_node _ _ => unknownInit
+  | .missing_node _ =>
+    let decls := slots.filterMap (·.map fun (n, ty) =>
+      mkStmtExprMd (mkLocalVar n ty (zeroValue? ty <|> some fresh)))
+    return (decls, names)
+where
+  unknownInit : Except TranslationError (List StmtExprMd × List String) := do
+    match initOpt with
+    | .some_node _ init =>
+      let e ← translateExpr ctx init
+      -- The initializer's effects (a low-level call's arguments) run first;
+      -- its value is not modelled.
+      let unsupported : TranslationError :=
+        .unsupported "a tuple declaration whose initializer has effects (other than an internal call)"
+      let endsInHole (stmts : List StmtExprMd) : Bool :=
+        match stmts.getLast? with
+        | some last => (last.val matches .Hole ..)
+        | none => false
+      let effects ← match e.val with
+        | .Hole .. => pure []
+        | .Block stmts none => if endsInHole stmts then pure stmts.dropLast else throw unsupported
+        | _ => if hasEffects e then throw unsupported else pure []
+      let slots := decls.filterMap fun
+        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
+          some (nameAnn.val, match typeNameOpt with
+            | .some_type_name _ tn => (translateTypeNode ctx tn).highType
+            | .missing_type_name _ => mkHighTypeMd .TInt)
+        | _ => none
+      let decls := slots.map fun (n, ty) =>
+        mkStmtExprMd (mkLocalVar n ty (some (mkStmtExprMd (.Hole (deterministic := false)))))
+      return (effects ++ decls, slots.map (·.1))
+    | .missing_node _ => return ([], [])
 
 /-- Get loop invariants from context and translate the loop body.
     Returns (invariantExprs, translatedBody). -/
@@ -1080,7 +1314,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
               let solTy := match pTypeOpt with
                 | .some_type_name _ tn => translateTypeNode ctx tn
                 | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType (some (mkStmtExprMd .Hole)))]
+              prelude := prelude ++ [mkStmtExprMd (mkLocalVar pName.val solTy.highType
+                (some (mkStmtExprMd (.Hole (deterministic := false)))))]
               -- The returned value is a value of its Solidity type.
               if let some c := mkRangeCond solTy.solName (mkStmtExprMd (mkIdentifier pName.val)) then
                 prelude := prelude ++ [mkStmtExprMd (mkAssume c)]
@@ -1091,7 +1326,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | _ => pure ()
     -- Nondeterministic selection: nest each branch under an `if *` (Hole cond).
     let nondet := branches.foldr (fun br acc =>
-      mkStmtExprMd (.IfThenElse (mkStmtExprMd .Hole) br (some acc)))
+      mkStmtExprMd (.IfThenElse (mkStmtExprMd (.Hole (deterministic := false))) br (some acc)))
       (mkStmtExprMd (.Block [] none))
     return nondet
 
@@ -1149,6 +1384,13 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let solTy := match typeNameOpt with
           | .some_type_name _ tn => translateTypeNode ctx tn
           | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
+        -- A memory array is a reference: `T[] memory a = b` would make `a`
+        -- and `b` the same array (see `.Assignment`).
+        if storageLocAnn.val == "memory" then
+          if let .some_node _ (.Identifier _ b) := initOpt then
+            if ctx.memoryArrayParams.contains b.val ||
+                (ctx.memoryVars.lookup b.val).any (·.val matches .TMap ..) then
+              throw (.unsupported s!"declaring `{nameAnn.val}` as the memory array `{b.val}` (they would alias)")
         let initVal ← match initOpt with
           | .some_node _ initNode => do
             let e ← translateExpr ctx initNode
@@ -1169,28 +1411,18 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | .missing_node _ =>
         throw (.unsupported "Missing declaration in VariableDeclarationStatement")
     | _ =>
-      -- Tuple/multi-variable declarations `(a, b) = f()`: declare each
-      -- variable with a havoc'd (nondeterministic) initial value. This is
-      -- the sound over-approximation — the values are unknown but the
-      -- names are in scope for subsequent statements.
-      -- (Previously this emitted assume(false), which silently made every
-      -- POST-declaration obligation vacuous — the #26 anti-pattern — and
-      -- left the names undeclared, causing resolution failures.)
-      let mut declStmts : List StmtExprMd := []
-      for declOpt in decls do
-        match declOpt with
-        | .some_node _ (.VariableDeclaration _ nameAnn typeNameOpt _ _ _ _ _ _ _ _) =>
-          let solTy := match typeNameOpt with
-            | .some_type_name _ tn => translateTypeNode ctx tn
-            | .missing_type_name _ => { highType := mkHighTypeMd .TInt, solName := "uint256" }
-          declStmts := declStmts ++
-            [mkStmtExprMd (mkLocalVar nameAnn.val solTy.highType (some (mkStmtExprMd .Hole)))]
-        | _ => pure ()  -- skipped tuple slot `(, b) = ...`
-      return mkStmtExprMd (.Block declStmts none)
+      -- A tuple declaration outside a block (translateBlockStmts splices
+      -- the ones in a block, so that later statements see the variables).
+      let (stmts, _) ← translateTupleDecl ctx declSr decls initOpt
+      return mkStmtExprMd (.Block stmts none)
 
   | .Assignment _ _ _ _ => translateExpr ctx n
 
   -- Events: emit is a no-op for verification (no state change).
+  -- Its arguments still run (`emit Bumped(nonce++)`).
+  | .EmitStatement sr (.FunctionCall _ _ argsSeq _ _) => do
+    let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+    return withArgumentEffects s!"__arg{sr.start.byteIdx}" args none
   | .EmitStatement _ _ => return mkStmtExprMd (.Block [] none)
 
   -- Revert: unconditional abort — assume(false) makes the path unreachable,

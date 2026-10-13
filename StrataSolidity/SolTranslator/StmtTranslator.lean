@@ -159,7 +159,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             let lenName := if isView then s!"{field.name.text}_length"
                            else s!"{field.name.text}_length_in"
             inputs := inputs ++ [{ name := lenName, type := mkHighTypeMd .TInt }]
-            preconditions := preconditions ++ [mkNonNegPrecond lenName]
+            typeRanges := typeRanges ++ [(mkNonNegPrecond lenName, s!"length of {field.name.text} is non-negative")]
             -- A fixed-size array always has its declared length.
             if let some n := ctx.fixedArrayLengths.lookup field.name.text then
               typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
@@ -209,7 +209,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             let lenName := s!"{baseName}_length"
             inputs := inputs ++ [{ name := s!"{lenName}_param", type := mkHighTypeMd .TInt }]
             userParamInfo := userParamInfo ++ [(lenName, mkHighTypeMd .TInt)]
-            preconditions := preconditions ++ [mkNonNegPrecond s!"{lenName}_param"]
+            typeRanges := typeRanges ++ [(mkNonNegPrecond s!"{lenName}_param", s!"length of {baseName} is non-negative")]
             if let some n := solTy.arrayLength then
               typeRanges := typeRanges ++ [(mkStmtExprMd (mkPrimOp .Eq
                 [mkStmtExprMd (mkIdentifier s!"{lenName}_param"), mkStmtExprMd (.LiteralInt n)]),
@@ -538,13 +538,16 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         pure (specPreExprs, allPosts, Body.Opaque allPostsConds (some bodyExpr)
           [{ targets := modifiesList }], contractInvariants)
       | .missing_node _ =>
-        -- No body: use NatSpec invariants (rewrite state var refs)
-        let contractInvariants := if !checksInvariants then [] else
-          resolveInvariants ctx isConstructor ctx.contractInvariantNatspec
-        let invariantsAsConds : List Condition :=
-          contractInvariants.map fun p => { condition := p, summary := none }
-        pure ([], contractInvariants, if contractInvariants.isEmpty then .Abstract []
-          else .Abstract invariantsAsConds, contractInvariants)
+        -- No body (a virtual function without an implementation here, or
+        -- an interface's): an implementation may do anything a function of
+        -- its kind may. So no postconditions (its annotations are reported
+        -- as not checked), and a mutating one may change all of the
+        -- contract's state: its fields (`modifies self`) and its mapping
+        -- and array outputs, which are unconstrained.
+        let frame := if !isPure && !isView && hasNonMappingState && !isConstructor then
+            [mkStmtExprMd (mkIdentifier "self")]
+          else []
+        pure ([], [], .Opaque [] none [{ targets := frame }], [])
 
     -- Contract invariants as preconditions (see `isEntryPoint`). They
     -- reference the input state: mapping names are rewritten to `_in` form.
