@@ -12,6 +12,7 @@ import Strata.Languages.Core.Verifier
 import StrataSolidity.SolidityDialect
 import StrataSolidity.ReadSolidity
 import Strata.DL.Imperative.MetaData
+import Std.Data.HashMap
 
 /-!
 # Solidity AST → Laurel Translation
@@ -176,11 +177,16 @@ structure TransCtx where
   /-- Source text of each contract invariant, parallel to
       `contractInvariantNatspec`; used to name its obligations. -/
   contractInvariantTexts : List String := []
-  /-- Modifier definitions: maps modifier name to its parameter names and
-      the raw require statement DDM nodes extracted from the modifier body
-      (pre-`_;` only). Translated in each function's context for correct
-      state var resolution, with the parameters bound to the arguments. -/
-  modifierDefs : List (String × List String × List (Solidity.node SourceRange)) := []
+  /-- Modifier definitions: name, parameters (name and type) and body
+      statements. A modifier is inlined into each function using it (see
+      `translateFunction`). -/
+  modifierDefs : List (String × List (String × HighTypeMd) × List (Solidity.node SourceRange)) := []
+  /-- The label of the block a `return` exits, when not the whole
+      procedure: in a function body under modifiers (the code after `_`
+      still runs) and in a modifier body. -/
+  returnLabel : Option String := none
+  /-- While translating a modifier body: the code its `_` stands for. -/
+  placeholder : Option StmtExprMd := none
   /-- Solidity type name of each state variable (e.g. `uint8`, `int256`). -/
   fieldSolTypes : List (String × String) := []
   /-- Initializers of (non-constant) state variables, in declaration order:
@@ -196,6 +202,14 @@ structure TransCtx where
       this holds the declared return's output-parameter name, and the
       translator desugars `return e` into `<name> := e; return`. -/
   valuedReturnTarget : Option String := none
+  /-- solc's type of each expression (see `SolcAst.ExprTypes`); empty when
+      the AST did not come from solc's JSON (the Ion frontend). -/
+  exprTypes : Std.HashMap (Nat × Nat × String) String := {}
+
+/-- solc's type of the expression of kind `kind` (`BinaryOperation`, …)
+    at `sr`, if known. -/
+def TransCtx.typeAt? (ctx : TransCtx) (sr : SourceRange) (kind : String) : Option String :=
+  ctx.exprTypes.get? (sr.start.byteIdx, sr.stop.byteIdx, kind)
 
 def mkHighTypeMd (ty : HighType) : HighTypeMd :=
   { val := ty, source := .unknown }

@@ -816,17 +816,55 @@ partial def mangleNames : Json → Json
   | .arr xs => .arr (xs.map mangleNames)
   | j => j
 
+/-- solc's type of the expressions of a file: `(start, stop, nodeType)` of
+    a node (its source byte range and kind) to its `typeDescriptions`
+    `typeString` (`uint8`, `int_const 5`, `bytes4`, …). A `BinaryOperation`
+    also has the type its operands are converted to (`commonType`), under
+    the kind `BinaryOperation.common`. -/
+abbrev ExprTypes := Std.HashMap (Nat × Nat × String) String
+
+/-- The `ExprTypes` of a solc JSON AST. -/
+partial def collectExprTypes (j : Json) (acc : ExprTypes := {}) : ExprTypes :=
+  match j with
+  | .obj kvs =>
+    let acc := match j.getObjVal? "nodeType", j.getObjVal? "src" with
+      | .ok (.str nt), .ok _ =>
+        let sr := parseSrc j
+        let key (kind : String) := (sr.start.byteIdx, sr.stop.byteIdx, kind)
+        let typeOf (field : String) : Option String :=
+          match j.getObjVal? field with
+          | .ok td => match td.getObjVal? "typeString" with
+            | .ok (.str ts) => some ts
+            | _ => none
+          | _ => none
+        let acc := match typeOf "typeDescriptions" with
+          | some ts => acc.insert (key nt) ts
+          | none => acc
+        match nt, typeOf "commonType" with
+        | "BinaryOperation", some ts => acc.insert (key "BinaryOperation.common") ts
+        | _, _ => acc
+      | _, _ => acc
+    kvs.toList.foldl (fun acc (_, v) => collectExprTypes v acc) acc
+  | .arr xs => xs.foldl (fun acc x => collectExprTypes x acc) acc
+  | _ => acc
+
 /-- Run solc on `solPath`, then walk the resulting JSON AST into a typed
     `Solidity.Command` — the same shape the Ion path produces, ready for
-    `solidityToLaurel`. -/
-def parseFile (solPath : System.FilePath)
-    : IO (Except String (Strata.Solidity.Command SourceRange)) := do
+    `solidityToLaurel` — with the types of its expressions. -/
+def parseFileWithTypes (solPath : System.FilePath)
+    : IO (Except String (Strata.Solidity.Command SourceRange × ExprTypes)) := do
   match ← Strata.Solidity.Solc.parseFile solPath with
   | .error e => return .error (toString e)
   | .ok astJson =>
-    match convertSourceUnit (mangleNames astJson) with
-    | .ok cmd => return .ok cmd
+    let astJson := mangleNames astJson
+    match convertSourceUnit astJson with
+    | .ok cmd => return .ok (cmd, collectExprTypes astJson)
     | .error e => return .error (toString e)
+
+/-- `parseFileWithTypes` without the types. -/
+def parseFile (solPath : System.FilePath)
+    : IO (Except String (Strata.Solidity.Command SourceRange)) := do
+  return (← parseFileWithTypes solPath).map (·.1)
 
 end Strata.Solidity.SolcAst
 end

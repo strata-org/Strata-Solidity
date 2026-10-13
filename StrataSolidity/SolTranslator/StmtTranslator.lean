@@ -15,6 +15,23 @@ open Laurel
 
 /-! ## Function Translation -/
 
+/-- `e` with the local variables in `renames` renamed, where they are
+    declared and where they are used. -/
+def renameLocals (renames : List (String × String)) (e : StmtExprMd) : StmtExprMd :=
+  let rn (id : Identifier) : Identifier := match renames.lookup id.text with
+    | some n => { id with text := n }
+    | none => id
+  let rnVar : Variable → Variable
+    | .Local id => .Local (rn id)
+    | .Declare p => .Declare { p with name := rn p.name }
+    | v => v
+  mapStmtExpr (fun n => match n.val with
+    | .Var v => { n with val := .Var (rnVar v) }
+    | .Assign targets value =>
+      { n with val := .Assign (targets.map fun t => { t with val := rnVar t.val }) value }
+    | .IncrDecr m o t => { n with val := .IncrDecr m o { t with val := rnVar t.val } }
+    | _ => n) e
+
 /-- Rewrite identifiers in a StmtExprMd: replace user parameter names with their
     `_param` suffixed versions for use in postconditions. Postconditions reference
     the original (immutable) input values, which are named `name_param` in Core. -/
@@ -343,11 +360,48 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           withSourceRangeDeep ctx r (withSourceRange ctx r e)
         -- Rewrite postcondition expressions: user parameter names → _param names
         let specPostExprs := specPostExprs.map (rewriteParamRefs userParamNames)
-        -- Translate body statements
+        -- Translate body statements. Modifiers are inlined, the first one
+        -- outermost: each runs its body with its `_` standing for the next
+        -- modifier, or for the function's body. Each part is a labelled
+        -- block that a `return` in it exits (the code after `_` still
+        -- runs), and a modifier's parameters and locals are renamed apart
+        -- (they are scoped to it; nor does it see the function's own).
+        let invocations := modifiersSeq.val.toList.filterMap fun
+          | .ModifierInvocation _ m argsSeq =>
+            (ctx.modifierDefs.lookup m.val).map fun d => (m.val, d, argsSeq.val.toList)
+          | _ => none
+        let partCtx (label : String) := if invocations.isEmpty then bodyCtx
+          else { bodyCtx with returnLabel := some label }
         let bodyStmts ← match bodyNode with
-          | .Block _ stmtsSeq => translateBlockStmts bodyCtx stmtsSeq.val.toList
-          | _ => pure [← translateStmt bodyCtx bodyNode]
-        let b := mkStmtExprMd (.Block bodyStmts none)
+          | .Block _ stmtsSeq => translateBlockStmts (partCtx "__body") stmtsSeq.val.toList
+          | _ => pure [← translateStmt (partCtx "__body") bodyNode]
+        let mut b := mkStmtExprMd (.Block bodyStmts (if invocations.isEmpty then none else some "__body"))
+        let ownNames := userParamInfo.map (·.1) ++ baseOutputs.map (·.name.text)
+        for ((m, (params, stmts), argNodes), j) in invocations.reverse.zipIdx do
+          let k := invocations.length - 1 - j
+          let args ← argNodes.mapM (translateExpr bodyCtx)
+          if args.length != params.length then
+            throw (.typeError s!"modifier `{m}` takes {params.length} argument(s), given {args.length}")
+          let marker := s!"__placeholder{k}"
+          let modCtx := { partCtx s!"__mod{k}" with
+            localNames := (bodyCtx.localNames.filter (!ownNames.contains ·)) ++ params.map (·.1),
+            placeholder := some (mkStmtExprMd (.Block [] (some marker))) }
+          let modStmts ← translateBlockStmts modCtx stmts
+          let declared := modStmts.flatMap (collectStmtExprList fun n => match n.val with
+            | .Assign ts _ => ts.filterMap fun t => match t.val with
+              | .Declare p => some p.name.text
+              | _ => none
+            | .Var (.Declare p) => [p.name.text]
+            | _ => [])
+          let renames := (params.map (·.1) ++ declared).eraseDups.map fun n => (n, s!"__m{k}_{n}")
+          let paramDecls := (params.zip args).map fun ((p, ty), a) =>
+            mkStmtExprMd (mkLocalVar s!"__m{k}_{p}" ty (some a))
+          let modBlock := mkStmtExprMd (.Block (paramDecls ++ modStmts.map (renameLocals renames))
+            (some s!"__mod{k}"))
+          let inner := b
+          b := mapStmtExpr (fun n => match n.val with
+            | .Block [] (some l) => if l == marker then inner else n
+            | _ => n) modBlock
         -- Build preamble: local copies of user params + mapping init assigns
         let mut preamble : List StmtExprMd := []
         -- 0. Return variables start at their type's zero value, as in
@@ -557,32 +611,6 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
       -- View functions read mappings through their plain names (no `_in`).
       else if isView then resolveInvariants ctx false ctx.contractInvariantNatspec
       else contractInvariants.map rewriteMapNamesToIn
-    -- Collect modifier preconditions: for each applied modifier, translate its
-    -- pre-_ require statement nodes in this function's context and add as assumes.
-    -- The modifier's parameters are bound to the invocation's arguments.
-    -- Like the function's own preconditions, these refer to its inputs
-    -- (`x_param`, `m_in`).
-    let mut modifierPres : List StmtExprMd := []
-    for modNode in modifiersSeq.val do
-      match modNode with
-      | .ModifierInvocation _ modNameAnn argsSeq =>
-        match ctx.modifierDefs.lookup modNameAnn.val with
-        | some (params, reqNodes) =>
-          let args ← argsSeq.val.toList.mapM (translateExpr bodyCtx)
-          if args.length != params.length then
-            throw (.typeError s!"modifier `{modNameAnn.val}` takes {params.length} argument(s), given {args.length}")
-          let modCtx := { bodyCtx with localNames := bodyCtx.localNames ++ params }
-          let binding := params.zip args
-          for reqNode in reqNodes do
-            let e ← translateExpr modCtx reqNode
-            let e := mapStmtExpr (fun n => match n.val with
-              | .Var (.Local id) => (binding.lookup id.text).getD n
-              | _ => n) e
-            let e := rewriteParamRefs (userParamInfo.map (·.1)) e
-            let e := if !isPure && !isView && !isConstructor then rewriteMapNamesToIn e else e
-            modifierPres := modifierPres ++ [e]
-        | none => pure ()
-      | _ => pure ()
     -- Sum axioms: for each mapping, assume the update axiom as a precondition.
     -- forall m, k, v :: sum_<name>(update(m, k, v)) == sum_<name>(m) - select(m, k) + v
     let sumAxioms := if isPure || isView then [] else
@@ -621,7 +649,7 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         applicableInvariantPres.zip (ctx.contractInvariantTexts.map (s!"invariant {·}"))
       else described "invariant" applicableInvariantPres
     let allPreconditions :=
-      described "precondition" preconditions ++ described "modifier precondition" modifierPres ++
+      described "precondition" preconditions ++
       specPres ++ invariantPres
     -- Deduplicate preconditions (non-negativity may overlap with invariants or user requires)
     let allPreconditions := allPreconditions.foldl (fun acc (p, d) =>
