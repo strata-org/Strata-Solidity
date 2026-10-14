@@ -78,9 +78,9 @@ The alternatives: Core is too low-level (no built-in heap model), C_Simp is a to
 
 See `LIMITATIONS.md` for the full supported/unsupported matrix. In summary:
 
-**Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys.
+**Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys, inheritance (inherited state, functions, modifiers and invariants, and `super`).
 
-**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, inheritance, assembly.
+**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, assembly, a base contract in another file.
 
 ## Why does Solidity need fewer simplification passes than Java?
 

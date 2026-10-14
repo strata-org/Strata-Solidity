@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10 — Inheritance
+
+- A contract is verified as the flattening of its bases and itself:
+  inherited state variables, functions, modifiers, structs, enums and
+  invariants resolve in the derived contract's own context. Before this,
+  `contract Child is Base` failed to translate (`Resolution failed: 'n' is
+  not defined`) as soon as it used anything Base declared; only interfaces
+  and abstract contracts, which declare no state, worked. Each contract of
+  the file is still verified on its own as well.
+- A base's `@custom:strata invariant` is checked at the entry points of
+  every contract that inherits it.
+- `super.f(...)` resolves along the C3 linearization, from the contract the
+  call is written in rather than the contract being verified: the same body
+  can mean different things in different contracts.
+- Base constructors run before the derived constructor's body, after the
+  state-variable initializers.
+- Reported rather than assumed: a base contract in another file contributes
+  no members, and a base constructor that takes arguments does not run (the
+  `Base(args)` that binds them is not modelled).
+- Overriding is resolved by function name, so overloaded functions are still
+  not distinguished.
+- Closes GAP-009 except for the two reported cases above; see
+  `.kiro/specs/strata-solidity-next/requirements.md` (REQ-NEXT-SOL-001..019).
+
 ## 2026-10 — Contract invariants
 
 - `@custom:strata invariant` is honored in the NatSpec above `contract`, not
