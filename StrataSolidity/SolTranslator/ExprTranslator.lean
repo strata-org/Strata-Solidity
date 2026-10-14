@@ -878,6 +878,21 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       (some (mkStmtExprMd (.Hole (deterministic := false))))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
+    -- `super.f(…)` runs the implementation of `f` inherited from the
+    -- contract that follows the one this call is written in, which
+    -- `translateContract` emits as an internal procedure. Checked before
+    -- the external-call path: `super` is not an address, and solc gives
+    -- the call an ordinary function type.
+    if let .MemberAccess _ (.Identifier _ superAnn) superMember := fnExpr then
+      if superAnn.val == "super" then
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        match ctx.superImpls.lookup superMember.val with
+        | some callee =>
+          let sig := (ctx.functionSigs.lookup callee).getD { isPure := false, isView := false }
+          return ← translateInternalCall ctx sr s!"{ctx.contractName}_{callee}" sig
+            argsSeq.val.toList args
+        | none =>
+          throw (.unsupported s!"`super.{superMember.val}(...)`: no inherited implementation of `{superMember.val}` to call")
     if let some c ← translateExternalCall? ctx n then return c.toExpr
     -- Check the FunctionCall kind
     match kindAnn.val with

@@ -1,0 +1,2 @@
+inheritance_gaps.sol:11:1: warning: base contract `Ownable` of `Borrowed` is not defined in this file: its state, functions and invariants are not part of what is verified here
+inheritance_gaps.sol:27:5: warning: the constructor of base contract `Priced` does not run when verifying `Item`: it takes arguments, and the `Priced(...)` that binds them is not modelled
