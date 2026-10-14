@@ -43,6 +43,9 @@ mapping(bytes32 => bool) public paymentCaptured;
 | `type(uint256).max/min` | ✅ |
 | Contract invariants | ✅ |
 | Loop invariants | ✅ |
+| Inherited state, functions, modifiers and invariants | ✅ |
+| `super`, along the C3 linearization | ✅ |
+| Inherited constructors (without parameters) | ✅ |
 
 ## Not yet supported
 
@@ -54,5 +57,7 @@ mapping(bytes32 => bool) public paymentCaptured;
 | External calls / reentrancy (GAP-007) | Not interpreted: a call that may re-enter the contract leaves its state unknown, except for the contract invariants (see [Contract Invariants](./contract_invariants.md#external-calls-and-reentrancy)); `--assume-no-reentrancy` trusts that calls do not re-enter |
 | Assembly / inline Yul | Not interpreted: what a block may write (the variables it assigns, memory variables, contract state) is unknown afterwards, and a block that may `return` or `stop` ends the function on some paths |
 | Dynamic arrays (`push`/`pop`) (GAP-008) | `.length` works, `push`/`pop` not modeled |
-| Inheritance (GAP-009) | Single contract only, no virtual dispatch |
+| A base contract in another file (GAP-009) | Only the contracts of the verified file are flattened into their derived contracts: an imported base's state, functions and invariants are reported as not part of the verification |
+| A base constructor with parameters (GAP-009) | Not run: the `Base(args)` clause that binds its arguments is not modelled, so the state it would set keeps its default value. Reported |
+| Overloaded functions | Overriding is resolved by name, so two functions that differ only in their parameter types are not distinguished |
 | Lemmas (`@custom:strata lemma`) (GAP-004) | Needs Laurel grammar extension |

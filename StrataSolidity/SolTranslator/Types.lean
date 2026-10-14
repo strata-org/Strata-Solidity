@@ -208,6 +208,16 @@ structure TransCtx where
   /-- Names of the contracts and interfaces of the source unit: a value of
       such a type is an address. -/
   contractTypeNames : List String := []
+  /-- Every contract of the source unit, by name. solc does not flatten
+      inherited members into a derived contract, so `translateContract`
+      reads a contract's bases from here and verifies the contract as the
+      flattening of its bases and itself. -/
+  contractNodes : List (String × Solidity.node SourceRange) := []
+  /-- What `super.f(…)` calls in the function being translated: the
+      function's name mapped to the name of the inherited implementation
+      that follows the defining contract in the inheritance order (see
+      `ContractTranslator.inheritedImplName`). -/
+  superImpls : List (String × String) := []
   /-- The `immutable` state variables, which keep their value once the
       constructor has run. -/
   immutableNames : List String := []

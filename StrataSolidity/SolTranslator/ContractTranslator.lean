@@ -90,6 +90,86 @@ private def reprHasLoop (astRepr : String) : Bool :=
   ["ForStatement", "WhileStatement", "DoWhileStatement"].any fun c =>
     (astRepr.splitOn s!"Strata.Solidity.node.{c}").length > 1
 
+/-! ## Inheritance
+
+solc does not flatten inherited members: a `ContractDefinition` lists only
+the members written in it, and names its direct bases in `baseContracts`.
+A contract is therefore verified as the flattening of its bases and
+itself, so that inherited state, functions, modifiers and invariants
+resolve in the derived contract's own context (its `self`, its state
+parameters). Each contract of the file is still verified on its own too.
+-/
+
+/-- A contract's name, kind, members, documentation and direct bases. -/
+private structure ContractInfo where
+  name : String
+  kind : String
+  members : List (Solidity.node SourceRange)
+  doc : StrataDDM.Ann String SourceRange
+  bases : List String
+  range : SourceRange
+
+private def contractInfo? : Solidity.node SourceRange → Option ContractInfo
+  | .ContractDefinition sr nameAnn kindAnn _ nodesSeq docAnn baseContracts =>
+    some { name := nameAnn.val, kind := kindAnn.val, members := nodesSeq.val.toList,
+           doc := docAnn, bases := baseContracts.val.toList.map (·.val), range := sr }
+  | _ => none
+
+/-- Whether a member is a constructor. -/
+private def isConstructorMember : Solidity.node SourceRange → Bool
+  | .FunctionDefinition _ _ k .. => k.val == "constructor"
+  | _ => false
+
+/-- The bases of `name`, most-base-first: a post-order walk of the base
+    lists, left to right, keeping the first occurrence of each. This is the
+    order Solidity lays out and initializes inherited state in, and its
+    reverse is the C3 linearization that `super` follows. A base the file
+    does not define (an imported one) contributes nothing. -/
+private partial def basesOf (ctx : TransCtx) (seen : List String) (name : String)
+    : List ContractInfo × List String :=
+  if seen.contains name then ([], seen) else
+  match (ctx.contractNodes.lookup name).bind contractInfo? with
+  | none => ([], name :: seen)
+  | some info =>
+    let (acc, seen) := info.bases.foldl (fun (acc, seen) b =>
+        let (bs, seen) := basesOf ctx seen b
+        (acc ++ bs, seen))
+      (([] : List ContractInfo), name :: seen)
+    (acc ++ [info], seen)
+
+/-- The contracts whose members make up `name`, most-base-first and
+    excluding `name` itself. -/
+private def inheritedFrom (ctx : TransCtx) (name : String) : List ContractInfo :=
+  (basesOf ctx [] name).1 |>.filter (·.name != name)
+
+/-- What a derived definition overrides. A function is keyed by name:
+    overloads are not distinguished, because a procedure's name does not
+    carry the signature either. `receive` and `fallback` are keyed by kind,
+    constructors by nothing (a base constructor is not a procedure of the
+    derived contract; its body runs as part of deployment). -/
+private def overrideKey : Solidity.node SourceRange → Option String
+  | .FunctionDefinition _ nameAnn kindAnn .. =>
+    if kindAnn.val == "constructor" then none
+    else if kindAnn.val == "function" then some s!"fn {nameAnn.val}"
+    else some kindAnn.val
+  | .ModifierDefinition _ nameAnn .. => some s!"mod {nameAnn.val}"
+  | _ => none
+
+/-- The name under which the implementation of `fname` inherited from
+    `from` is emitted, when a more derived contract overrides it and a
+    `super.{fname}(…)` call can reach it. -/
+private def inheritedImplName (from_ fname : String) : String :=
+  s!"__base_{from_}_{fname}"
+
+/-- A function definition with `name` and internal visibility: how an
+    overridden implementation is emitted, reachable only from the `super`
+    call that names it. -/
+private def asInheritedImpl (name : String) : Solidity.node SourceRange → Option (Solidity.node SourceRange)
+  | .FunctionDefinition sr nameAnn kindAnn mutAnn _visAnn virtAnn params rets body doc mods =>
+    some (.FunctionDefinition sr { nameAnn with val := name } kindAnn mutAnn
+      { nameAnn with val := "internal" } virtAnn params rets body doc mods)
+  | _ => none
+
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
     functions are emitted as static procedures.
@@ -107,15 +187,81 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut structFieldMap : List (String × List (String × HighType)) := ctx.structFields
     let mut enumDefs : List (String × List String) := ctx.enumDefs
     let mut udvtNames : List String := ctx.udvtNames
+
+    -- The bases this contract inherits from, most-base-first, and every
+    -- member to verify it with: the bases' members (except their
+    -- constructors, which are not procedures of this contract) followed by
+    -- its own, each tagged with the contract that defines it. A definition
+    -- this contract repeats (`override`) replaces the inherited one.
+    let bases := inheritedFrom ctx nameAnn.val
+    let ownMembers := nodesSeq.val.toList
+    -- A base this file does not define (an imported one) contributes no
+    -- members, so what it declares does not resolve here.
+    for b in baseNames do
+      if !(ctx.contractNodes.any (·.1 == b)) then
+        warnings := warnings ++ [{ range := contractSr, message :=
+          s!"base contract `{b}` of `{nameAnn.val}` is not defined in this file: its state, functions and invariants are not part of what is verified here" }]
+    let taggedAll : List (String × Solidity.node SourceRange) :=
+      bases.flatMap (fun b => (b.members.filter (!isConstructorMember ·)).map ((b.name, ·))) ++
+        ownMembers.map ((nameAnn.val, ·))
+    let taggedMembers := taggedAll.zipIdx.filterMap fun ((owner, m), i) =>
+      match overrideKey m with
+      | none => some (owner, m)
+      | some k =>
+        if (taggedAll.drop (i + 1)).any (overrideKey ·.2 == some k) then none
+        else some (owner, m)
+    -- Members this contract declares itself. Everything inherited is
+    -- reported where it is written, when its own contract is verified, so
+    -- only these produce warnings here.
+    let isOwn (owner : String) : Bool := owner == nameAnn.val
+
+    -- `super.f(…)` calls the implementation of `f` that follows the
+    -- contract the call is written in, along the C3 linearization: the
+    -- reverse of the base-first order, most derived first.
+    let mro := nameAnn.val :: (bases.reverse.map (·.name))
+    let membersOf (cn : String) : List (Solidity.node SourceRange) :=
+      if cn == nameAnn.val then ownMembers
+      else (bases.find? (·.name == cn)).map (·.members) |>.getD []
+    -- The implementations of `fname` that have a body, most derived first.
+    let implsOf (fname : String) : List (String × Solidity.node SourceRange) :=
+      mro.flatMap fun cn => (membersOf cn).filterMap fun m => match m with
+        | .FunctionDefinition _ fnNameAnn fnKindAnn _ _ _ _ _ body _ _ =>
+          if fnKindAnn.val == "function" && fnNameAnn.val == fname &&
+              !(body matches .missing_node _) then some (cn, m) else none
+        | _ => none
+    -- An overridden implementation is a procedure of this contract only
+    -- when a `super` call can reach it.
+    let usesSuper := taggedAll.any fun (_, m) => reprMentions (toString (repr m)) "super"
+    let declaredFnNames := (taggedAll.filterMap fun (_, m) => match m with
+      | .FunctionDefinition _ fnNameAnn fnKindAnn .. =>
+        if fnKindAnn.val == "function" then some fnNameAnn.val else none
+      | _ => none).eraseDups
+    let inheritedImpls : List (String × String × Solidity.node SourceRange) :=
+      if !usesSuper then [] else
+        declaredFnNames.flatMap fun f =>
+          ((implsOf f).drop 1).map fun (cn, m) => (cn, f, m)
+    -- What `super.g(…)` calls in a body written in `cn`: the first
+    -- implementation of `g` after `cn` in the linearization.
+    let superImplsFrom (cn : String) : List (String × String) :=
+      let after := (mro.dropWhile (· != cn)).drop 1
+      declaredFnNames.filterMap fun g =>
+        ((implsOf g).find? fun (owner, _) => after.contains owner).map fun (owner, _) =>
+          (g, inheritedImplName owner g)
+
     -- Contract invariants may be attached to the contract itself or to any
     -- of its state variables; solc attaches each NatSpec block to one
     -- declaration, so there is no ambiguity between contracts in a file.
-    -- Interfaces and libraries have no state to keep invariant.
+    -- Interfaces and libraries have no state to keep invariant. A base's
+    -- invariants constrain the state this contract inherits, so they are
+    -- checked here too (the state-variable ones come with the merged
+    -- members below).
     let isContract := kindAnn.val == "contract"
     let mut stateVarInvariants : List StrataAnnotation :=
-      if isContract then
+      (bases.filter (·.kind == "contract")).flatMap (fun b =>
+        (parseStrataAnnotations b.doc.val).filter (·.keyword == "invariant")) ++
+      (if isContract then
         (parseStrataAnnotations contractDocAnn.val).filter (·.keyword == "invariant")
-      else []
+      else [])
     warnings := warnings ++ annotationWarnings ctx.source s!"{kindAnn.val} `{nameAnn.val}`"
       (if isContract then ["invariant"] else []) contractDocAnn
       (fun _ => if isContract then none else
@@ -125,17 +271,41 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let mut stateVarInits : List (String × Solidity.node SourceRange) := []
     let mut immutableNames : List String := []
 
+    -- Solidity runs the base constructors before the derived one, in
+    -- base-first order, after every state-variable initializer. Their
+    -- statements are prepended to this contract's constructor body. A base
+    -- constructor that takes arguments is bound by the derived contract's
+    -- `Base(args)` clause; that binding is not modelled, so it is reported
+    -- and not run.
+    let mut baseCtorStmts : List (Solidity.node SourceRange) := []
+    for b in bases do
+      for m in b.members do
+        if let .FunctionDefinition ctorSr _ k _ _ _ ctorParams _ ctorBody _ _ := m then
+          if k.val == "constructor" then
+            let paramCount := match ctorParams with
+              | .ParameterList _ ps => ps.val.size
+              | _ => 0
+            if let .some_node _ (.Block _ ctorStmtsSeq) := ctorBody then
+              if paramCount == 0 then
+                baseCtorStmts := baseCtorStmts ++ ctorStmtsSeq.val.toList
+              else if !ctorStmtsSeq.val.isEmpty then
+                warnings := warnings ++ [{ range := ctorSr, message :=
+                  s!"the constructor of base contract `{b.name}` does not run when verifying `{nameAnn.val}`: it takes arguments, and the `{b.name}(...)` that binds them is not modelled" }]
+
     -- Pass 1: collect struct definitions and state variables
-    for member in nodesSeq.val do
+    for (owner, member) in taggedMembers do
       match member with
       | .StructDefinition _ sNameAnn membersSeq => do
         let sFields ← membersSeq.val.toList.mapM (translateFieldDecl { ctx with enumDefs } "struct member")
-        types := types ++ [.Composite {
-          name := sNameAnn.val
-          extending := []
-          fields := sFields
-          instanceProcedures := []
-        }]
+        -- An inherited struct is declared and constructed by the contract
+        -- that defines it; here it only has to resolve.
+        if isOwn owner then
+          types := types ++ [.Composite {
+            name := sNameAnn.val
+            extending := []
+            fields := sFields
+            instanceProcedures := []
+          }]
         -- Record field order for argument reordering
         structFieldMap := structFieldMap ++ [(sNameAnn.val, sFields.map fun f => (f.name.text, f.type.val))]
         -- Emit a synthetic constructor procedure for the struct.
@@ -153,22 +323,24 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           mkStmtExprMd (mkPrimOp .Eq [resultField, paramRef])
         let postcondsAsConds : List Condition :=
           postconds.map fun p => { condition := p, summary := none }
-        procedures := procedures ++ [{
-          name := s!"{sNameAnn.val}_constructor"
-          inputs := ctorInputs
-          outputs := [ctorOutput]
-          preconditions := []
-          decreases := none
-          body := .Abstract postcondsAsConds
-        }]
+        if isOwn owner then
+          procedures := procedures ++ [{
+            name := s!"{sNameAnn.val}_constructor"
+            inputs := ctorInputs
+            outputs := [ctorOutput]
+            preconditions := []
+            decreases := none
+            body := .Abstract postcondsAsConds
+          }]
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn constAnn mutAnn _ _ _ valueOpt docAnn =>
         if stateVarAnn.val == "true" then do
           if mutAnn.val == "immutable" then immutableNames := immutableNames ++ [nameAnn.val]
           -- Collect @custom:strata invariant from state variable NatSpec
           -- (a library's constants are not contract state)
-          warnings := warnings ++ annotationWarnings ctx.source
-            s!"state variable `{nameAnn.val}`" (if isContract then ["invariant"] else []) docAnn
-            (fun _ => if isContract then none else some s!"a {kindAnn.val} has no state, so it is ignored")
+          if isOwn owner then
+            warnings := warnings ++ annotationWarnings ctx.source
+              s!"state variable `{nameAnn.val}`" (if isContract then ["invariant"] else []) docAnn
+              (fun _ => if isContract then none else some s!"a {kindAnn.val} has no state, so it is ignored")
           if isContract then
             for ann in parseStrataAnnotations docAnn.val do
               match ann with
@@ -202,7 +374,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
     -- Modifiers, inlined into the functions that use them.
     let mut modifierDefs : List (String × List (String × HighTypeMd) × List (Solidity.node SourceRange)) := []
-    for member in nodesSeq.val do
+    for (_, member) in taggedMembers do
       match member with
       | .ModifierDefinition _ modNameAnn paramsNode bodyOpt =>
         let stmts := match bodyOpt with
@@ -246,7 +418,7 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- since both translate to TMap in HighType.
     let mut arrayStateVars : List String := []
     let mut fixedArrayLengths : List (String × Nat) := []
-    for member in nodesSeq.val do
+    for (_, member) in taggedMembers do
       match member with
       | .VariableDeclaration _ nameAnn typeNameOpt stateVarAnn _ _ _ _ _ _ _ =>
         if stateVarAnn.val == "true" then
@@ -259,7 +431,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
     let mut nonPureFunctions : List String := []
     let mut functionSigs : List (String × FnSig) := []
-    for member in nodesSeq.val do
+    -- The overridden implementations a `super` call reaches are internal
+    -- procedures of this contract, so they need signatures too.
+    let sigMembers : List (Solidity.node SourceRange) :=
+      taggedMembers.map (·.2) ++ inheritedImpls.filterMap fun (cn, f, m) =>
+        asInheritedImpl (inheritedImplName cn f) m
+    for member in sigMembers do
       match member with
       | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ params retParams _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
@@ -327,16 +504,16 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
-    -- Mappings some annotation of this contract sums.
-    let summed := (contractDocAnn :: nodesSeq.val.toList.filterMap fun
-        | .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _ => some doc
-        | .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc => some doc
+    -- Mappings some annotation of this contract, or of a base, sums.
+    let summed := (contractDocAnn :: bases.map (·.doc) ++ taggedMembers.filterMap fun
+        | (_, .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _) => some doc
+        | (_, .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc) => some doc
         | _ => none).flatMap (summedNames ·.val)
     -- A constructor that is not verified (it uses a struct-valued mapping)
     -- establishes nothing, so the invariants are neither assumed nor
     -- checked: assuming them would make every obligation that relies on
     -- them pass.
-    let ctorSkipped := nodesSeq.val.any fun
+    let ctorSkipped := ownMembers.any fun
       | .FunctionDefinition _ _ k _ _ _ _ _ bodyOpt _ _ =>
         k.val == "constructor" && match bodyOpt with
           | .some_node _ _ => structMappingNames.any (reprMentions (toString (repr bodyOpt)) ·)
@@ -350,17 +527,25 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    summedMappings := summed.eraseDups,
                                    contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
                                    modifierDefs := modifierDefs }
-    for member in nodesSeq.val do
+    -- A constructor's body runs after the base constructors'.
+    let withBaseCtors (body : Solidity.opt_node SourceRange) : Solidity.opt_node SourceRange :=
+      if baseCtorStmts.isEmpty then body else
+      match body with
+      | .some_node osr (.Block bsr stmtsSeq) =>
+        .some_node osr (.Block bsr ⟨stmtsSeq.ann, (baseCtorStmts ++ stmtsSeq.val.toList).toArray⟩)
+      | b => b
+    for (owner, member) in taggedMembers do
       match member with
-      | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn fnModifiers => do
+      | .FunctionDefinition fnSr fnNameAnn fnKindAnn fnMutAnn fnVisAnn fnVirtAnn fnParams fnRets bodyOpt fnDocAnn fnModifiers => do
           let fnDesc := functionDesc fnKindAnn.val fnNameAnn.val
-          -- A modifier defined elsewhere (an imported base contract's) is
-          -- not inlined. (A base constructor call, `Base(x)`, is fine.)
-          for inv in fnModifiers.val do
-            if let .ModifierInvocation invSr modName _ := inv then
-              if !modifierDefs.any (·.1 == modName.val) && !baseNames.contains modName.val then
-                warnings := warnings ++ [{ range := invSr, message :=
-                  s!"modifier `{modName.val}` is not defined in this contract: {fnDesc} is verified without it" }]
+          if isOwn owner then
+            -- A modifier defined elsewhere (an imported base contract's) is
+            -- not inlined. (A base constructor call, `Base(x)`, is fine.)
+            for inv in fnModifiers.val do
+              if let .ModifierInvocation invSr modName _ := inv then
+                if !modifierDefs.any (·.1 == modName.val) && !baseNames.contains modName.val then
+                  warnings := warnings ++ [{ range := invSr, message :=
+                    s!"modifier `{modName.val}` is not defined in this contract: {fnDesc} is verified without it" }]
           let bodyText := match bodyOpt with
             | .some_node _ _ => toString (repr bodyOpt)
             | _ => ""
@@ -376,30 +561,47 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
             else if kw == "modifies" && isCtor then some "frames are not checked for constructors"
             else if kw == "loop-invariant" then some "it has no loop"
             else none
-          warnings := warnings ++ annotationWarnings ctx.source fnDesc allowed fnDocAnn reason
           let fnAnnotations := parseStrataAnnotationsAt ctx.source fnDocAnn
-          -- Specs through struct-valued mappings are dropped by translateFunction.
-          for (ann, r) in fnAnnotations do
-            match ann with
-            | .requires e | .ensures e =>
-              if hasStructAccess e then
-                warnings := warnings ++ [{ range := r, message :=
-                  s!"`@custom:strata {ann.keyword} {e}` on {fnDesc} is ignored: struct fields accessed through a mapping are not supported" }]
-            | .modifies vars =>
-              for (m, key) in SpecParser.unreadableModifiesKeys vars do
-                warnings := warnings ++ [{ range := r, message :=
-                  s!"`@custom:strata modifies {m}[{key}]` on {fnDesc}: the key cannot be read, so the frame of `{m}` is not checked" }]
-            | _ => pure ()
+          if isOwn owner then
+            warnings := warnings ++ annotationWarnings ctx.source fnDesc allowed fnDocAnn reason
+            -- Specs through struct-valued mappings are dropped by translateFunction.
+            for (ann, r) in fnAnnotations do
+              match ann with
+              | .requires e | .ensures e =>
+                if hasStructAccess e then
+                  warnings := warnings ++ [{ range := r, message :=
+                    s!"`@custom:strata {ann.keyword} {e}` on {fnDesc} is ignored: struct fields accessed through a mapping are not supported" }]
+              | .modifies vars =>
+                for (m, key) in SpecParser.unreadableModifiesKeys vars do
+                  warnings := warnings ++ [{ range := r, message :=
+                    s!"`@custom:strata modifies {m}[{key}]` on {fnDesc}: the key cannot be read, so the frame of `{m}` is not checked" }]
+              | _ => pure ()
           -- Skip functions that reference struct-valued mappings (unsupported in Core)
           let usedStructMappings := structMappingNames.filter (reprMentions bodyText ·)
           if !usedStructMappings.isEmpty then
-            let names := ", ".intercalate (usedStructMappings.map (s!"`{·}`"))
-            warnings := warnings ++ [{ range := fnSr, message :=
-              s!"{fnDesc} is not verified: it uses the struct-valued mapping {names}, which is not supported" }]
+            if isOwn owner then
+              let names := ", ".intercalate (usedStructMappings.map (s!"`{·}`"))
+              warnings := warnings ++ [{ range := fnSr, message :=
+                s!"{fnDesc} is not verified: it uses the struct-valued mapping {names}, which is not supported" }]
           else do
-            let proc ← translateFunction fnCtx member
+            -- An inherited function is verified in this contract's context:
+            -- its state, its invariants. `super` in it refers to the
+            -- contracts after the one that defines it.
+            let memberCtx := { fnCtx with superImpls := superImplsFrom owner }
+            let member := if !isCtor then member else
+              .FunctionDefinition fnSr fnNameAnn fnKindAnn fnMutAnn fnVisAnn fnVirtAnn
+                fnParams fnRets (withBaseCtors bodyOpt) fnDocAnn fnModifiers
+            let proc ← translateFunction memberCtx member
             procedures := procedures ++ [proc]
       | _ => pure ()
+
+    -- The overridden implementations that `super` calls reach.
+    for (cn, f, m) in inheritedImpls do
+      if let some impl := asInheritedImpl (inheritedImplName cn f) m then
+        let bodyText := toString (repr m)
+        if (structMappingNames.filter (reprMentions bodyText ·)).isEmpty then
+          procedures := procedures ++
+            [← translateFunction { fnCtx with superImpls := superImplsFrom cn } impl]
 
     -- Without an explicit constructor, deployment runs only the default
     -- initialization and the state-variable initializers. Check that this
@@ -408,16 +610,17 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- nothing establishes (an unsatisfiable invariant would make every
     -- obligation pass). An abstract contract is checked the same way, as
     -- the initial state of the contracts that derive from it.
-    let hasCtor := nodesSeq.val.any fun
+    let hasCtor := ownMembers.any fun
       | .FunctionDefinition _ _ k _ _ _ _ _ _ _ _ => k.val == "constructor"
       | _ => false
     if !invariants.isEmpty && !hasCtor && kindAnn.val == "contract" then
       let str (v : String) : StrataDDM.Ann String SourceRange := ⟨contractSr, v⟩
       let noParams : Solidity.node SourceRange := .ParameterList contractSr ⟨contractSr, #[]⟩
+      -- Deployment still runs the base constructors.
       let implicitCtor : Solidity.node SourceRange :=
         .FunctionDefinition contractSr (str "") (str "constructor") (str "nonpayable")
           (str "public") (str "false") noParams noParams
-          (.some_node contractSr (.Block contractSr ⟨contractSr, #[]⟩)) (str "")
+          (.some_node contractSr (.Block contractSr ⟨contractSr, baseCtorStmts.toArray⟩)) (str "")
           ⟨contractSr, #[]⟩
       procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
 
@@ -525,6 +728,14 @@ def solidityToLaurelWithWarnings (cmd : Solidity.Command SourceRange)
         if kindAnn.val == "library" then none else some nameAnn.val
       | _ => none
     let ctx := { ctx with contractTypeNames }
+    -- Contracts are verified one by one, each as the flattening of its
+    -- bases and itself, so every contract must be reachable by name.
+    let contractNodes := nodesSeq.val.toList.filterMap
+      fun (node : Solidity.node SourceRange) =>
+        match node with
+        | .ContractDefinition _ nameAnn .. => some (nameAnn.val, node)
+        | _ => none
+    let ctx := { ctx with contractNodes }
     let mut allProcedures : List Procedure := []
     let mut allTypes : List TypeDefinition := []
     let mut allWarnings : List TranslationWarning := []
