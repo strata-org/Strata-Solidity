@@ -489,6 +489,12 @@ def readsConstant (name : String) (e : StmtExprMd) : Bool :=
     | .StaticCall id [] _ => id.text == name
     | _ => false) e
 
+/-- Whether `e` reads the variable `name`. -/
+def readsVariable (name : String) (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .Var (.Local id) => id.text == name
+    | _ => false) e
+
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=

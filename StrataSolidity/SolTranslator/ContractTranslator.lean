@@ -322,6 +322,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       if let some (_, what, _) := envConstants.find? fun (c, _, _) =>
           c != "this_address" && readsConstant c parsed then
         throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
+      -- The caller and the value sent belong to one transaction too. An
+      -- invariant over them would be established for one caller and
+      -- assumed for the next: with `owner == msg.sender` assumed on entry,
+      -- `require(msg.sender != owner)` could never pass, and every
+      -- property after it would be proven.
+      if let some (_, what) := [("msg_sender", "msg.sender"), ("msg_value", "msg.value")].find?
+          (readsVariable ·.1 parsed) then
+        throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
       pure parsed
 
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes

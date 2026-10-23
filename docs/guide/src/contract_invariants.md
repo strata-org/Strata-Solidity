@@ -22,7 +22,9 @@ library (which have no state) is reported as having no effect.
 
 An invariant is a single-state property about contract state: it may use
 state variables, named constants, `sum(...)` and quantifiers, but not
-`old(...)` (use `ensures` for two-state properties). A function parameter
+`old(...)` (use `ensures` for two-state properties), nor values of a single
+transaction (`msg.sender`, `msg.value`, `block.*`, `tx.*`): an invariant
+must hold between transactions, whoever calls next. A function parameter
 that shadows a state variable does not capture an invariant.
 
 StrataSolidity checks that:

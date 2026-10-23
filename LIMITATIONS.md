@@ -102,7 +102,7 @@ This is not practical for verifying existing contracts but works for new designs
 | Struct fields through mappings | ❌ Blocked (Core) | See above |
 | `old()` in loop invariants | ❌ Blocked (Core) | `__old` marker not resolved in loop context |
 | `@custom:strata lemma` | ❌ Not started | Needs Laurel grammar extension |
-| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants: they change between transactions |
+| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants, nor are `msg.sender` and `msg.value`: they change between transactions |
 | `gasleft()`, balances, `send` | ⚠️ Unknown | A fresh value of the result type at every read or call |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ⚠️ Havoc | A call of another contract (through an interface, `this.f()`, an external function value), a low-level `call`, or `new C(…)` may call back into the contract: its state is unknown after the call, except for the contract invariants, which an external function checks before the call and assumes after it. `view` calls and `staticcall` change nothing; nor do `send` and `transfer` (too little gas to). `delegatecall` may change all state, invariants included. Results are unknown values of their type. Constructors cannot be re-entered. `--assume-no-reentrancy` trusts that no call re-enters: calls (other than `delegatecall`) then change nothing |

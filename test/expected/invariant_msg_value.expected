@@ -1,0 +1,1 @@
+Exception: Solidity to Laurel translation failed: Unsupported: `msg.value` is not allowed in an invariant (`paid == msg.value`): it changes between transactions
