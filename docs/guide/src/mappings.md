@@ -17,14 +17,14 @@ Mapping access in specifications uses the same syntax as Solidity: `balances[key
 
 ## Nested mappings
 
-Nested mappings (e.g., ERC20 allowances) are fully supported:
+Nested mappings (e.g., ERC20 allowances) are supported:
 
 ```solidity
 mapping(address => mapping(address => uint256)) public allowance;
 
 /// @custom:strata requires allowance[from][msg.sender] >= amount
 /// @custom:strata ensures allowance[from][msg.sender] == old(allowance[from][msg.sender]) - amount
-/// @custom:strata modifies allowance[from][msg.sender]
+/// @custom:strata modifies allowance[from], balances[from], balances[to]
 function transferFrom(address from, address to, uint256 amount) external {
     require(allowance[from][msg.sender] >= amount, "Allowance exceeded");
     allowance[from][msg.sender] -= amount;
@@ -32,6 +32,11 @@ function transferFrom(address from, address to, uint256 amount) external {
     balances[to] += amount;
 }
 ```
+
+A key-scoped `modifies` names one index: `modifies allowance[from]` allows
+every `allowance[from][…]` to change, and no other row. A key with two
+indexes, such as `modifies allowance[from][msg.sender]`, is not read: the
+frame of `allowance` is then not checked at all, and a warning says so.
 
 ## Computed keys
 
@@ -52,15 +57,17 @@ The verifier treats `keccak256` as a function that is consistent (same input →
 
 Solidity mappings have infinite domain with default zero values — every key "exists" and maps to zero until explicitly set. StrataSolidity models this using SMT arrays with `select`/`store` operations, which faithfully captures this semantics.
 
-## Current limitation: struct fields through mappings
+## Current limitation: struct-valued mappings
 
-Accessing struct fields through mapping values is **not yet supported** in specifications:
+A function that uses a struct-valued mapping (or an array of structs) is
+**not verified**, and neither is an annotation that reads a struct field
+through a mapping; warnings say so:
 
 ```solidity
 struct Payment { uint256 amount; bool captured; }
 mapping(bytes32 => Payment) public payments;
 
-/// @custom:strata ensures payments[id].amount == amt  // ❌ NOT SUPPORTED
+/// @custom:strata ensures payments[id].amount == amt  // ❌ not verified
 ```
 
 **Workaround:** Flatten structs into separate mappings:
@@ -69,7 +76,7 @@ mapping(bytes32 => Payment) public payments;
 mapping(bytes32 => uint256) public paymentAmounts;
 mapping(bytes32 => bool) public paymentCaptured;
 
-/// @custom:strata ensures paymentAmounts[id] == amt  // ✅ SUPPORTED
+/// @custom:strata ensures paymentAmounts[id] == amt  // ✅ verified
 ```
 
 See [Current Limitations](./limitations.md) for details.

@@ -14,17 +14,21 @@ A loop invariant is a condition that must be true:
 Loop invariants are placed on the function containing the loop:
 
 ```solidity
-uint256 constant FEE_PER_ITEM = 5;
+contract Fees {
+    uint256 constant FEE_PER_ITEM = 5;
 
-/// @custom:strata loop-invariant i <= items
-/// @custom:strata loop-invariant fee == i * FEE_PER_ITEM
-/// @custom:strata ensures fee == items * FEE_PER_ITEM
-function totalFee(uint256 items) external pure returns (uint256 fee) {
-    for (uint256 i = 0; i < items; i++) {
-        fee += FEE_PER_ITEM;
+    /// @custom:strata loop-invariant i <= items
+    /// @custom:strata loop-invariant fee == i * FEE_PER_ITEM
+    /// @custom:strata ensures fee == items * FEE_PER_ITEM
+    function totalFee(uint256 items) external pure returns (uint256 fee) {
+        for (uint256 i = 0; i < items; i++) {
+            fee += FEE_PER_ITEM;
+        }
     }
 }
 ```
+
+(A constant declared outside the contract is not supported.)
 
 StrataSolidity checks that:
 - `i <= items` and `fee == i * FEE_PER_ITEM` hold before the loop starts
@@ -37,6 +41,30 @@ The invariant `fee == i * FEE_PER_ITEM` connects the loop body to the
 postcondition: it states how far the accumulator has progressed. Without it,
 `fee == items * FEE_PER_ITEM` cannot be proven, and a body that added the
 wrong amount would break it.
+
+## `old()` and state in a loop
+
+In a loop invariant, `old(e)` is the value of `e` at the function's entry,
+as in `ensures` (not at the loop's entry):
+
+```solidity
+/// @custom:strata requires n <= 100
+/// @custom:strata loop-invariant t == old(total) + i
+/// @custom:strata loop-invariant i <= n
+/// @custom:strata ensures total == old(total) + n
+function addN(uint256 n) external {
+    uint256 t = total;
+    for (uint256 i = 0; i < n; i++) {
+        t += 1;
+    }
+    total = t;
+}
+```
+
+Here the loop updates a local and the state is written after it. A loop
+that writes a state variable itself is verified as well, but the
+function's `heap frame (only this contract is modified)` obligation is then
+reported unknown (❓): see [Current Limitations](./limitations.md).
 
 ## Why loop invariants matter for smart contracts
 

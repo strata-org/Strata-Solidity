@@ -18,6 +18,7 @@ function mint(address to, uint256 amount) external {
 `old()` works with mapping access:
 
 ```solidity
+/// @custom:strata requires to != msg.sender
 /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
 /// @custom:strata ensures balances[to] == old(balances[to]) + amount
 function transfer(address to, uint256 amount) external {
@@ -25,6 +26,9 @@ function transfer(address to, uint256 amount) external {
     balances[to] += amount;
 }
 ```
+
+(Without `requires to != msg.sender`, both postconditions are refuted: a
+transfer to oneself leaves the balance unchanged.)
 
 ## Old with nested mappings
 
@@ -37,9 +41,12 @@ Nested mapping access inside `old()` is supported:
 ## Where old() can be used
 
 - ✅ In `ensures` (postconditions)
-- ✅ With scalar state variables
-- ✅ With simple and nested mapping access
-- ❌ Not yet supported in `loop-invariant` annotations
+- ✅ In `loop-invariant` annotations, where `old(e)` is also the value at the
+  function's entry (not at the loop's entry)
+- ✅ With scalar state variables, array lengths, and simple and nested
+  mapping access
+- ❌ In `invariant` annotations, which relate no two states (rejected, with a
+  message)
 
 ## When to use old()
 

@@ -1,10 +1,10 @@
 # Output Formats
 
-StrataSolidity supports three output formats: plain text (default), `--json`, and `--sarif`. When more than one flag is given, `--sarif` takes precedence over `--json`.
+StrataSolidity has four output formats: plain text (the default), `--json`, `--sarif` and `--pipeline-json`. When more than one is given, `--sarif` takes precedence over `--json`. Warnings (annotations or functions that are not verified, and why) go to standard error in every format.
 
 ## Plain text (default)
 
-Obligations are grouped by status, each with the source location of the annotation it checks, followed by a summary line:
+Obligations are grouped by result (verification errors first, then failures, unknown results and passes), each with the source location of the annotation it checks, followed by a summary line:
 
 ```
 ==== Verification Results ====
@@ -22,11 +22,14 @@ Obligations are grouped by status, each with the source location of the annotati
 ```
 
 Each proof obligation is reported individually with its result:
-- ✅ **pass** — the property was mathematically proven.
-- ❌ **fail** — the property could not be proven (possible bug or insufficient specification). When the solver returns a counterexample model, each variable's value is printed indented beneath the obligation.
+- ✅ **pass** — the property was proven.
+- ❌ **fail** — the solver refuted the property: some input and state violate it (a bug, or a specification that needs a precondition). When the solver returns a model, the values of the counterexample are printed indented beneath the obligation.
 - ❓ **unknown** — the solver could neither prove nor refute the property within its limits. This is common for properties that depend on quantified axioms (see [Current Limitations](./limitations.md)).
+- ⚠ **error** — the solver could not run on the obligation (for example, z3 is not on the `PATH`); these are listed first, under `⚠ Errors`, and counted in the summary line.
 
-The command exits with status 1 when any obligation fails or a verification error occurs; `unknown` results do not by themselves cause a non-zero exit. Pass `--strict` to also fail when any obligation is unproven or any annotation went unverified.
+When some annotations or functions were not verified, a last line says how many (`⚠  2 annotation(s) or function(s) not verified (see warnings)`).
+
+In plain text, the command exits with status 1 when an obligation fails or a verification error occurs; `unknown` results do not by themselves cause a non-zero exit. With `--json`, `--sarif` or `--pipeline-json` it exits with status 0 whatever the results, which the reader of the output judges. Pass `--strict`, in any format, to exit with status 1 when an obligation fails or is unknown, or an annotation or function was not verified. A file that cannot be translated exits with status 1 in every format.
 
 ## `--json`
 
@@ -42,6 +45,14 @@ Tools/Solidity/scripts/strata-verify.sh contract.sol --json
 ```
 
 Annotations or functions the translator could not verify are appended with `"status": "not_verified"`.
+
+## `--pipeline-json`
+
+Pass `--pipeline-json` for one JSON object with what each stage produced:
+the generated Laurel (`laurel`) and Core (`core`) programs, the obligations
+with their status and the SMT file each was checked with (`obligations`),
+the summary counts (`summary`), and the warnings (`warnings`). It is meant
+for debugging the translation and for tools.
 
 ## SARIF
 

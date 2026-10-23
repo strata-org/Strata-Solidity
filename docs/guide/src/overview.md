@@ -20,6 +20,7 @@ The entire pipeline lives in the `strataSolidity` binary: it invokes `solc`, par
 You write specifications as `@custom:strata` annotations in standard NatSpec comments — no special imports, no stub functions, no separate specification language. Your specs live alongside your code:
 
 ```solidity
+/// @custom:strata requires to != msg.sender
 /// @custom:strata requires balances[msg.sender] >= amount
 /// @custom:strata ensures balances[to] == old(balances[to]) + amount
 function transfer(address to, uint256 amount) external {

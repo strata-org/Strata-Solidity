@@ -35,7 +35,8 @@ This proves that `transfer` only modifies the balances of the sender and receive
 Key-scoped `modifies` and `forall` postconditions can express similar properties:
 
 ```solidity
-// These two are equivalent:
+// Both say that no other balance changes; option 1 also says that no other
+// state variable changes:
 
 // Option 1: modifies clause
 /// @custom:strata modifies balances[msg.sender], balances[to]
