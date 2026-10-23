@@ -473,16 +473,15 @@ def assemblyAssignable (ctx : TransCtx) : List String :=
 /-- Statements giving the contract's state unknown values of their
     Solidity types: every state variable but the immutables (a scalar is a
     field of `self`, except in constructors, where it is an output variable
-    like mapping state), the length of each dynamic array, and the locals
-    holding the fields of storage references (`d__value`), which read that
-    state. -/
+    like mapping state), and the length of each dynamic array. (A storage
+    reference reads that state, see `StorageAlias`.) -/
 def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
   let fresh := mkStmtExprMd (.Hole (deterministic := false))
   let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
   let assume (c : StmtExprMd) := mkStmtExprMd (mkAssume c)
   let vars := ctx.stateVarNames.filter (!ctx.immutableNames.contains ·)
-  let state := vars.flatMap fun n =>
+  vars.flatMap fun n =>
     let v := if ctx.hasSelfParam && !ctx.mappingStateVars.contains n
       then mkStmtExprMd (mkFieldSelect (ident "self") n) else ident n
     let len := ident s!"{n}_length"
@@ -490,8 +489,6 @@ def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
     if ctx.arrayStateVars.contains n && (ctx.fixedArrayLengths.lookup n).isNone then
       [assign len, assume (mkStmtExprMd (mkPrimOp .Geq [len, mkStmtExprMd (.LiteralInt 0)]))]
     else []
-  state ++ ctx.storageAliases.flatMap fun (a, info) =>
-    info.fields.map fun (f, _) => assign (ident s!"{a}__{f}")
 
 /-- The model of an inline-assembly block with summary `s`. Yul is not
     interpreted: whatever the block may write is unknown afterwards, and
@@ -773,6 +770,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>
+    -- A storage reference as a whole: the storage it refers to.
+    if let some alias := ctx.storageAliases.lookup nameAnn.val then
+      match alias.target with
+      | some t => return t
+      | none => throw (.unsupported s!"using the storage reference `{nameAnn.val}`, taken from a call's result, as a whole")
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
       return mkStmtExprMd (mkIdentifier nameAnn.val)
@@ -1247,9 +1249,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | some i => return mkStmtExprMd (.LiteralInt i)
         | none => throw (.typeError s!"Unknown enum member '{memberAnn.val}' in '{baseNameAnn.val}'")
       | none => pure ()
-      -- Storage alias field access: sender.field → Identifier "sender__field"
+      -- Storage reference field access: `d.f` reads the storage `d` refers to.
       match ctx.storageAliases.lookup baseNameAnn.val with
-      | some _ => return mkStmtExprMd (mkIdentifier s!"{baseNameAnn.val}__{memberAnn.val}")
+      | some alias => match alias.target with
+        | some t => return mkStmtExprMd (mkFieldSelect t memberAnn.val)
+        | none => return mkStmtExprMd (.Hole (deterministic := false))
       | none => pure ()
       -- Array .length on state vars or memory array params → Identifier "name_length"
       if memberAnn.val == "length" then
@@ -1498,29 +1502,16 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
   | stmt :: rest =>
     match isStorageRefDecl stmt with
     | some (aliasName, initOpt) =>
-      -- Storage reference: emit per-field scalar local variables initialized
-      -- from the mapping entry.
-      -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
-      --   LocalVariable "sender__weight" TInt (select(voters, msg_sender)#weight)
-      --   LocalVariable "sender__voted" TBool (select(voters, msg_sender)#voted)
-      --
-      -- LIMITATION: The FieldSelect initialization (e.g., select(voters, msg_sender)#weight)
-      -- is transformed by HeapParameterization into readField($heap, ..., Field), which
-      -- returns an unconstrained value unless the field was previously written via
-      -- updateField. This means reads of storage-reference fields may be weaker than
-      -- the intended "initialized from the mapping entry" semantics.
-      -- TODO: Either (a) emit explicit assume statements to constrain the field values,
-      -- or (b) bypass heap parameterization for these FieldSelect nodes.
-      --
-      -- Writes to alias fields (e.g., `sender.voted = true`) modify the local
-      -- variables. A write-back pass at the end of the enclosing block would be
-      -- needed for full storage-reference semantics; for now, writes to the
-      -- alias do NOT propagate back to the mapping. This is sound for
-      -- verification (we verify a weaker program) but may produce false
-      -- negatives for properties that depend on the write-back.
-      let initExpr ← match initOpt with
-        | .some_node _ initNode => translateExpr ctx initNode
+      -- Storage reference `Info storage d = data;`: no variable. A read
+      -- `d.f` reads the storage `d` refers to when it runs (`self#data#f`),
+      -- so it sees every write to that storage, direct or by a call. A
+      -- reference not to a path of state-variable fields (one returned by
+      -- a call) is evaluated here, and each read through it is an unknown
+      -- value. Writes through a reference are rejected (`storageRefTarget?`).
+      let initNode ← match initOpt with
+        | .some_node _ initNode => pure initNode
         | .missing_node _ => throw (.unsupported "storage reference without initializer")
+      let initExpr ← translateExpr ctx initNode
       -- Determine the struct type and its fields
       let structTypeName ← match extractStorageRefTypeName stmt with
         | some name => pure name
@@ -1528,18 +1519,20 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let fieldInfo ← match ctx.structFields.lookup structTypeName with
         | some info => pure info
         | none => throw (.internalError s!"unknown struct type '{structTypeName}' for storage reference")
-      -- Emit per-field local variables initialized from the mapping entry.
-      -- Each field is initialized with FieldSelect on the mapping select result,
-      -- e.g., sender__weight := select(voters, msg_sender)#weight
-      let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
-        let fieldInit := mkStmtExprMd (mkFieldSelect initExpr fieldName)
-        mkStmtExprMd (mkLocalVar s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
-      let alias : StorageAlias := { structTypeName, fields := fieldInfo }
-      let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
-      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
-                             localNames := ctx.localNames ++ fieldLocalNames }
+      let isPath : Solidity.node SourceRange → Bool := fun n =>
+        let rec go : Solidity.node SourceRange → Bool
+          | .Identifier .. => true
+          | .MemberAccess _ e _ => go e
+          | _ => false
+        go n
+      let target := if isPath initNode && !hasEffects initExpr then some initExpr else none
+      -- A reference returned by a call: the call still runs.
+      let effects := if target.isNone && hasEffects initExpr then
+        [declareLocal s!"__ref{(exprRange initNode).start.byteIdx}" initExpr] else []
+      let alias : StorageAlias := { structTypeName, fields := fieldInfo, target }
+      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)] }
       let rest' ← translateBlockStmts ctx' rest
-      return fieldDecls ++ rest'
+      return effects ++ rest'
     | none =>
       -- A tuple declaration `(uint a, uint b) = f(…);` declares its
       -- variables in this block (not a nested one), for the statements after.

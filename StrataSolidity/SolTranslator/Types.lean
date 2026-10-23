@@ -57,14 +57,18 @@ def List.findIndex? (p : α → Bool) : List α → Option Nat
   | [] => none
   | x :: xs => if p x then some 0 else (List.findIndex? p xs).map (· + 1)
 
-/-- A storage reference alias: records the struct type and field info so that
-    field accesses through the alias can be desugared to per-field scalar
-    local variables. E.g., `sender.weight` → `Identifier "sender__weight"`. -/
+/-- A storage reference (`Info storage d = data;`). A read `d.f` reads the
+    storage it refers to when it runs: `target#f`. -/
 structure StorageAlias where
   /-- The struct type name (e.g., "Voter"). -/
   structTypeName : String
   /-- Ordered list of (field name, field type) pairs. -/
   fields : List (String × HighType)
+  /-- The struct the reference refers to, read again at each use: a path
+      of fields from a state variable (`self#data`, `self#data#inner`).
+      `none` for any other reference (one taken from a call's result), each
+      read of which is an unknown value. -/
+  target : Option StmtExprMd := none
 
 /-- What an internal call site needs to know about its callee, so that it
     passes the callee's implicit inputs in their declared order and binds
@@ -97,8 +101,7 @@ structure TransCtx where
   contractName : String := ""
   /-- State-variable fields of the enclosing contract (for constructor outputs). -/
   contractFields : List Field := []
-  /-- Storage reference aliases: maps alias name to its alias info.
-      Field accesses `alias.field` are desugared to `Identifier "alias__field"`. -/
+  /-- Storage references in scope (see `StorageAlias`), by name. -/
   storageAliases : List (String × StorageAlias) := []
   /-- Names of state variables in the enclosing contract.
       Used to translate bare identifiers to `FieldSelect self "name"`.

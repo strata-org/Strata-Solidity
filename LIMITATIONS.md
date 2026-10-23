@@ -126,7 +126,9 @@ parameters as local copies, so a write through it would not reach the state
 variable passed in.
 
 A storage reference to a struct state variable (`Info storage d = data;`)
-can be read (its fields' values are then unknown), but writing through it
-(`d.value = 5`) is rejected: the write would not reach the storage.
+can be read: a read `d.value` reads the storage of `data` when it runs, so
+it sees writes made after the reference was taken, directly or by a call.
+Writing through it (`d.value = 5`) is rejected: the write would not reach
+the storage.
 
 Direct state variable access without storage references works fully.
