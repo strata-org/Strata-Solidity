@@ -61,7 +61,7 @@ private def annotationWarnings (source? : Option String) (declDesc : String)
 /-- Names `m` of every `sum(m)` in the annotations of a NatSpec comment. -/
 private def summedNames (doc : String) : List String :=
   (strataAnnotationLines doc).flatMap fun line =>
-    let toks := SpecParser.tokenize line
+    let toks := SpecParser.tokenize (stripSpecComment line)
     (toks.zip (toks.drop 1 |>.zip (toks.drop 2 |>.zip (toks.drop 3)))).filterMap
       fun (t0, t1, t2, t3) => if t0 == "sum" && t1 == "(" && t3 == ")" then some t2 else none
 
