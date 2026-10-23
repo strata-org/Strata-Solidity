@@ -1,0 +1,12 @@
+✅ 13: assert(~x == -1)
+❌ 19: assert(~x >= 0)
+✅ 24: assert(~x == 255 - x)
+❌ 29: assert(~x < 255)
+❌ 35: assert((a & a) >= 0)
+❌ 41: assert((a | 0) >= 0)
+❌ 47: assert((a >> n) >= 0)
+❌ 54: assert(a >= 0)
+✅ 59: assert((a & b) >= -128 && (a & b) <= 127)
+✅ 64: assert((a & b) <= 255)
+❌ 69: assert((a & b) <= 254)
+4 passed, 7 failed, 0 unknown out of 11 total

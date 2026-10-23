@@ -578,6 +578,15 @@ def wrapTo (t : IntType) (e : StmtExprMd) : StmtExprMd :=
     mkStmtExprMd (mkPrimOp .Sub [mod (mkStmtExprMd (mkPrimOp .Add [e, lit half])), lit half])
   else mod e
 
+/-- `e`, an integer that bitwise operations left anywhere in `[0, 2^256)`,
+    reduced to a value of the result type `t?`: wrapping maps that interval
+    onto every value of `t`, so a signed result can be negative and a narrow
+    one stays narrow. (An unsigned 256-bit result needs nothing.) -/
+def bitsInType (t? : Option IntType) (e : StmtExprMd) : StmtExprMd :=
+  match t? with
+  | some t => if t.signed || t.bits < 256 then wrapTo t e else e
+  | none => e
+
 /-- The value `e`, of solc type `src?`, converted to the solc type `dst?`
     as an explicit conversion does. Integers: a conversion that cannot lose
     a value (to a type of the same signedness and at least the width, or
@@ -720,6 +729,8 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     let r ← translateExpr ctx right
     -- The operands' type (solc's `commonType`), when it is an integer type.
     let common := (ctx.typeAt? sr "BinaryOperation.common").bind IntType.ofString?
+    -- The result's type, when it is an integer type.
+    let resultType := (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?
     -- solc's code generators evaluate the operands of a binary operator in
     -- different orders, so when one writes what the other reads the result
     -- depends on the compiler: rejected. (`&&` and `||` are ordered.)
@@ -757,7 +768,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- a constant operand: a shift by a constant (`x >> k` divides by
       -- `2^k`, rounding down as the EVM's shifts do also for a signed `x`;
       -- `x << k` multiplies and, checked or not, wraps within `x`'s type),
-      -- and an unsigned `x & (2^n - 1)` (the low `n` bits).
+      -- and an unsigned `x & (2^n - 1)` (the low `n` bits). An
+      -- uninterpreted result is reduced to the result's type (see
+      -- `bitsInType`): `int8(-1) & int8(-1)` is -1, which a result left in
+      -- `[0, 2^256)` could never be.
       | "&" =>
         let lowBits (m : Int) : Option Nat :=
           let n := (m + 1).natAbs.log2
@@ -768,24 +782,24 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | some n, false =>
             let x := if r.val matches .LiteralInt _ then l else r
             return mkStmtExprMd (mkCall "$intMod" [x, mkStmtExprMd (.LiteralInt (2 ^ n))])
-          | _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
-        | _, _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
-      | "|" => return mkStmtExprMd (mkCall "bit_or" [l, r])
-      | "^" => return mkStmtExprMd (mkCall "bit_xor" [l, r])
+          | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_and" [l, r]))
+        | _, _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_and" [l, r]))
+      | "|" => return bitsInType resultType (mkStmtExprMd (mkCall "bit_or" [l, r]))
+      | "^" => return bitsInType resultType (mkStmtExprMd (mkCall "bit_xor" [l, r]))
       | "<<" =>
-        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        match resultType, r.val with
         | some t, .LiteralInt k =>
           if k ≥ 0 && k < 4096 then
             return wrapTo t (mkStmtExprMd (mkPrimOp .Mul [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))]))
-          else return mkStmtExprMd (mkCall "bit_shl" [l, r])
-        | _, _ => return mkStmtExprMd (mkCall "bit_shl" [l, r])
+          else return bitsInType resultType (mkStmtExprMd (mkCall "bit_shl" [l, r]))
+        | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_shl" [l, r]))
       | ">>" =>
-        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        match resultType, r.val with
         | some _, .LiteralInt k =>
           if k ≥ 0 && k < 4096 then
             return mkStmtExprMd (mkCall "$intDiv" [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))])
-          else return mkStmtExprMd (mkCall "bit_shr" [l, r])
-        | _, _ => return mkStmtExprMd (mkCall "bit_shr" [l, r])
+          else return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
+        | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
       | o => throw (.unsupported s!"Binary operator: {o}")
     let result := mkStmtExprMd (mkPrimOp op [l, r])
     -- In `unchecked`, `+`, `-` and `*` wrap around instead of reverting.
@@ -856,7 +870,16 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       match opAnn.val with
       | "!" => return mkStmtExprMd (mkPrimOp .Not [subExpr])
       | "-" => return wrap (mkStmtExprMd (mkPrimOp .Neg [subExpr]))
-      | "~" => return mkStmtExprMd (mkCall "bit_not" [subExpr])
+      | "~" =>
+        -- Exact in two's complement: `~x` is `-x - 1` for a signed `x`, and
+        -- `2^N - 1 - x` for an N-bit unsigned one.
+        match (ctx.typeAt? usr "UnaryOperation").bind IntType.ofString? with
+        | some t =>
+          let lit (n : Int) := mkStmtExprMd (.LiteralInt n)
+          if t.signed then
+            return mkStmtExprMd (mkPrimOp .Sub [mkStmtExprMd (mkPrimOp .Neg [subExpr]), lit 1])
+          else return mkStmtExprMd (mkPrimOp .Sub [lit (2 ^ t.bits - 1), subExpr])
+        | none => return mkStmtExprMd (mkCall "bit_not" [subExpr])
       | "++" => return incrDecr .Pre .Incr
       | "--" => return incrDecr .Pre .Decr
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
@@ -1190,7 +1213,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment asr lhs rhs opAnn => do
     -- `x op= y`: `x op y`, with the target's type for the signedness of
-    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*`.
+    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*`;
+    -- an uninterpreted bitwise result is reduced to the target's type (see
+    -- `bitsInType`).
     let target := (ctx.typeAt? asr "Assignment").bind IntType.ofString?
     let signed := target.any (·.signed)
     let compound (cur rhs : StmtExprMd) : Except TranslationError StmtExprMd := do
@@ -1199,6 +1224,7 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         match target with
         | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then wrapTo t e else e
         | none => e
+      let bits (f : String) : StmtExprMd := bitsInType target (mkStmtExprMd (mkCall f [cur, rhs]))
       match opAnn.val with
       | "=" => pure rhs
       | "+=" => pure (arith .Add)
@@ -1206,11 +1232,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "*=" => pure (arith .Mul)
       | "/=" => pure (arith (if signed then .DivT else .Div))
       | "%=" => pure (arith (if signed then .ModT else .Mod))
-      | "&=" => pure (mkStmtExprMd (mkCall "bit_and" [cur, rhs]))
-      | "|=" => pure (mkStmtExprMd (mkCall "bit_or" [cur, rhs]))
-      | "^=" => pure (mkStmtExprMd (mkCall "bit_xor" [cur, rhs]))
-      | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [cur, rhs]))
-      | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [cur, rhs]))
+      | "&=" => pure (bits "bit_and")
+      | "|=" => pure (bits "bit_or")
+      | "^=" => pure (bits "bit_xor")
+      | "<<=" => pure (bits "bit_shl")
+      | ">>=" => pure (bits "bit_shr")
       | o => throw (.unsupported s!"Assignment operator: {o}")
     if let some d := storageRefTarget? ctx lhs then
       throw (.unsupported s!"writing through the storage reference `{d}`")
