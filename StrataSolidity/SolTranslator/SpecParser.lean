@@ -416,12 +416,16 @@ where
     | "*" :: rest =>
       let (rhs, rest') ← parseUnary rest
       parseMulTail (mkStmtExprMd (mkPrimOp .Mul [lhs, rhs])) rest'
+    -- Solidity's `/` rounds toward zero and `%` takes the sign of the
+    -- dividend (`-7 / 2 == -3`, `-7 % 2 == -1`): the truncating operations,
+    -- as in function bodies. For non-negative operands they agree with the
+    -- Euclidean ones.
     | "/" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (mkPrimOp .Div [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .DivT [lhs, rhs])) rest'
     | "%" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (mkPrimOp .Mod [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .ModT [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
 
   -- Prefix unary layer (`unary ::= ("!" | "-")? postfix` in SpecGrammar.lean).

@@ -69,3 +69,5 @@ Expressions in specifications (`requires`, `ensures`, etc.) use mathematical int
 ```
 
 The `+` in the specification is mathematical addition, not Solidity's checked addition. The specification is about the *intended* behavior, not the machine arithmetic.
+
+`/` and `%` divide as in Solidity: `/` rounds toward zero and `%` takes the sign of the dividend (`-7 / 2 == -3`, `-7 % 2 == -1`), so a specification divides like the code it describes.
