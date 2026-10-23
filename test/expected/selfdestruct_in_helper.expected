@@ -1,0 +1,1 @@
+Exception: Solidity to Laurel translation failed: Unsupported: the call of `_maybeKill` in `kill`: `_maybeKill` may end the transaction (assembly `return` or `stop`, `selfdestruct`), and the code after the call would be verified as if it ran

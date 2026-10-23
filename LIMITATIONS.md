@@ -82,7 +82,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `msg.sender`, `msg.value` | Used as keys or in expressions | ✅ |
 | `address(0)`, type conversions | Truncate as the EVM does (`uint8(x)`, `int8(u)`, `bytes4(h)` keeps the high bytes); widening keeps the value | ✅ |
 | `type(uint256).max/min` | Compile-time constants | ✅ |
-| Arithmetic | `+`, `-`, `*`, `/`, `%`; `unchecked` wraps; signed `/`, `%` round toward zero; constant `**` folded | ✅ (checked overflow is not modelled as a revert: properties relying on it may not be proven) |
+| Arithmetic | `+`, `-`, `*`, `/`, `%`; `unchecked` wraps; signed `/`, `%` round toward zero, in specifications too; constant expressions have solc's exact value; constant `**` folded; bitwise results stay in their type | ✅ (checked overflow is not modelled as a revert: properties relying on it may not be proven) |
 | Unary operators in specs | `!paused`, negative literals (`-887272`) | ✅ |
 | Named constants in specs | `requires status == NOT_ENTERED`, `modifies roles[DEFAULT_ADMIN_ROLE]` | ✅ |
 | Subdenominations | `1 ether`, `2 days` folded to base units | ✅ |
@@ -94,6 +94,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `invariant` | Contract-level invariants checked on all functions | ✅ |
 | `modifies` | Field-level and key-scoped frame conditions | ✅ |
 | Modifiers | Inlined into each function using them, with arguments; `return` in the body still runs the code after `_` | ✅ (not modifiers of an imported base contract, which are reported) |
+| Struct assignments | Copied into storage, and from storage or calldata into memory (assignments, declarations, arguments, returned values); memory-to-memory assignments share the struct, and a function a memory struct is passed to may change its fields | ✅ (a function writing a struct that is not a copy it made reports a spurious `heap frame` failure) |
 
 ## Not Yet Supported
 
@@ -102,11 +103,11 @@ This is not practical for verifying existing contracts but works for new designs
 | Struct fields through mappings | ❌ Blocked (Core) | See above |
 | `old()` in loop invariants | ❌ Blocked (Core) | `__old` marker not resolved in loop context |
 | `@custom:strata lemma` | ❌ Not started | Needs Laurel grammar extension |
-| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants: they change between transactions |
+| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants, nor are `msg.sender` and `msg.value`: they change between transactions |
 | `gasleft()`, balances, `send` | ⚠️ Unknown | A fresh value of the result type at every read or call |
 | `msg.sender` in constructor | ❌ | Constructor handling incomplete |
 | External calls / reentrancy | ⚠️ Havoc | A call of another contract (through an interface, `this.f()`, an external function value), a low-level `call`, or `new C(…)` may call back into the contract: its state is unknown after the call, except for the contract invariants, which an external function checks before the call and assumes after it. `view` calls and `staticcall` change nothing; nor do `send` and `transfer` (too little gas to). `delegatecall` may change all state, invariants included. Results are unknown values of their type. Constructors cannot be re-entered. `--assume-no-reentrancy` trusts that no call re-enters: calls (other than `delegatecall`) then change nothing |
-| Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state (of its type) if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the function on some paths. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor |
+| Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state (of its type) if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the transaction on some paths, as `selfdestruct` does. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor, and calling a function that may end the transaction (the code after the call would be verified as if it ran) |
 | Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
 | Inheritance | ⚠️ Partial | Single contract only, no virtual dispatch |
 | Events / errors | First-class ops | `revert` prunes its path; `emit` is a verification no-op |
@@ -119,8 +120,15 @@ Storage references to struct fields through mappings (`Voter storage sender = vo
 
 Mapping storage references (`mapping(...) storage ref = stateVar`) are not supported.
 
+A mapping or array `storage` parameter (`function _credit(mapping(address => uint256) storage m, address k)`)
+is rejected: it refers to the caller's storage, and the translator models
+parameters as local copies, so a write through it would not reach the state
+variable passed in.
+
 A storage reference to a struct state variable (`Info storage d = data;`)
-can be read (its fields' values are then unknown), but writing through it
-(`d.value = 5`) is rejected: the write would not reach the storage.
+can be read: a read `d.value` reads the storage of `data` when it runs, so
+it sees writes made after the reference was taken, directly or by a call.
+Writing through it (`d.value = 5`) is rejected: the write would not reach
+the storage.
 
 Direct state variable access without storage references works fully.

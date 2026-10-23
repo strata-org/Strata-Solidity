@@ -151,6 +151,105 @@ def hasEffects (e : StmtExprMd) : Bool :=
 def declareLocal (x : String) (e : StmtExprMd) : StmtExprMd :=
   mkStmtExprMd (.Assign [{ val := .Declare { name := x, type := none }, source := .unknown }] e)
 
+/-- The data location of a struct, from solc's type of it: `storage ref`
+    (a state variable or a part of one), `storage pointer` (a local storage
+    reference), `memory` or `calldata`. `none` if the type is not a struct. -/
+def structLocation? (ts : String) : Option String :=
+  if !ts.startsWith "struct " then none
+  else match (ts.splitOn " ").drop 2 with
+    | [] => none
+    | loc => some (" ".intercalate loc)
+
+/-- The name of the struct in solc's type of it (`struct C.Info memory` is
+    `Info`). -/
+def structName? (ts : String) : Option String :=
+  if !ts.startsWith "struct " then none
+  else ((ts.splitOn " ")[1]?).bind fun q => (q.splitOn ".").getLast?
+
+/-- Whether storing a struct at data location `src` into one at `dst`
+    copies it. Structs are heap objects in the model, so an assignment
+    shares one object between both sides; Solidity shares it only between
+    memory variables (and a storage reference aliases its storage). It
+    copies the struct into storage, and from storage or calldata into
+    memory. -/
+def structCopies (dst src : String) : Bool :=
+  dst == "storage ref" || (dst == "memory" && src != "memory")
+
+/-- A new struct object of type `s` with the fields of `src` (nested
+    structs copied in turn), as a block whose value is the copy (`tmp`).
+    `src` is read once per field: it must have no effects. -/
+partial def structCopy (ctx : TransCtx) (s : String) (src : StmtExprMd) (tmp : String) : StmtExprMd :=
+  match ctx.structFields.lookup s with
+  | none => src
+  | some fields =>
+    let t := mkStmtExprMd (mkIdentifier tmp)
+    let decl := mkStmtExprMd (mkLocalVar tmp (mkHighTypeMd (.UserDefined (mkIdent s)))
+      (some (mkStmtExprMd (.New (mkIdent s)))))
+    let copies := fields.zipIdx.map fun ((f, ty), i) =>
+      let v := mkStmtExprMd (mkFieldSelect src f)
+      let v := match ty with
+        | .UserDefined id => structCopy ctx id.text v s!"{tmp}_{i}"
+        | _ => v
+      mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkFieldSelect t f))] v)
+    mkStmtExprMd (.Block (decl :: copies ++ [t]) none)
+
+/-- Statements giving the fields of the struct `e` of type `s` unknown
+    values: a memory struct is passed to a function by reference, and the
+    function may write it. A field holding a struct gets an unknown struct,
+    after that struct's own fields get unknown values (the caller may hold
+    another reference to it). -/
+partial def havocStruct (ctx : TransCtx) (s : String) (e : StmtExprMd) : List StmtExprMd :=
+  match ctx.structFields.lookup s with
+  | none => []
+  | some fields => fields.flatMap fun (f, ty) =>
+    let fe := mkStmtExprMd (mkFieldSelect e f)
+    let inner := match ty with
+      | .UserDefined id => havocStruct ctx id.text fe
+      | _ => []
+    inner ++ [mkStmtExprMd (.Assign [toAssignTarget fe] (mkStmtExprMd (.Hole (deterministic := false))))]
+
+/-- The kind (solc `nodeType`) of an expression node, as in `ExprTypes`. -/
+def exprKind : Solidity.node SourceRange → String
+  | .BinaryOperation .. => "BinaryOperation" | .UnaryOperation .. => "UnaryOperation"
+  | .FunctionCall .. => "FunctionCall" | .IndexAccess .. => "IndexAccess"
+  | .MemberAccess .. => "MemberAccess" | .Conditional .. => "Conditional"
+  | .Assignment .. => "Assignment" | .TupleExpression .. => "TupleExpression"
+  | .FunctionCallOptions .. => "FunctionCallOptions" | .Identifier .. => "Identifier"
+  | .Literal .. => "Literal" | _ => ""
+
+/-- Source range of an expression node (`none` for other node kinds). -/
+def exprRange : Solidity.node SourceRange → SourceRange
+  | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
+  | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
+  | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
+  | _ => .none
+
+/-- solc's struct type of the expression `node` as (data location, struct
+    name), if it is a struct. -/
+def structTypeOf? (ctx : TransCtx) (node : Solidity.node SourceRange) : Option (String × String) := do
+  let ts ← ctx.typeAt? (exprRange node) (exprKind node)
+  return (← structLocation? ts, ← structName? ts)
+
+/-- `e`, the translation of the expression `node`, stored at data location
+    `dst` (an assignment, a declaration, an argument or a returned value):
+    a copy if `node` is a struct that Solidity copies there (see
+    `structCopies`), otherwise `e`. -/
+def storeStruct (ctx : TransCtx) (dst : String) (node : Solidity.node SourceRange)
+    (e : StmtExprMd) : StmtExprMd :=
+  match structTypeOf? ctx node with
+  | some (src, s) =>
+    if !structCopies dst src then e else
+    let off := (exprRange node).start.byteIdx
+    let copyOf (x : StmtExprMd) := structCopy ctx s x s!"__copy{off}"
+    if !hasEffects e then copyOf e
+    else
+      -- Evaluated once, then copied field by field.
+      let srcVar := s!"__copysrc{off}"
+      match copyOf (mkStmtExprMd (mkIdentifier srcVar)) with
+      | { val := .Block stmts none, .. } => mkStmtExprMd (.Block (declareLocal srcVar e :: stmts) none)
+      | c => mkStmtExprMd (.Block [declareLocal srcVar e, c] none)
+  | none => e
+
 /-- Evaluate expressions once each, in order: if any of them has effects,
     bind every one to a fresh local `<pre>_<i>` (declarations to run first)
     and use the locals instead; otherwise use the expressions as they are. -/
@@ -229,10 +328,11 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   for (a, i) in args.zipIdx do
     if (args.drop (i + 1)).any (operandsConflict ctx a ·) then
       throw (.unsupported s!"the arguments of `{callee}`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
-  -- User arguments, each memory-array argument followed by its length.
+  -- User arguments, each memory-array argument followed by its length. A
+  -- storage or calldata struct passed to a memory parameter is copied.
   let mut userArgs : List StmtExprMd := []
   for ((node, arg), i) in (argNodes.zip args).zipIdx do
-    userArgs := userArgs ++ [arg]
+    userArgs := userArgs ++ [storeStruct ctx (sig.paramLocations.getD i "") node arg]
     if sig.memArrayParams.getD i false then
       match node with
       | .Identifier _ nameAnn =>
@@ -249,6 +349,13 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
       | _ => none
   let havocs := memArgs.map fun a => mkStmtExprMd (.Assign [toAssignTarget (ident a)]
     (mkStmtExprMd (.Hole (deterministic := false))))
+  -- So is a memory struct: its fields are unknown afterwards. (The heap
+  -- frame of the callee does not cover the structs it is passed, so it
+  -- would otherwise claim them unchanged.)
+  let havocs := havocs ++ (argNodes.zip args).flatMap fun (node, arg) =>
+    match structTypeOf? ctx node, arg.val with
+    | some ("memory", s), .Var _ => havocStruct ctx s arg
+    | _, _ => []
   -- The call's statements, then the havocs, then its value (if any).
   let finish (stmts : List StmtExprMd) (value : Option StmtExprMd) : StmtExprMd :=
     match stmts, havocs, value with
@@ -366,16 +473,15 @@ def assemblyAssignable (ctx : TransCtx) : List String :=
 /-- Statements giving the contract's state unknown values of their
     Solidity types: every state variable but the immutables (a scalar is a
     field of `self`, except in constructors, where it is an output variable
-    like mapping state), the length of each dynamic array, and the locals
-    holding the fields of storage references (`d__value`), which read that
-    state. -/
+    like mapping state), and the length of each dynamic array. (A storage
+    reference reads that state, see `StorageAlias`.) -/
 def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
   let fresh := mkStmtExprMd (.Hole (deterministic := false))
   let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
   let assume (c : StmtExprMd) := mkStmtExprMd (mkAssume c)
   let vars := ctx.stateVarNames.filter (!ctx.immutableNames.contains ·)
-  let state := vars.flatMap fun n =>
+  vars.flatMap fun n =>
     let v := if ctx.hasSelfParam && !ctx.mappingStateVars.contains n
       then mkStmtExprMd (mkFieldSelect (ident "self") n) else ident n
     let len := ident s!"{n}_length"
@@ -383,8 +489,6 @@ def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
     if ctx.arrayStateVars.contains n && (ctx.fixedArrayLengths.lookup n).isNone then
       [assign len, assume (mkStmtExprMd (mkPrimOp .Geq [len, mkStmtExprMd (.LiteralInt 0)]))]
     else []
-  state ++ ctx.storageAliases.flatMap fun (a, info) =>
-    info.fields.map fun (f, _) => assign (ident s!"{a}__{f}")
 
 /-- The model of an inline-assembly block with summary `s`. Yul is not
     interpreted: whatever the block may write is unknown afterwards, and
@@ -395,11 +499,11 @@ def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
       (`stateHavoc`), where solc lets assembly write it (not in `view` and
       `pure` functions).
     - If it may end the function, it does so on some paths, with unknown
-      return values.
+      return values (a halt: see `haltLabel`).
     Fresh values are nondeterministic holes: a deterministic hole is a
     function of the procedure's inputs, so a block in a loop would produce
     the same value at every iteration. -/
-def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError StmtExprMd := do
+def assemblyModel (ctx : TransCtx) (sr : SourceRange) (s : YulSummary) : Except TranslationError StmtExprMd := do
   let fresh := mkStmtExprMd (.Hole (deterministic := false))
   let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
@@ -418,7 +522,8 @@ def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError St
   let havocs := vars.eraseDups.map (assign ∘ ident) ++ state
   let exit := if !s.exits then [] else
     [mkStmtExprMd (.IfThenElse fresh
-      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))
+      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)])
+        (some s!"{haltLabel}{sr.start.byteIdx}")))
       none)]
   return mkStmtExprMd (.Block (havocs ++ exit) none)
 
@@ -562,6 +667,17 @@ def IntType.ofString? (ts : String) : Option IntType :=
   else if base.startsWith "int" then (bits (base.drop 3).toString).map (⟨true, ·⟩)
   else none
 
+/-- The value of a constant expression, from solc's type of it
+    (`int_const 7`, `int_const -128`). solc evaluates constant expressions
+    exactly, with rational intermediate values (`(7 / 2) * 2` is 7, not 6),
+    and with every unit and exponent applied (`2.5 ether`, `1e18`). `none`
+    for any other type, and for a value solc abbreviates in the type string
+    (`int_const 1157...(70 digits)...9935`). -/
+def intConstValue? (ts : String) : Option Int :=
+  match ts.splitOn " " with
+  | ["int_const", v] => v.toInt?
+  | _ => none
+
 /-- The width in bytes of a solc `bytesN` type string (not dynamic `bytes`). -/
 def bytesWidth? (ts : String) : Option Nat :=
   let base := (ts.splitOn " ").headD ""
@@ -577,6 +693,15 @@ def wrapTo (t : IntType) (e : StmtExprMd) : StmtExprMd :=
     let half : Int := 2 ^ (t.bits - 1)
     mkStmtExprMd (mkPrimOp .Sub [mod (mkStmtExprMd (mkPrimOp .Add [e, lit half])), lit half])
   else mod e
+
+/-- `e`, an integer that bitwise operations left anywhere in `[0, 2^256)`,
+    reduced to a value of the result type `t?`: wrapping maps that interval
+    onto every value of `t`, so a signed result can be negative and a narrow
+    one stays narrow. (An unsigned 256-bit result needs nothing.) -/
+def bitsInType (t? : Option IntType) (e : StmtExprMd) : StmtExprMd :=
+  match t? with
+  | some t => if t.signed || t.bits < 256 then wrapTo t e else e
+  | none => e
 
 /-- The value `e`, of solc type `src?`, converted to the solc type `dst?`
     as an explicit conversion does. Integers: a conversion that cannot lose
@@ -607,22 +732,6 @@ def convertValue (src? dst? : Option String) (e : StmtExprMd) : StmtExprMd :=
         else if n < m then mkStmtExprMd (mkCall "$intDiv" [e, lit (2 ^ (8 * (m - n)))])
         else mkStmtExprMd (mkPrimOp .Mul [e, lit (2 ^ (8 * (n - m)))])
       | _, _ => e
-
-/-- The kind (solc `nodeType`) of an expression node, as in `ExprTypes`. -/
-def exprKind : Solidity.node SourceRange → String
-  | .BinaryOperation .. => "BinaryOperation" | .UnaryOperation .. => "UnaryOperation"
-  | .FunctionCall .. => "FunctionCall" | .IndexAccess .. => "IndexAccess"
-  | .MemberAccess .. => "MemberAccess" | .Conditional .. => "Conditional"
-  | .Assignment .. => "Assignment" | .TupleExpression .. => "TupleExpression"
-  | .FunctionCallOptions .. => "FunctionCallOptions" | .Identifier .. => "Identifier"
-  | .Literal .. => "Literal" | _ => ""
-
-/-- Source range of an expression node (`none` for other node kinds). -/
-def exprRange : Solidity.node SourceRange → SourceRange
-  | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
-  | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
-  | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
-  | _ => .none
 
 /-- The conversion of `arg` (translated: `e`) by the conversion call at
     `sr`, with solc's types (see `convertValue`). A conversion to an enum
@@ -661,6 +770,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     : Except TranslationError StmtExprMd := do
   match n with
   | .Identifier _ nameAnn =>
+    -- A storage reference as a whole: the storage it refers to.
+    if let some alias := ctx.storageAliases.lookup nameAnn.val then
+      match alias.target with
+      | some t => return t
+      | none => throw (.unsupported s!"using the storage reference `{nameAnn.val}`, taken from a call's result, as a whole")
     -- Local variables and parameters shadow state variables
     if ctx.localNames.contains nameAnn.val then
       return mkStmtExprMd (mkIdentifier nameAnn.val)
@@ -678,7 +792,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 
-  | .Literal _ valueAnn kindAnn subAnn =>
+  | .Literal lsr valueAnn kindAnn subAnn =>
+    -- A number has the value solc computed (see `intConstValue?`): it
+    -- applies units and exponents exactly (`2.5 ether`, `1e18`).
+    if kindAnn.val == "number" then
+      if let some v := (ctx.typeAt? lsr "Literal").bind intConstValue? then
+        return mkStmtExprMd (.LiteralInt v)
     match kindAnn.val with
     | "number" =>
       let v := valueAnn.val
@@ -716,10 +835,17 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | k => throw (.unsupported s!"Literal kind: {k}")
 
   | .BinaryOperation sr left right opAnn => do
+    -- A constant expression has the exact value solc computed (see
+    -- `intConstValue?`): `(7 / 2) * 2` is 7, where dividing step by step
+    -- in integers would give 6.
+    if let some v := (ctx.typeAt? sr "BinaryOperation").bind intConstValue? then
+      return mkStmtExprMd (.LiteralInt v)
     let l ← translateExpr ctx left
     let r ← translateExpr ctx right
     -- The operands' type (solc's `commonType`), when it is an integer type.
     let common := (ctx.typeAt? sr "BinaryOperation.common").bind IntType.ofString?
+    -- The result's type, when it is an integer type.
+    let resultType := (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?
     -- solc's code generators evaluate the operands of a binary operator in
     -- different orders, so when one writes what the other reads the result
     -- depends on the compiler: rejected. (`&&` and `||` are ordered.)
@@ -737,10 +863,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "%" => .ok (if common.any (·.signed) then Operation.ModT else Operation.Mod)
       | "**" =>
         -- A constant power (`2 ** 64`) is folded; any other is not modelled.
+        -- A power of named constants (`B ** 2`, `B` a `uint8` constant)
+        -- has their type, and in `unchecked` wraps within it like `*`.
         match l.val, r.val with
         | .LiteralInt b, .LiteralInt n =>
           if n ≥ 0 && n * (b.natAbs.log2 + 1) ≤ 4096 then
-            return mkStmtExprMd (.LiteralInt (b ^ n.toNat))
+            let v := mkStmtExprMd (.LiteralInt (b ^ n.toNat))
+            match resultType with
+            | some t => return (if ctx.isInsideUnchecked then wrapTo t v else v)
+            | none => return v
           else throw (.unsupported "a constant power this large")
         | _, _ => throw (.unsupported "`**` with an operand that is not a constant")
       | "==" => .ok Operation.Eq
@@ -757,7 +888,10 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       -- a constant operand: a shift by a constant (`x >> k` divides by
       -- `2^k`, rounding down as the EVM's shifts do also for a signed `x`;
       -- `x << k` multiplies and, checked or not, wraps within `x`'s type),
-      -- and an unsigned `x & (2^n - 1)` (the low `n` bits).
+      -- and an unsigned `x & (2^n - 1)` (the low `n` bits). An
+      -- uninterpreted result is reduced to the result's type (see
+      -- `bitsInType`): `int8(-1) & int8(-1)` is -1, which a result left in
+      -- `[0, 2^256)` could never be.
       | "&" =>
         let lowBits (m : Int) : Option Nat :=
           let n := (m + 1).natAbs.log2
@@ -768,36 +902,42 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           | some n, false =>
             let x := if r.val matches .LiteralInt _ then l else r
             return mkStmtExprMd (mkCall "$intMod" [x, mkStmtExprMd (.LiteralInt (2 ^ n))])
-          | _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
-        | _, _, _ => return mkStmtExprMd (mkCall "bit_and" [l, r])
-      | "|" => return mkStmtExprMd (mkCall "bit_or" [l, r])
-      | "^" => return mkStmtExprMd (mkCall "bit_xor" [l, r])
+          | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_and" [l, r]))
+        | _, _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_and" [l, r]))
+      | "|" => return bitsInType resultType (mkStmtExprMd (mkCall "bit_or" [l, r]))
+      | "^" => return bitsInType resultType (mkStmtExprMd (mkCall "bit_xor" [l, r]))
       | "<<" =>
-        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        match resultType, r.val with
         | some t, .LiteralInt k =>
           if k ≥ 0 && k < 4096 then
             return wrapTo t (mkStmtExprMd (mkPrimOp .Mul [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))]))
-          else return mkStmtExprMd (mkCall "bit_shl" [l, r])
-        | _, _ => return mkStmtExprMd (mkCall "bit_shl" [l, r])
+          else return bitsInType resultType (mkStmtExprMd (mkCall "bit_shl" [l, r]))
+        | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_shl" [l, r]))
       | ">>" =>
-        match (ctx.typeAt? sr "BinaryOperation").bind IntType.ofString?, r.val with
+        match resultType, r.val with
         | some _, .LiteralInt k =>
           if k ≥ 0 && k < 4096 then
             return mkStmtExprMd (mkCall "$intDiv" [l, mkStmtExprMd (.LiteralInt (2 ^ k.toNat))])
-          else return mkStmtExprMd (mkCall "bit_shr" [l, r])
-        | _, _ => return mkStmtExprMd (mkCall "bit_shr" [l, r])
+          else return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
+        | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
       | o => throw (.unsupported s!"Binary operator: {o}")
-    let result := mkStmtExprMd (mkPrimOp op [l, r])
-    -- In `unchecked`, `+`, `-` and `*` wrap around instead of reverting.
-    -- (Checked arithmetic stays unbounded: a result out of range reverts,
-    -- and an execution that continues with it only adds behaviours.)
+    -- Located here, not only at the wrap below: Laurel locates the
+    -- `divisor is non-zero` check of a division at the division's node.
+    let result := withSourceRange ctx sr (mkStmtExprMd (mkPrimOp op [l, r]))
+    -- In `unchecked`, `+`, `-`, `*` and a signed `/` wrap around instead of
+    -- reverting (`type(int8).min / -1` is `type(int8).min`). (Checked
+    -- arithmetic stays unbounded: a result out of range reverts, and an
+    -- execution that continues with it only adds behaviours.)
     match common with
     | some t =>
-      if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then return wrapTo t result
+      if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul | .DivT) then return wrapTo t result
       else return result
     | none => return result
 
   | .UnaryOperation usr sub opAnn prefixAnn => do
+    -- A constant expression (`-128`, `~0`) has the value solc computed.
+    if let some v := (ctx.typeAt? usr "UnaryOperation").bind intConstValue? then
+      return mkStmtExprMd (.LiteralInt v)
     -- In `unchecked`, `++`, `--` and `-` wrap around within the operand's
     -- type instead of reverting.
     let wrap (e : StmtExprMd) : StmtExprMd :=
@@ -856,7 +996,16 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       match opAnn.val with
       | "!" => return mkStmtExprMd (mkPrimOp .Not [subExpr])
       | "-" => return wrap (mkStmtExprMd (mkPrimOp .Neg [subExpr]))
-      | "~" => return mkStmtExprMd (mkCall "bit_not" [subExpr])
+      | "~" =>
+        -- Exact in two's complement: `~x` is `-x - 1` for a signed `x`, and
+        -- `2^N - 1 - x` for an N-bit unsigned one.
+        match (ctx.typeAt? usr "UnaryOperation").bind IntType.ofString? with
+        | some t =>
+          let lit (n : Int) := mkStmtExprMd (.LiteralInt n)
+          if t.signed then
+            return mkStmtExprMd (mkPrimOp .Sub [mkStmtExprMd (mkPrimOp .Neg [subExpr]), lit 1])
+          else return mkStmtExprMd (mkPrimOp .Sub [lit (2 ^ t.bits - 1), subExpr])
+        | none => return mkStmtExprMd (mkCall "bit_not" [subExpr])
       | "++" => return incrDecr .Pre .Incr
       | "--" => return incrDecr .Pre .Decr
       | o => throw (.unsupported s!"Prefix unary operator: {o}")
@@ -929,14 +1078,34 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
       match nameAnn.val with
       | "require" =>
-        -- require(cond), require(cond, msg), or require(cond, CustomError(args)) → assume(cond)
-        -- The `cond :: _` pattern handles all arities (1, 2, 3+): extra arguments
-        -- (string messages, custom error constructors) are runtime diagnostics only
-        -- and are ignored for verification purposes.
-        -- No source metadata: assume nodes don't generate VCs
-        match args with
-        | cond :: _ => return mkStmtExprMd (mkAssume cond)
-        | [] => throw (.typeError "require() needs at least one argument")
+        -- `require(cond)`, `require(cond, "msg")`, `require(cond, E(args))`:
+        -- assume `cond` (no source metadata: assumes produce no VCs).
+        -- Every argument is evaluated before the check, even when `cond`
+        -- holds (Solidity docs, "require arguments are evaluated
+        -- unconditionally"), so the effects of a message such as `f()`, or
+        -- of the arguments of a custom error `E(f())`, happen on the passing
+        -- path too. The message's value is only used when reverting, so
+        -- only its effects are kept; a custom error itself has none.
+        match argsSeq.val.toList, args with
+        | _ :: msgNodes, cond :: msgs =>
+          let mut effects : List StmtExprMd := []
+          for (node, msg) in msgNodes.zip msgs do
+            match node with
+            | .FunctionCall _ errFn errArgsSeq _ _ =>
+              if (ctx.typeAt? (exprRange errFn) (exprKind errFn)).any (·.endsWith "returns (error)") then
+                effects := effects ++ (← errArgsSeq.val.toList.mapM (translateExpr ctx)).filter hasEffects
+              else if hasEffects msg then effects := effects ++ [msg]
+            | _ => if hasEffects msg then effects := effects ++ [msg]
+          -- solc's order of evaluating the arguments is not specified, so
+          -- an effect that changes what another argument reads is rejected
+          -- (as for any call).
+          let operands := cond :: effects
+          for (a, i) in operands.zipIdx do
+            if (operands.drop (i + 1)).any (operandsConflict ctx a ·) then
+              throw (.unsupported "the arguments of `require`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
+          if effects.isEmpty then return mkStmtExprMd (mkAssume cond)
+          return mkStmtExprMd (.Block (effects ++ [mkStmtExprMd (mkAssume cond)]) none)
+        | _, _ => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
         | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
@@ -949,11 +1118,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
         -- selfdestruct(addr) ends the execution: an early return, with
-        -- unknown return values (no data is returned)
+        -- unknown return values (no data is returned); a halt (see
+        -- `haltLabel`)
         let fresh := mkStmtExprMd (.Hole (deterministic := false))
         return mkStmtExprMd (.Block (ctx.returnNames.map (fun n =>
           mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier n))] fresh)) ++
-          [mkStmtExprMd (.Return none)]) none)
+          [mkStmtExprMd (.Return none)]) (some s!"{haltLabel}{sr.start.byteIdx}"))
       | funcName =>
         -- Internal call: prefix with contract name to match procedure declaration
         let qualifiedName := s!"{ctx.contractName}_{funcName}"
@@ -1079,9 +1249,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | some i => return mkStmtExprMd (.LiteralInt i)
         | none => throw (.typeError s!"Unknown enum member '{memberAnn.val}' in '{baseNameAnn.val}'")
       | none => pure ()
-      -- Storage alias field access: sender.field → Identifier "sender__field"
+      -- Storage reference field access: `d.f` reads the storage `d` refers to.
       match ctx.storageAliases.lookup baseNameAnn.val with
-      | some _ => return mkStmtExprMd (mkIdentifier s!"{baseNameAnn.val}__{memberAnn.val}")
+      | some alias => match alias.target with
+        | some t => return mkStmtExprMd (mkFieldSelect t memberAnn.val)
+        | none => return mkStmtExprMd (.Hole (deterministic := false))
       | none => pure ()
       -- Array .length on state vars or memory array params → Identifier "name_length"
       if memberAnn.val == "length" then
@@ -1170,15 +1342,19 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment asr lhs rhs opAnn => do
     -- `x op= y`: `x op y`, with the target's type for the signedness of
-    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*`.
+    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*` and
+    -- a signed `/`; an uninterpreted bitwise result is reduced to the
+    -- target's type (see `bitsInType`).
     let target := (ctx.typeAt? asr "Assignment").bind IntType.ofString?
     let signed := target.any (·.signed)
     let compound (cur rhs : StmtExprMd) : Except TranslationError StmtExprMd := do
       let arith (op : Operation) : StmtExprMd :=
-        let e := mkStmtExprMd (mkPrimOp op [cur, rhs])
+        -- Located here, not only at a wrap around it (see the binary case).
+        let e := withSourceRange ctx asr (mkStmtExprMd (mkPrimOp op [cur, rhs]))
         match target with
-        | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then wrapTo t e else e
+        | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul | .DivT) then wrapTo t e else e
         | none => e
+      let bits (f : String) : StmtExprMd := bitsInType target (mkStmtExprMd (mkCall f [cur, rhs]))
       match opAnn.val with
       | "=" => pure rhs
       | "+=" => pure (arith .Add)
@@ -1186,15 +1362,21 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "*=" => pure (arith .Mul)
       | "/=" => pure (arith (if signed then .DivT else .Div))
       | "%=" => pure (arith (if signed then .ModT else .Mod))
-      | "&=" => pure (mkStmtExprMd (mkCall "bit_and" [cur, rhs]))
-      | "|=" => pure (mkStmtExprMd (mkCall "bit_or" [cur, rhs]))
-      | "^=" => pure (mkStmtExprMd (mkCall "bit_xor" [cur, rhs]))
-      | "<<=" => pure (mkStmtExprMd (mkCall "bit_shl" [cur, rhs]))
-      | ">>=" => pure (mkStmtExprMd (mkCall "bit_shr" [cur, rhs]))
+      | "&=" => pure (bits "bit_and")
+      | "|=" => pure (bits "bit_or")
+      | "^=" => pure (bits "bit_xor")
+      | "<<=" => pure (bits "bit_shl")
+      | ">>=" => pure (bits "bit_shr")
       | o => throw (.unsupported s!"Assignment operator: {o}")
     if let some d := storageRefTarget? ctx lhs then
       throw (.unsupported s!"writing through the storage reference `{d}`")
     let rhsExpr ← translateExpr ctx rhs
+    -- `b = a` copies a struct into storage, or from storage or calldata
+    -- into memory (see `structCopies`).
+    let rhsExpr := if opAnn.val != "=" then rhsExpr else
+      match (ctx.typeAt? (exprRange lhs) (exprKind lhs)).bind structLocation? with
+      | some dst => storeStruct ctx dst rhs rhsExpr
+      | none => rhsExpr
     -- Solidity evaluates the right-hand side first, then the indices, then
     -- reads the target (for `op=`). If any of them has effects (a call
     -- that writes the same mapping, `k++`), they are bound to locals in
@@ -1320,29 +1502,16 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
   | stmt :: rest =>
     match isStorageRefDecl stmt with
     | some (aliasName, initOpt) =>
-      -- Storage reference: emit per-field scalar local variables initialized
-      -- from the mapping entry.
-      -- E.g., `Voter storage sender = voters[msg.sender]` becomes:
-      --   LocalVariable "sender__weight" TInt (select(voters, msg_sender)#weight)
-      --   LocalVariable "sender__voted" TBool (select(voters, msg_sender)#voted)
-      --
-      -- LIMITATION: The FieldSelect initialization (e.g., select(voters, msg_sender)#weight)
-      -- is transformed by HeapParameterization into readField($heap, ..., Field), which
-      -- returns an unconstrained value unless the field was previously written via
-      -- updateField. This means reads of storage-reference fields may be weaker than
-      -- the intended "initialized from the mapping entry" semantics.
-      -- TODO: Either (a) emit explicit assume statements to constrain the field values,
-      -- or (b) bypass heap parameterization for these FieldSelect nodes.
-      --
-      -- Writes to alias fields (e.g., `sender.voted = true`) modify the local
-      -- variables. A write-back pass at the end of the enclosing block would be
-      -- needed for full storage-reference semantics; for now, writes to the
-      -- alias do NOT propagate back to the mapping. This is sound for
-      -- verification (we verify a weaker program) but may produce false
-      -- negatives for properties that depend on the write-back.
-      let initExpr ← match initOpt with
-        | .some_node _ initNode => translateExpr ctx initNode
+      -- Storage reference `Info storage d = data;`: no variable. A read
+      -- `d.f` reads the storage `d` refers to when it runs (`self#data#f`),
+      -- so it sees every write to that storage, direct or by a call. A
+      -- reference not to a path of state-variable fields (one returned by
+      -- a call) is evaluated here, and each read through it is an unknown
+      -- value. Writes through a reference are rejected (`storageRefTarget?`).
+      let initNode ← match initOpt with
+        | .some_node _ initNode => pure initNode
         | .missing_node _ => throw (.unsupported "storage reference without initializer")
+      let initExpr ← translateExpr ctx initNode
       -- Determine the struct type and its fields
       let structTypeName ← match extractStorageRefTypeName stmt with
         | some name => pure name
@@ -1350,18 +1519,20 @@ partial def translateBlockStmts (ctx : TransCtx) (stmts : List (Solidity.node So
       let fieldInfo ← match ctx.structFields.lookup structTypeName with
         | some info => pure info
         | none => throw (.internalError s!"unknown struct type '{structTypeName}' for storage reference")
-      -- Emit per-field local variables initialized from the mapping entry.
-      -- Each field is initialized with FieldSelect on the mapping select result,
-      -- e.g., sender__weight := select(voters, msg_sender)#weight
-      let fieldDecls := fieldInfo.map fun (fieldName, fieldType) =>
-        let fieldInit := mkStmtExprMd (mkFieldSelect initExpr fieldName)
-        mkStmtExprMd (mkLocalVar s!"{aliasName}__{fieldName}" (mkHighTypeMd fieldType) (some fieldInit))
-      let alias : StorageAlias := { structTypeName, fields := fieldInfo }
-      let fieldLocalNames := fieldInfo.map fun (fieldName, _) => s!"{aliasName}__{fieldName}"
-      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)],
-                             localNames := ctx.localNames ++ fieldLocalNames }
+      let isPath : Solidity.node SourceRange → Bool := fun n =>
+        let rec go : Solidity.node SourceRange → Bool
+          | .Identifier .. => true
+          | .MemberAccess _ e _ => go e
+          | _ => false
+        go n
+      let target := if isPath initNode && !hasEffects initExpr then some initExpr else none
+      -- A reference returned by a call: the call still runs.
+      let effects := if target.isNone && hasEffects initExpr then
+        [declareLocal s!"__ref{(exprRange initNode).start.byteIdx}" initExpr] else []
+      let alias : StorageAlias := { structTypeName, fields := fieldInfo, target }
+      let ctx' := { ctx with storageAliases := ctx.storageAliases ++ [(aliasName, alias)] }
       let rest' ← translateBlockStmts ctx' rest
-      return fieldDecls ++ rest'
+      return effects ++ rest'
     | none =>
       -- A tuple declaration `(uint a, uint b) = f(…);` declares its
       -- variables in this block (not a nested one), for the statements after.
@@ -1505,11 +1676,11 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   -- Inline assembly: see `assemblyModel`. Without this arm, InlineAssembly
   -- would fall through to the statement catch-all.
-  | .InlineAssembly _ yulAnn =>
+  | .InlineAssembly asmSr yulAnn =>
     -- A block whose Yul AST is unreadable may do anything.
-    assemblyModel ctx ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
+    assemblyModel ctx asmSr ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
 
-  | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
+  | .ExpressionStatement stmtSr (.Literal _ valAnn kindAnn subAnn) =>
     -- `_` in a modifier body: the code it stands for.
     if valAnn.val == "_" then
       match ctx.placeholder with
@@ -1519,13 +1690,17 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- compatibility with any Ion produced by an older solast.py. There is
     -- no Yul AST, so every Solidity variable in scope may be assigned.
     else if valAnn.val == "__assembly__" && kindAnn.val == "string" then
-      assemblyModel ctx (.any (assemblyAssignable ctx))
+      assemblyModel ctx stmtSr (.any (assemblyAssignable ctx))
     else
       translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return sr exprOpt =>
+    -- A returned storage or calldata struct is copied into a memory return
+    -- variable (see `structCopies`).
+    let returned (i : Nat) (node : Solidity.node SourceRange) : Except TranslationError StmtExprMd := do
+      return storeStruct ctx (ctx.returnLocations.getD i "") node (← translateExpr ctx node)
     -- Under modifiers (`ctx.returnLabel`), `return` ends the function body
     -- or the modifier, not the procedure: the code after `_` still runs.
     if let some lbl := ctx.returnLabel then
@@ -1534,24 +1709,30 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | .some_node _ (.TupleExpression _ compsSeq) =>
           if compsSeq.val.size == ctx.returnNames.length && compsSeq.val.size > 1 then
             -- `return (a, b)`: the components first, then the outputs.
-            let comps ← compsSeq.val.toList.mapM (translateExpr ctx)
+            let comps ← compsSeq.val.toList.zipIdx.mapM fun (c, i) => returned i c
             let temps := comps.zipIdx.map fun (c, i) => (s!"__retv{sr.start.byteIdx}_{i}", c)
             pure (temps.map (fun (t, c) => declareLocal t c) ++
               (ctx.returnNames.zip temps).map fun (out, (t, _)) =>
                 mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))]
                   (mkStmtExprMd (mkIdentifier t))))
           else do
-            let e ← translateExpr ctx (.TupleExpression sr compsSeq)
+            let e ← returned 0 (.TupleExpression sr compsSeq)
             pure (ctx.returnNames.take 1 |>.map fun out =>
               mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
         | .some_node _ expr => do
-          let e ← translateExpr ctx expr
+          let e ← returned 0 expr
           pure (ctx.returnNames.take 1 |>.map fun out =>
             mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
       return withSourceRange ctx sr (mkStmtExprMd (.Block (assigns ++ [mkStmtExprMd (.Exit lbl)]) none))
     match exprOpt with
     | .some_node _ expr => do
-      let e ← translateExpr ctx expr
+      -- `return (a, b)` with a struct that would be copied: not modelled.
+      if let .TupleExpression _ compsSeq := expr then
+        for (c, i) in compsSeq.val.toList.zipIdx do
+          if let some (src, _) := structTypeOf? ctx c then
+            if structCopies (ctx.returnLocations.getD i "") src then
+              throw (.unsupported "returning a tuple with a struct that is copied (from storage or calldata to memory)")
+      let e ← returned 0 expr
       -- Located at the statement, so that the checks Laurel lifts out of
       -- the expression (a callee's precondition, a divisor) are too.
       match ctx.valuedReturnTarget with
@@ -1742,7 +1923,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let initVal ← match initOpt with
           | .some_node _ initNode => do
             let e ← translateExpr ctx initNode
-            pure (some e)
+            -- `Info memory m = a` copies a storage or calldata struct.
+            pure (some (storeStruct ctx storageLocAnn.val initNode e))
           | .missing_node _ => pure none
         -- Storage reference declarations are handled by translateBlockStmts
         -- (alias recorded in context, no LocalVariable emitted).

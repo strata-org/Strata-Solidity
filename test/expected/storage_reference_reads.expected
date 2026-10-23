@@ -1,0 +1,11 @@
+✅ 15: ensures data.value == 5
+✅ 16: heap frame (only this contract is modified)
+❌ 22: ensures r == 1
+✅ 23: heap frame (only this contract is modified)
+✅ 30: ensures r == 5
+✅ 31: heap frame (only this contract is modified)
+❓ 39: ensures r == 1
+✅ 40: heap frame (only this contract is modified)
+✅ 47: ensures r == 5
+✅ 48: heap frame (only this contract is modified)
+8 passed, 1 failed, 1 unknown out of 10 total

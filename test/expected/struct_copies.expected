@@ -1,0 +1,25 @@
+❌ 14: heap frame (only this contract is modified)
+✅ 18: heap frame (only this contract is modified)
+❌ 24: ensures a.value == 5
+✅ 25: heap frame (only this contract is modified)
+✅ 32: ensures a.value == 1 && b.value == 5
+✅ 33: heap frame (only this contract is modified)
+❌ 40: ensures a.value == 9
+✅ 41: heap frame (only this contract is modified)
+✅ 48: ensures a.value == 1
+✅ 49: heap frame (only this contract is modified)
+❌ 56: ensures a.value == 7
+✅ 57: heap frame (only this contract is modified)
+✅ 65: ensures a.value == 1
+✅ 66: heap frame (only this contract is modified)
+✅ 73: heap frame (only this contract is modified)
+❌ 76: assert(m.value == c.value)
+✅ 80: heap frame (only this contract is modified)
+✅ 83: assert(m.value != c.value)
+✅ 88: ensures a.value == 1
+✅ 89: heap frame (only this contract is modified)
+✅ 96: heap frame (only this contract is modified)
+❓ 99: assert(m.value == 1)
+❓ 104: ensures a.value == 9
+❓ 105: heap frame (only this contract is modified)
+16 passed, 5 failed, 3 unknown out of 24 total

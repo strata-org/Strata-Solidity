@@ -57,14 +57,18 @@ def List.findIndex? (p : α → Bool) : List α → Option Nat
   | [] => none
   | x :: xs => if p x then some 0 else (List.findIndex? p xs).map (· + 1)
 
-/-- A storage reference alias: records the struct type and field info so that
-    field accesses through the alias can be desugared to per-field scalar
-    local variables. E.g., `sender.weight` → `Identifier "sender__weight"`. -/
+/-- A storage reference (`Info storage d = data;`). A read `d.f` reads the
+    storage it refers to when it runs: `target#f`. -/
 structure StorageAlias where
   /-- The struct type name (e.g., "Voter"). -/
   structTypeName : String
   /-- Ordered list of (field name, field type) pairs. -/
   fields : List (String × HighType)
+  /-- The struct the reference refers to, read again at each use: a path
+      of fields from a state variable (`self#data`, `self#data#inner`).
+      `none` for any other reference (one taken from a call's result), each
+      read of which is an unknown value. -/
+  target : Option StmtExprMd := none
 
 /-- What an internal call site needs to know about its callee, so that it
     passes the callee's implicit inputs in their declared order and binds
@@ -80,6 +84,9 @@ structure FnSig where
   /-- Names of the user parameters, in declaration order (for calls with
       named arguments). -/
   paramNames : List String := []
+  /-- Data locations of the user parameters (`memory`, `storage`,
+      `calldata`, or `default` for a value type), in declaration order. -/
+  paramLocations : List String := []
 
 /-- Translation context carrying the source file URI for metadata
     and struct field orders for argument reordering. -/
@@ -94,8 +101,7 @@ structure TransCtx where
   contractName : String := ""
   /-- State-variable fields of the enclosing contract (for constructor outputs). -/
   contractFields : List Field := []
-  /-- Storage reference aliases: maps alias name to its alias info.
-      Field accesses `alias.field` are desugared to `Identifier "alias__field"`. -/
+  /-- Storage references in scope (see `StorageAlias`), by name. -/
   storageAliases : List (String × StorageAlias) := []
   /-- Names of state variables in the enclosing contract.
       Used to translate bare identifiers to `FieldSelect self "name"`.
@@ -142,6 +148,8 @@ structure TransCtx where
   isConstructor : Bool := false
   /-- The current function's declared return variables. -/
   returnNames : List String := []
+  /-- Their data locations (see `FnSig.paramLocations`). -/
+  returnLocations : List String := []
   /-- Parameters and locals in memory or calldata, with their types: what
       inline assembly that writes memory may change. -/
   memoryVars : List (String × HighTypeMd) := []
@@ -488,6 +496,31 @@ def readsConstant (name : String) (e : StmtExprMd) : Bool :=
   anyStmtExpr (fun n => match n.val with
     | .StaticCall id [] _ => id.text == name
     | _ => false) e
+
+/-- Whether `e` reads the variable `name`. -/
+def readsVariable (name : String) (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .Var (.Local id) => id.text == name
+    | _ => false) e
+
+/-- The prefix of the label of the block a halt translates to: assembly
+    `return` or `stop`, or `selfdestruct`. A halt ends the transaction; the
+    block models that as a return from the function it is in, which is
+    right only in an entry point (see `ContractTranslator`, which rejects
+    calls of a function that contains one). -/
+def haltLabel : String := "__halt"
+
+/-- Whether `e` contains a halt (a block labelled `haltLabel…`). -/
+def containsHalt (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .Block _ (some l) => l.startsWith haltLabel
+    | _ => false) e
+
+/-- The names of the procedures `e` calls. -/
+def calledNames (e : StmtExprMd) : List String :=
+  collectStmtExprList (fun n => match n.val with
+    | .StaticCall id _ _ => [id.text]
+    | _ => []) e
 
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/

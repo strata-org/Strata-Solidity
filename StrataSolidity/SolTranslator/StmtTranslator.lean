@@ -210,6 +210,13 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
               anonIdx := anonIdx + 1
               pure s!"__arg{n}"
             else pure pName.val
+          -- A mapping or array `storage` parameter refers to the caller's
+          -- storage: writing through it changes the state variable passed
+          -- in. Parameters are modelled as local copies, so that write would
+          -- be lost (and a read after a direct write to the state variable
+          -- would be stale).
+          if storageLocAnn.val == "storage" && ["mapping", "array"].contains solTy.solName then
+            throw (.unsupported s!"the {solTy.solName} `storage` parameter `{baseName}`: a reference to the caller's storage, whose writes would not reach it")
           -- Rename user parameter to `name_param` so we can create a mutable local copy
           let inputName := s!"{baseName}_param"
           inputs := inputs ++ [{ name := inputName, type := solTy.highType }]
@@ -326,6 +333,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                               mayWriteState := !isPure && !isView,
                               isConstructor := isConstructor,
                               returnNames := baseOutputs.map (·.name.text),
+                              returnLocations := match retParams with
+                                | .ParameterList _ retSeq => retSeq.val.toList.map fun
+                                  | .VariableDeclaration _ _ _ _ _ _ _ _ loc _ _ => loc.val
+                                  | _ => ""
+                                | _ => [],
                               memoryVars := memoryParams,
                               valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }

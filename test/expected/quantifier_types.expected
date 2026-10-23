@@ -1,0 +1,13 @@
+❌ 14: ensures exists i : uint8 :: i > 255
+✅ 15: heap frame (only this contract is modified)
+❌ 20: ensures exists a : address :: a > type(uint160).max
+✅ 21: heap frame (only this contract is modified)
+❌ 26: ensures exists v : uint256 :: v < 0
+✅ 27: heap frame (only this contract is modified)
+✅ 32: ensures forall v : uint8 :: v <= 255
+✅ 33: heap frame (only this contract is modified)
+✅ 38: ensures forall v : int8 :: v >= -128
+✅ 39: heap frame (only this contract is modified)
+❌ 44: ensures forall v : uint8 :: v < 255
+✅ 45: heap frame (only this contract is modified)
+8 passed, 4 failed, 0 unknown out of 12 total

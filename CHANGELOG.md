@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-10 — Soundness fixes
+
+Each of these made a false property verify; each fix has a fixture under
+`test/examples/` with true and false properties.
+
+- **Invariants** may not read `msg.sender` or `msg.value` (rejected, as
+  `block.*` already was): an invariant holds between transactions, whoever
+  calls next, and one over the caller was established for one caller and
+  assumed for the next (`invariant_msg_sender.sol`, `invariant_msg_value.sol`).
+- **`require(cond, f())`** keeps the effects of its message arguments, which
+  run before the condition is assumed (`require_message_effects.sol`).
+- **Quantified variables** range over their declared type:
+  `exists i : uint8 :: i == k` is no longer proven for every `k`
+  (`quantifier_types.sol`).
+- **Bitwise results** have the type of the operation (a signed result can be
+  negative); `~x` is exact (`bitwise_types.sol`).
+- **Constant expressions** have the value solc computes, exactly:
+  `(7 / 2) * 2` is 7; `2.5 ether` and `1e18` are accepted
+  (`constant_expressions.sol`).
+- **`unchecked`**: a signed `/` and a power of named constants wrap within
+  their type (`unchecked_wrapping.sol`).
+- **Specifications** divide like the code: `/` rounds toward zero and `%`
+  takes the sign of the dividend (`spec_division.sol`).
+- **Mapping and array `storage` parameters** are rejected: writes through
+  them were lost (`storage_param_mapping.sol`, `storage_param_array.sol`).
+- **Halts**: a call of a function that may end the transaction (assembly
+  `return`/`stop`, `selfdestruct`) is rejected; the caller used to continue
+  after it (`halt_in_helper.sol`, `selfdestruct_in_helper.sol`).
+- **Structs** are copied where Solidity copies them (into storage, from
+  storage or calldata into memory) instead of shared, and a memory struct
+  passed to a function has unknown fields afterwards (`struct_copies.sol`).
+- **Storage references** read the storage they refer to when the read
+  runs, not its value when the reference was taken
+  (`storage_reference_reads.sol`).
+
 ## 2026-10 — Contract invariants
 
 - `@custom:strata invariant` is honored in the NatSpec above `contract`, not

@@ -1,0 +1,5 @@
+✅ 12: assert(x == 7)
+❌ 18: assert(x == 6)
+✅ 23: assert(2.5 ether == 2500000000000000000 && 1e18 == 10 ** 18)
+❌ 28: assert(1.5 gwei == 1500000001)
+2 passed, 2 failed, 0 unknown out of 4 total

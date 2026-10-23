@@ -1,0 +1,12 @@
+✅ 10: divisor is non-zero
+✅ 10: ensures r == a / 2
+✅ 12: divisor is non-zero
+✅ 16: divisor is non-zero
+❌ 16: ensures r == a / 2
+✅ 22: ensures r == a % 2
+✅ 22: modulus is non-zero
+✅ 24: modulus is non-zero
+❌ 28: ensures a % 2 == 0 || a % 2 == 1
+✅ 28: modulus is non-zero
+✅ 30: modulus is non-zero
+9 passed, 2 failed, 0 unknown out of 11 total

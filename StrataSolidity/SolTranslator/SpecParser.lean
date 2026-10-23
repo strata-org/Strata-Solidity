@@ -416,12 +416,16 @@ where
     | "*" :: rest =>
       let (rhs, rest') ← parseUnary rest
       parseMulTail (mkStmtExprMd (mkPrimOp .Mul [lhs, rhs])) rest'
+    -- Solidity's `/` rounds toward zero and `%` takes the sign of the
+    -- dividend (`-7 / 2 == -3`, `-7 % 2 == -1`): the truncating operations,
+    -- as in function bodies. For non-negative operands they agree with the
+    -- Euclidean ones.
     | "/" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (mkPrimOp .Div [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .DivT [lhs, rhs])) rest'
     | "%" :: rest =>
       let (rhs, rest') ← parseUnary rest
-      parseMulTail (mkStmtExprMd (mkPrimOp .Mod [lhs, rhs])) rest'
+      parseMulTail (mkStmtExprMd (mkPrimOp .ModT [lhs, rhs])) rest'
     | _ => return (lhs, tokens)
 
   -- Prefix unary layer (`unary ::= ("!" | "-")? postfix` in SpecGrammar.lean).
@@ -540,15 +544,26 @@ where
       match typeMinMax typeName member with
       | some v => return (mkStmtExprMd (.LiteralInt v), rest)
       | none => throw (.typeError s!"Unknown type member: type({typeName}).{member}")
+    -- A bound variable ranges over the values of its Solidity type
+    -- (`uint8`: 0..255, `address`: 0..2^160-1, …), not over all integers:
+    -- `forall v : T :: P` means `forall v :: inRange(v) ==> P`, and
+    -- `exists v : T :: P` means `exists v :: inRange(v) && P`. Without the
+    -- range, `exists i : uint8 :: i == k` was proven for every uint256 `k`.
     | "forall" :: varName :: ":" :: typeName :: "::" :: rest =>
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
+      let body := match mkRangeCond typeName (mkStmtExprMd (mkIdentifier varName)) with
+        | some range => mkStmtExprMd (mkPrimOp .Implies [range, body])
+        | none => body
       return (mkStmtExprMd (mkForall param body), rest')
     | "exists" :: varName :: ":" :: typeName :: "::" :: rest =>
       let ty := solTypeNameToHighType typeName
       let param : Parameter := { name := varName, type := mkHighTypeMd ty }
       let (body, rest') ← parseExpr rest
+      let body := match mkRangeCond typeName (mkStmtExprMd (mkIdentifier varName)) with
+        | some range => mkStmtExprMd (mkPrimOp .And [range, body])
+        | none => body
       return (mkStmtExprMd (mkExists param body), rest')
     | tok :: rest =>
       if isDigitStr tok then

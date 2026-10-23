@@ -93,8 +93,7 @@ def callResultName? (source? : Option String) (name : String) : Option String :=
     undoes the translator's renamings, applied only to the names it
     introduces (`inputs` are the input names of the procedures): the input
     `x_param` is the parameter `x`, the input `x_in` is the pre-state value
-    `old(x)`, `msg_sender` is `msg.sender`, and `a__b` (a local for the field
-    `b` of a storage reference `a`) is `a.b`. -/
+    `old(x)`, and `msg_sender` is `msg.sender`. -/
 def displayVarName (inputs : Std.HashSet String) (raw : String) : String :=
   let s := match raw.splitOn "@" with
     | base :: _ :: _ => base
@@ -105,7 +104,6 @@ def displayVarName (inputs : Std.HashSet String) (raw : String) : String :=
     else if s == "msg_value" then "msg.value"
     else if s.endsWith "_param" && inputs.contains s then (s.dropEnd 6).toString
     else if s.endsWith "_in" && inputs.contains s then s!"old({(s.dropEnd 3).toString})"
-    else if !s.startsWith "_" && (s.splitOn "__").length == 2 then s.replace "__" "."
     else s
   Strata.Solidity.SolcAst.unmangleName s
 

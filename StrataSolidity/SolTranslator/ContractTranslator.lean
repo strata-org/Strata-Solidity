@@ -284,9 +284,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           let paramNames := (decls params).map fun
             | .VariableDeclaration _ nameAnn .. => nameAnn.val
             | _ => ""
+          let paramLocations := (decls params).map fun
+            | .VariableDeclaration _ _ _ _ _ _ _ _ storageLoc _ _ => storageLoc.val
+            | _ => ""
           functionSigs := functionSigs ++ [(fnNameAnn.val,
             { isPure := fnIsPure, isView := fnMutAnn.val == "view", memArrayParams, returnTypes,
-              paramNames })]
+              paramNames, paramLocations })]
       | _ => pure ()
 
     -- Pass 3: Parse contract invariants from NatSpec and set up function context
@@ -321,6 +324,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       -- checking the contract's functions.
       if let some (_, what, _) := envConstants.find? fun (c, _, _) =>
           c != "this_address" && readsConstant c parsed then
+        throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
+      -- The caller and the value sent belong to one transaction too. An
+      -- invariant over them would be established for one caller and
+      -- assumed for the next: with `owner == msg.sender` assumed on entry,
+      -- `require(msg.sender != owner)` could never pass, and every
+      -- property after it would be proven.
+      if let some (_, what) := [("msg_sender", "msg.sender"), ("msg_value", "msg.value")].find?
+          (readsVariable ·.1 parsed) then
         throw (.unsupported s!"`{what}` is not allowed in an invariant (`{e}`): it changes between transactions")
       pure parsed
 
@@ -420,6 +431,24 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           (.some_node contractSr (.Block contractSr ⟨contractSr, #[]⟩)) (str "")
           ⟨contractSr, #[]⟩
       procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
+
+    -- A halt (assembly `return` or `stop`, `selfdestruct`) ends the whole
+    -- transaction, keeping the state written so far. It is modelled as a
+    -- return from the function it is in (see `haltLabel`): right in an
+    -- entry point, whose postconditions and invariants are checked there,
+    -- but a function that calls one containing a halt would continue after
+    -- the call, and its remaining code be verified as if it ran. Such calls
+    -- are rejected.
+    let implOf (p : Procedure) : Option StmtExprMd := match p.body with
+      | .Transparent e => some e
+      | .Opaque _ impl _ => impl
+      | _ => none
+    let solidityName (proc : String) := (proc.drop (nameAnn.val.length + 1)).toString
+    let halting := procedures.filterMap fun p =>
+      if (implOf p).any containsHalt then some p.name.text else none
+    for p in procedures do
+      if let some callee := ((implOf p).map calledNames).getD [] |>.find? halting.contains then
+        throw (.unsupported s!"the call of `{solidityName callee}` in `{solidityName p.name.text}`: `{solidityName callee}` may end the transaction (assembly `return` or `stop`, `selfdestruct`), and the code after the call would be verified as if it ran")
 
     -- Contract invariants are checked via injection into public functions'
     -- pre/postconditions. No separate invariant procedure is needed.
