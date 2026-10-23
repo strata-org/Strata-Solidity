@@ -84,4 +84,8 @@ contract CommentPlacement {
     function frame(address who) external { x = 2; }
 
     function setY(uint256 v) external { x = v; } /// @custom:strata invariant x == 7
+
+    // A lemma is not an annotation StrataSolidity reads (GAP-004).
+    /// @custom:strata lemma x == x
+    function withLemma() external { x = 3; }
 }

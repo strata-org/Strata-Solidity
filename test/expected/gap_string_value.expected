@@ -1,0 +1,1 @@
+Exception: Laurel to Core translation failed: [gap_string_value.sol(468-475) expected 'int', got 'string', gap_string_value.sol(489-504) Resolution failed: 'array_length' is not defined]

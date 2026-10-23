@@ -26,3 +26,17 @@ contract SumToken {
         balances[to] += amount;
     }
 }
+
+// Not proven: `mint` forgets to update the supply, which breaks the
+// invariant. (The sum's update axiom is quantified, so z3 reports this as
+// unknown rather than refuted.)
+contract SumTokenMintBug {
+    mapping(address => uint256) public balances;
+
+    /// @custom:strata invariant totalSupply == sum(balances)
+    uint256 public totalSupply;
+
+    function mint(address to, uint256 amount) external {
+        balances[to] += amount;
+    }
+}

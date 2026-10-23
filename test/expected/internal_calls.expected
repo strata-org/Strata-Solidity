@@ -14,4 +14,5 @@
 ✅ 57: ensures balances[who] == 9
 ✅ 58: ensures r == 6
 ✅ 67: ensures balances[a] == 6 && balances[b] == 9
-15 passed, 0 failed, 1 unknown out of 16 total
+❌ 79: ensures r == 4
+15 passed, 1 failed, 1 unknown out of 17 total

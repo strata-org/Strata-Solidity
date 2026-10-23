@@ -9,4 +9,6 @@
 ✅ 22: invariant totalSupply == sum(balances)
 ✅ 22: modifies frame (balances)
 ✅ 22: modifies frame (totalSupply)
-11 passed, 0 failed, 0 unknown out of 11 total
+✅ 33: invariant totalSupply == sum(balances)
+❓ 39: invariant totalSupply == sum(balances)
+12 passed, 0 failed, 1 unknown out of 13 total

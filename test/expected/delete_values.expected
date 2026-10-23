@@ -1,0 +1,6 @@
+✅ 14: ensures count == 0 && owner == address(0)
+✅ 15: ensures balances[a] == 0 && allowance[a][b] == 0
+✅ 16: heap frame (only this contract is modified)
+✅ 25: ensures balances[c] == old(balances[c])
+❌ 31: ensures balances[a] == old(balances[a])
+4 passed, 1 failed, 0 unknown out of 5 total

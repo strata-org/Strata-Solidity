@@ -1,0 +1,18 @@
+✅ 14: loop invariant #1 of loop 1 holds on entry
+✅ 14: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 15: loop invariant #2 of loop 1 holds on entry
+✅ 15: loop invariant #2 of loop 1 is preserved by the loop body
+✅ 16: ensures x == old(x) + 5 + n
+✅ 17: heap frame (only this contract is modified)
+❌ 30: loop invariant #1 of loop 1 holds on entry
+✅ 30: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 31: loop invariant #2 of loop 1 holds on entry
+✅ 31: loop invariant #2 of loop 1 is preserved by the loop body
+✅ 32: heap frame (only this contract is modified)
+✅ 47: loop invariant #1 of loop 1 holds on entry
+✅ 47: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 48: loop invariant #2 of loop 1 holds on entry
+✅ 48: loop invariant #2 of loop 1 is preserved by the loop body
+✅ 49: ensures x == old(x) + 5 + n
+❓ 50: heap frame (only this contract is modified)
+15 passed, 1 failed, 1 unknown out of 17 total

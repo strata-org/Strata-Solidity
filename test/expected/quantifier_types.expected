@@ -10,4 +10,5 @@
 ✅ 39: heap frame (only this contract is modified)
 ❌ 44: ensures forall v : uint8 :: v < 255
 ✅ 45: heap frame (only this contract is modified)
-8 passed, 4 failed, 0 unknown out of 12 total
+✅ 57: ensures exists a : address :: balances[a] == v
+9 passed, 4 failed, 0 unknown out of 13 total

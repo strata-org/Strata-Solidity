@@ -12,3 +12,4 @@ ignored_annotations.sol:63:9: warning: `@custom:strata` annotation is not attach
 ignored_annotations.sol:76:17: warning: `@custom:strata` in the middle of a comment line is ignored; an annotation must start its line
 ignored_annotations.sol:83:9: warning: `@custom:strata modifies balance[who +]` on function `frame`: the key cannot be read, so the frame of `balance` is not checked
 ignored_annotations.sol:86:54: warning: `@custom:strata` annotation is not attached to a contract, function or state variable and is ignored
+ignored_annotations.sol:89:9: warning: unrecognized annotation `@custom:strata lemma x == x` on function `withLemma` is ignored

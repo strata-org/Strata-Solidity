@@ -1,0 +1,6 @@
+✅ 12: ensures items.length == old(items.length) + 1
+✅ 13: ensures items[old(items.length)] == v
+✅ 20: ensures items[i] == old(items[i])
+❌ 26: ensures items.length == old(items.length) + 2
+❌ 32: ensures items[0] == v
+3 passed, 2 failed, 0 unknown out of 5 total

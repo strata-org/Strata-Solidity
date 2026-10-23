@@ -1,0 +1,5 @@
+✅ 13: ensures owner == msg.sender
+✅ 14: ensures admin == owner
+✅ 15: invariant owner != address(0)
+❌ 25: ensures owner != msg.sender
+3 passed, 1 failed, 0 unknown out of 4 total
