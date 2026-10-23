@@ -20,9 +20,9 @@ permissions:
 jobs:
   build-and-test:
     name: build + test (ubuntu)
-    # Pinned, not `ubuntu-latest`: z3 comes from the image's apt archive and
-    # solc from a PPA built per Ubuntu release, so a new image can change
-    # both. Move to a newer image deliberately, in its own change.
+    # Pinned, not `ubuntu-latest`: solc comes from a PPA built per Ubuntu
+    # release, so a new image can change it. Move to a newer image
+    # deliberately, in its own change. (z3 is pinned separately, below.)
     runs-on: ubuntu-24.04
 
     steps:
@@ -86,16 +86,28 @@ jobs:
           solc --version
 
       - name: Install z3
+        env:
+          # A pinned release, not the image's apt package: Ubuntu 24.04 ships
+          # z3 4.8.12 (2021), which leaves obligations unknown that later
+          # versions decide, and the golden suite pins every verdict. To move
+          # to another version, change both values and check that
+          # `CI=true bash test/run_tests.sh` passes with it locally.
+          Z3_VERSION: 4.15.4
+          Z3_SHA256: a41b690e89c343931471506cdc6d957b6044a200fd2d240cc017432afdff7d3e
         run: |
           # The Strata Core verifier shells out to a `z3` binary on PATH
           # (StrataSolidityMain.lean wires `solver := "z3"` into VerifyOptions,
           # see design.md §6.5 / GAP-012). Without it, every obligation fails
           # with `SMT Solver Invocation Error: could not execute external
           # process 'z3'`. Listed as a prerequisite in README.md and
-          # docs/guide/src/installation.md; the CI install step had been
-          # missing.
-          sudo apt-get install -y z3
-          z3 --version
+          # docs/guide/src/installation.md.
+          asset="z3-${Z3_VERSION}-x64-glibc-2.39"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset.zip" \
+            "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/$asset.zip"
+          echo "$Z3_SHA256  $RUNNER_TEMP/$asset.zip" | sha256sum --check --strict
+          unzip -q "$RUNNER_TEMP/$asset.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$asset/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/$asset/bin/z3" --version
 
       - name: Install Python dev dependencies
         run: |

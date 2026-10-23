@@ -16,7 +16,7 @@ no intermediate serialization.
 - [Lean 4](https://lean-lang.org/) (see `lean-toolchain` for the pinned version)
 - [Strata](https://github.com/strata-org/Strata) — vendored as a git submodule at `./Strata` (see [Strata submodule](#strata-submodule) below)
 - [solc](https://docs.soliditylang.org/en/latest/installing-solidity.html) (Solidity compiler)
-- z3 or cvc5 SMT solver
+- z3 or cvc5 SMT solver (CI uses z3 4.15.4; see [Installation](docs/guide/src/installation.md))
 - Python 3.12+ — dev/CI tooling only (SARIF schema check, bench CSV enforcer); not needed to verify contracts
 
 ### Strata submodule
