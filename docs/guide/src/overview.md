@@ -35,7 +35,7 @@ Solidity's execution model is simpler than most general-purpose languages:
 
 - **No heap aliasing** — storage is a flat key-value store. Two state variables cannot point to the same memory.
 - **No concurrency** — the EVM is single-threaded.
-- **No dynamic dispatch** — inheritance exists but external calls are explicit.
+- **Static dispatch** — external calls are explicit, and which override runs follows from the contract being verified.
 - **Deterministic execution** — same inputs always produce same outputs.
 
 These properties eliminate entire classes of verification complexity that tools for Java, Rust, or C must handle.

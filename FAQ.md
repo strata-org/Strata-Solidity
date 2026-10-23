@@ -32,7 +32,7 @@ The tradeoff: JVerify specs are type-checked by javac (you get IDE autocomplete 
 
 - **No heap aliasing** — Solidity storage is a flat key-value store. Two state variables cannot point to the same memory. This eliminates the hardest part of heap reasoning that JVerify must handle.
 - **No concurrency** — The EVM is single-threaded. No concurrent reasoning needed.
-- **No dynamic dispatch** — Solidity has inheritance but external calls are explicit. No virtual method resolution to model.
+- **Static dispatch** — external calls are explicit, and the contract a function runs in is known: a virtual function's override and the target of `super` follow from the linearization of the contract being verified, with no run-time types to model.
 - **Deterministic execution** — Same inputs always produce same outputs (modulo `block.timestamp`).
 - **Simpler language** — No generics, no lambdas, no closures. The translation from Solidity to Laurel is a single file (~2100 lines) vs JVerify's ~30 files.
 
@@ -78,9 +78,9 @@ The alternatives: Core is too low-level (no built-in heap model), C_Simp is a to
 
 See `LIMITATIONS.md` for the full supported/unsupported matrix. In summary:
 
-**Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys.
+**Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys, inheritance (inherited state, functions, modifiers, invariants and constructors, and `super`).
 
-**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, inheritance, assembly.
+**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, assembly, a base contract in another file.
 
 ## Why does Solidity need fewer simplification passes than Java?
 
