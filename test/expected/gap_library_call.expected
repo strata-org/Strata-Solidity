@@ -1,0 +1,1 @@
+Exception: Laurel to Core translation failed: [gap_library_call.sol(564-581) Resolution failed: 'max' is not defined, gap_library_call.sol(564-571) Resolution failed: 'MathLib' is not defined]

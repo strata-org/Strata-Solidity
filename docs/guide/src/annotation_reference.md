@@ -27,7 +27,11 @@ Specifications use Solidity expression syntax with these additions:
 | `keccak256(abi.encodePacked(a, b))` | Hash as mapping key |
 | `msg.sender` / `msg.value` | Transaction context |
 | `address(0)` | Zero address |
-| `+`, `-`, `*`, `/`, `%` | Arithmetic (including division and modulo) |
+| `+`, `-`, `*`, `/`, `%` | Arithmetic on unbounded integers (no wrapping); `/` and `%` round toward zero, as in Solidity |
+
+There are no `**`, bitwise or shift operators in specifications, and no type
+conversions other than `address(…)`: a specification that uses one stops the
+translation of the file (see [Current Limitations](./limitations.md)).
 
 ## Modifies Clause
 
@@ -35,6 +39,7 @@ Specifications use Solidity expression syntax with these additions:
 |---|---|
 | `modifies balances` | Entire mapping may change |
 | `modifies balances[msg.sender]` | Only this key may change; other keys get automatic frame |
+| `modifies allowance[owner]` | With a nested mapping, every `allowance[owner][…]` may change. A key with two indexes (`allowance[owner][spender]`) is not read: the frame of `allowance` is then not checked (warned) |
 | `modifies balances[from], balances[to]` | Multiple keys; combined frame exclusion |
 | `modifies balances, totalSupply` | Multiple variables |
 
@@ -46,6 +51,8 @@ State variables NOT listed in `modifies` get automatic frame conditions (their v
 - `invariant`: placed in the NatSpec above the `contract` keyword or on a **state variable declaration** inside the contract
 - Use `@notice` for natural language documentation alongside specs
 - Both `///` single-line and `/** */` multi-line comment styles are supported
+- Each annotation fits on one line; text continued on the next line is reported and ignored
+- A `//` after the expression starts a comment, which is not read: `ensures x == 1  // the new value`
 
 ## Comment Styles
 

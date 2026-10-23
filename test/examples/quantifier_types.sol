@@ -46,3 +46,16 @@ contract QuantifierTypes {
         last = 0;
     }
 }
+
+// A true existential whose witness z3 finds (here through the mapping write,
+// with z3 4.8.12 and 4.15). z3 does not search for witnesses in general: the
+// equally true `exists n : uint256 :: n > 5` is unknown.
+contract ExistsWitness {
+    mapping(address => uint256) public balances;
+
+    // Passes: `to` is a witness.
+    /// @custom:strata ensures exists a : address :: balances[a] == v
+    function set(address to, uint256 v) external {
+        balances[to] = v;
+    }
+}

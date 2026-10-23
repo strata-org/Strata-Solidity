@@ -1,0 +1,1 @@
+Exception: Solidity to Laurel translation failed: Unsupported: internal call to `GapConstructorCall__mint` from a function without contract state access (e.g. the constructor)

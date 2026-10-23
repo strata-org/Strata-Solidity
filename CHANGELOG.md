@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10 — Capability ledger
+
+- `docs/capabilities.toml` lists every feature with its status (verified,
+  partly verified, unknown values, not verified, rejected, fails) and the
+  test fixtures that show it. `scripts/capabilities.py` generates the
+  feature tables of LIMITATIONS.md, README.md, FAQ.md, the guide, the
+  next-spec's gap table and the landing page from it; CI runs it with
+  `--check`, which fails when a fixture no longer shows what its entry
+  says or a table is out of date.
+- `test/examples/gap_*.sol` pin the current error of each construct that
+  is rejected or fails to translate (`pop`, `revert("…")`, library calls,
+  strings, …), so that supporting one changes its golden file and its
+  ledger entry together.
+- Annotations may end with a `//` comment (`ensures x == v  // the new
+  value`), as the guide's examples do; such a line used to stop the
+  translation of the whole file. The spec tokenizer reads characters, not
+  bytes, so non-ASCII text no longer garbles the tokens after it.
+- Documentation: the guide's examples verify as written (`requires to !=
+  msg.sender` in the transfer examples, a one-index `modifies` for
+  `transferFrom`, a constant inside its contract); `old()` in loop
+  invariants and `msg.sender` in constructors are documented as working;
+  cvc5 is no longer mentioned (the solver is z3); README shows real
+  output; the FAQ describes the in-Lean pipeline; the SARIF workflow
+  example builds StrataSolidity before using it.
+
 ## 2026-10 — Inheritance
 
 A contract is verified with what it inherits. Before, `contract Child is
@@ -98,10 +123,61 @@ Each of these made a false property verify; each fix has a fixture under
 - **Counterexamples** are no longer dropped when z3 prints nested arrays
   with `let`.
 
+## 2026-10-13 — Reporting, output and soundness (PRs #3, #5–#14)
+
+### Soundness
+
+Each of these made a false property verify, or hid one.
+
+- Statements the translator cannot translate are reported, instead of
+  being assumed false (which proved everything after them) (#8).
+- Loop conditions are evaluated before every iteration, with their
+  effects; `i++` yields the old value; `&&` and `||` evaluate their right
+  operand only when needed; locals and return variables start at zero;
+  fixed-size array parameters have their length (#8).
+- Inline assembly makes unknown what it may write: the variables it
+  assigns, memory, and contract state when it may write storage (#8).
+- `block.*`, `tx.*` and `gasleft()` are modelled: one value per
+  transaction (`gasleft()` fresh at each read) (#8).
+- Internal calls pass the callee's implicit arguments in the order it
+  declares them, and keep its state outputs (#7).
+- Tuple declarations bind to their initializer; the arguments of events,
+  transfers and calls are evaluated; operands whose evaluation order
+  matters are rejected (#10).
+- Writes through storage references are rejected; functions without a
+  body may change state; memory arrays are references; unmodelled values
+  are unknown at every evaluation (#11).
+- Integers follow Solidity: conversions truncate, `unchecked` arithmetic
+  wraps, signed `/` and `%` round toward zero; constant powers, shifts and
+  masks are folded (#12).
+- Modifiers are inlined into each function that uses them (their state
+  writes, the code after `_`, their arguments), instead of contributing
+  only their leading `require`s (#13).
+- External calls (`this.f()`, interface calls, low-level calls, `new`) may
+  re-enter the contract: its state is unknown after the call except for
+  its invariants, which are checked before the call. `--assume-no-reentrancy`
+  trusts calls not to re-enter (#14).
+
+### Reporting and output
+
+- Annotations and functions that are not verified are reported as
+  warnings instead of being dropped; `--strict` exits 1 unless everything
+  is proven, in every output format; the input file is verified, not the
+  first source unit solc lists (#3).
+- SARIF output shares the CLI's verdicts, classifies results by property,
+  includes unverified annotations as `strata/not-verified`, and conforms
+  to SARIF 2.1.0 (#5).
+- Obligations and counterexamples are named in user terms (the clause,
+  `old(x)`, `msg.sender`), and each clause is reported at its own NatSpec
+  line (#6).
+- Checks of initializers, returns and heap frames have source locations;
+  warnings and failures appear in `--json`, `--pipeline-json` and SARIF
+  output (#9).
+
 ## 2026-10-08 — Upstream Strata re-pin (Lean 4.31, StrataDDM / StrataLaurel)
 
 Re-pins the Strata submodule from `349b1cf4` (nightly-20260523) to
-`d1fc3a08` (nightly-20261008), 393 upstream commits. Behavior-preserving:
+`d1fc3a08` (tagged nightly-20261009 upstream), 393 upstream commits. Behavior-preserving:
 per-fixture pass/fail/unknown counts and exit codes are unchanged across
 all 144 `.sol` fixtures; the golden suite passes unchanged.
 
@@ -157,6 +233,7 @@ and verifies. `.sol` files are accepted directly.
 - In-contract invariant fixture placement
 
 ### Verification corpus
+Measured on OpenZeppelin contracts that are not in this repository:
 Token 30/30 · AccessControl 15/15 · Ownable2Step 16/16 · Initializable
 13+1/14 · Ownable 9/9 · Pausable 4/4 · Nonces 4/4. Golden suite 22/22.
 
@@ -280,6 +357,14 @@ behavior.
 - Removed all legacy `_strata_*` stub support
 
 ### Solidity Language Support
+
+(As first reported. Several items stopped holding, or were found not to:
+inheritance stopped resolving inherited members with the 2026-07 frontend
+until the 2026-10 inheritance change; enums are not constrained; `using ...
+for` and `delete` of a non-integer fail to translate; `selfdestruct` ends
+the transaction instead of being a no-op. LIMITATIONS.md has the current
+status.)
+
 - Inheritance (solc AST flattening, baseContracts field)
 - Modifiers (inline pre-_ requires as preconditions)
 - Enums (modeled as constrained integers)

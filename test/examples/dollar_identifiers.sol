@@ -16,4 +16,10 @@ contract Dollar {
         $total += $tmp;
         $bal[to] += $tmp;
     }
+
+    // Refuted: `$total` grows by `$a`, which may be 0.
+    /// @custom:strata ensures $total == old($total) + 1
+    function addWrong(uint256 $a) external {
+        $total += $a;
+    }
 }

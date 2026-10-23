@@ -2,15 +2,18 @@
 pragma solidity ^0.8.0;
 
 /// @title OverflowToken
-/// @notice ERC20-like token with missing overflow guard on mint — should FAIL verification.
+/// @notice ERC20-like token whose mint can overflow — should FAIL verification.
+/// In `unchecked`, `totalSupply += amount` wraps around instead of reverting,
+/// so the new supply can be smaller than the old one.
 contract OverflowToken {
     mapping(address => uint256) public balances;
     uint256 public totalSupply;
 
     /// @custom:strata ensures totalSupply == old(totalSupply) + amount
     function mint(address to, uint256 amount) external {
-        // No require bounding amount — overflow possible in spec reasoning
-        totalSupply += amount;
+        unchecked {
+            totalSupply += amount; // wraps on overflow
+        }
         balances[to] += amount;
     }
 }

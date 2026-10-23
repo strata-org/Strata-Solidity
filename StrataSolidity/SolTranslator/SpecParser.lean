@@ -66,13 +66,20 @@ def continuedStrataAnnotations (doc : String) : List Nat := Id.run do
       if text.isEmpty || text.startsWith "@" then open? := none
   return out
 
+/-- The text of an annotation before a `//` comment: in
+    `ensures x == 1  // the new value`, the spec is `x == 1`. No spec
+    expression contains `//` (`/` is division, and there are no string
+    literals), so the first `//` always starts a comment. -/
+def stripSpecComment (s : String) : String :=
+  ((s.splitOn "//").headD s).trimAscii.toString
+
 /-- Parse the text after `@custom:strata` as `<keyword> <body>` (separated
-    by spaces or tabs). Returns `none` for an unknown keyword or an empty
-    body. -/
+    by spaces or tabs), without a trailing `//` comment. Returns `none` for
+    an unknown keyword or an empty body. -/
 def parseStrataAnnotation? (rest : String) : Option StrataAnnotation :=
   let chars := rest.toList
   let kw := String.ofList (chars.takeWhile fun c => c != ' ' && c != '\t')
-  let body := (String.ofList (chars.drop kw.length)).trimAscii.toString
+  let body := stripSpecComment (String.ofList (chars.drop kw.length))
   if body.isEmpty then none
   else match kw with
     | "requires" => some (.requires body)
@@ -243,66 +250,47 @@ boolean operators (`&&`, `||`), and parentheses.
 
 namespace SpecParser
 
-set_option linter.deprecated false in
+/-- Whether `c` separates spec tokens: ASCII whitespace, or a no-break space
+    (U+00A0), which text pasted from a web page often carries and which is
+    invisible in an error message. -/
+private def isSpecSpace (c : Char) : Bool :=
+  c.isWhitespace || c.val == 0xA0
+
+/-- Characters that form a token on their own (after the two- and
+    three-character operators are taken). A standalone `!` is its own token
+    so that `parseUnary` reads `!paused` as `!` applied to `paused`. -/
+private def isSpecPunct (c : Char) : Bool :=
+  "()[],!:<>+-*/%.".contains c
+
+/-- The tokens of a spec expression, before identifier renaming. The scan
+    is over characters, not bytes, so that non-ASCII text (`é`, `✅`) stays
+    whole: it ends up in an identifier, which the translator then reports as
+    undefined, instead of garbling the tokens around it. -/
+def tokenizeRaw (s : String) : List String :=
+  (go s.toList "" #[]).toList
+where
+  /-- Push the pending word `cur`, if any. -/
+  flush (cur : String) (acc : Array String) : Array String :=
+    if cur.isEmpty then acc else acc.push cur
+  go : List Char → String → Array String → Array String
+    | [], cur, acc => flush cur acc
+    | '=' :: '=' :: '>' :: cs, cur, acc => go cs "" ((flush cur acc).push "==>")
+    | '=' :: '=' :: cs, cur, acc => go cs "" ((flush cur acc).push "==")
+    | '!' :: '=' :: cs, cur, acc => go cs "" ((flush cur acc).push "!=")
+    | '>' :: '=' :: cs, cur, acc => go cs "" ((flush cur acc).push ">=")
+    | '<' :: '=' :: cs, cur, acc => go cs "" ((flush cur acc).push "<=")
+    | '&' :: '&' :: cs, cur, acc => go cs "" ((flush cur acc).push "&&")
+    | '|' :: '|' :: cs, cur, acc => go cs "" ((flush cur acc).push "||")
+    | ':' :: ':' :: cs, cur, acc => go cs "" ((flush cur acc).push "::")
+    | c :: cs, cur, acc =>
+      if isSpecSpace c then go cs "" (flush cur acc)
+      else if isSpecPunct c then go cs "" ((flush cur acc).push c.toString)
+      else go cs (cur.push c) acc
+
 /-- Tokenize a spec expression string into a list of tokens. -/
 def tokenize (s : String) : List String :=
   -- Identifiers get the same `$` renaming as the AST (`SolcAst.mangleName`).
   (tokenizeRaw s).map SolcAst.mangleName
-where
-  tokenizeRaw (s : String) : List String :=
-  let rec go (i : Nat) (acc : List String) (cur : String) (fuel : Nat) : List String :=
-    if fuel == 0 then (if cur.isEmpty then acc else acc ++ [cur]).reverse
-    else if i >= s.length then (if cur.isEmpty then acc else acc ++ [cur])
-    else
-      let c := s.get ⟨i⟩
-      if c == ' ' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) acc' "" (fuel - 1)
-      else if c == '(' || c == ')' || c == '[' || c == ']' || c == ',' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
-      else if c == '=' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' && i + 2 < s.length && s.get ⟨i+2⟩ == '>' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 3) (acc' ++ ["==>"]) "" (fuel - 1)
-      else if c == '=' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["=="]) "" (fuel - 1)
-      else if c == '!' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["!="]) "" (fuel - 1)
-      else if c == '!' then
-        -- Standalone logical-not. Emitted as its own token so the parser's
-        -- unary layer (parseUnary) can pick it up; without this, a bare `!`
-        -- would accumulate into the following identifier (e.g. `!paused`).
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) (acc' ++ ["!"]) "" (fuel - 1)
-      else if c == '>' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ [">="]) "" (fuel - 1)
-      else if c == '<' && i + 1 < s.length && s.get ⟨i+1⟩ == '=' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["<="]) "" (fuel - 1)
-      else if c == '&' && i + 1 < s.length && s.get ⟨i+1⟩ == '&' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["&&"]) "" (fuel - 1)
-      else if c == '|' && i + 1 < s.length && s.get ⟨i+1⟩ == '|' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["||"]) "" (fuel - 1)
-      else if c == ':' && i + 1 < s.length && s.get ⟨i+1⟩ == ':' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 2) (acc' ++ ["::"]) "" (fuel - 1)
-      else if c == ':' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) (acc' ++ [":"]) "" (fuel - 1)
-      else if c == '>' || c == '<' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
-      else if c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '.' then
-        let acc' := if cur.isEmpty then acc else acc ++ [cur]
-        go (i + 1) (acc' ++ [c.toString]) "" (fuel - 1)
-      else
-        go (i + 1) acc (cur.push c) (fuel - 1)
-  go 0 [] "" (s.length * 4 + 10)
 
 private def isDigitStr (s : String) : Bool :=
   !s.isEmpty && s.toList.all Char.isDigit

@@ -207,3 +207,11 @@ jobs:
           python3 -m pip install markdown pygments
           python3 docs/site/_src/capture_outputs.py
           python3 docs/site/_src/build.py
+
+      # ---- Stage 9: the capability ledger (docs/capabilities.toml) ----
+      # Every witness must hold in the golden files that the golden stage
+      # compared with the binary, and the feature tables generated from the
+      # ledger (LIMITATIONS.md, README.md, FAQ.md, the guide, the next-spec)
+      # must be up to date. Needs only Python 3.11+ (tomllib).
+      - name: scripts/capabilities.py --check (capability ledger)
+        run: python3 scripts/capabilities.py --check

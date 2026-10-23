@@ -7,6 +7,8 @@ Sources:
   docs/site/_src/templates/          landing page and guide page shell
   docs/site/_src/examples/*.sol,.out real contracts and real strataSolidity
                                       output (refresh with capture_outputs.py)
+  docs/capabilities.toml             the capability ledger: the landing
+                                      page's annotation table and status lists
 
 Output, at the site root (docs/site/):
   index.html, docs/*.html, assets/search-index.js
@@ -16,6 +18,7 @@ Usage:  python3 docs/site/_src/build.py      (needs: pip install markdown pygmen
 import html
 import json
 import re
+import sys
 from pathlib import Path
 
 import markdown
@@ -31,6 +34,9 @@ DOCS_OUT = SITE / "docs"
 EXAMPLES = SRC / "examples"
 REPO_URL = "https://github.com/strata-org/Strata-Solidity"
 GUIDE_SRC_URL = f"{REPO_URL}/blob/main/docs/guide/src"
+
+sys.path.insert(0, str(REPO / "scripts"))
+import capabilities  # noqa: E402  (scripts/capabilities.py)
 
 SPEC_RE = re.compile(r"@custom:strata(\s+)(requires|ensures|invariant|modifies|loop-invariant|forall|exists)\b")
 
@@ -176,6 +182,10 @@ def build_docs():
 def build_landing():
     meta = json.loads((EXAMPLES / "outputs.json").read_text())
     values = {"commit": meta["commit"]}
+    ledger = capabilities.load()
+    values["capabilities:annotations"] = capabilities.html_annotations(ledger)
+    values["capabilities:works"] = capabilities.html_highlights(ledger, "works")
+    values["capabilities:not_yet"] = capabilities.html_highlights(ledger, "not_yet")
     for sol in EXAMPLES.glob("*.sol"):
         values[f"code:{sol.stem}"] = render_code(sol.read_text().strip(), "solidity")
         values[f"out:{sol.stem}"] = render_code(sol.with_suffix(".out").read_text().strip())

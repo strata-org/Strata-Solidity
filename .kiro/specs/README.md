@@ -9,12 +9,14 @@ their content here.
 StrataSolidity uses a paired spec layout:
 
 - **`strata-solidity-baseline/`** — a **frozen, descriptive** retrospective
-  baseline that pins today's behavior on `main`. It introduces no new
-  functionality. Every supported Solidity construct, annotation, CLI flag,
-  output format, test harness, and known limitation is recorded with a stable
-  ID so downstream work can cite it unambiguously. The baseline is tagged
-  (`v0.1.0-baseline`) and is amended only for documentation or
-  property-based-test drift, never for feature changes.
+  baseline that pinned the behavior of `main` when it was written
+  (2026-05). It introduces no new functionality. Every supported Solidity
+  construct, annotation, CLI flag, output format, test harness, and known
+  limitation is recorded with a stable ID so downstream work can cite it
+  unambiguously. Parts of it no longer describe the code (the Python/Ion
+  frontend, for one); `strata-solidity-next` records what changed. It is
+  not tagged: the planned `v0.1.0-baseline` tag (baseline task 5) was not
+  created.
 
 - **`strata-solidity-next/`** — the forward-looking spec that **diffs against
   the baseline**. It is the **only** place where `GAP-*` items are allowed to
@@ -59,4 +61,8 @@ fence today's behavior against silent regression from `strata-solidity-next`.
 │   ├── design.md                    ← architecture and risk register
 │   └── tasks.md                     ← retrospective implementation plan
 └── strata-solidity-next/            ← forward-looking, diffs against baseline
+    └── requirements.md              ← changes since the baseline; gap status
 ```
+
+What the current binary verifies, feature by feature, is in the capability
+ledger `docs/capabilities.toml` (see `CONTRIBUTING.md`), not in these specs.

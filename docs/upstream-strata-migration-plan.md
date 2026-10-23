@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Previous pin | `349b1cf4915d3d9357b8de7edcc94d3b9a79f0b5` (nightly-20260523) | 2026-05-22 | v4.29.1 |
 | First analysis of this document | `79c2cd6c076b31c32009c0da742b6fdc3fb5d27a` | 2026-08-26 | v4.29.1 |
-| **Current pin** | `d1fc3a0835a77db7eb462eb0fd88038268fef1d8` (nightly-20261008) | 2026-10-08 | **v4.31.0** |
+| **Current pin** | `d1fc3a0835a77db7eb462eb0fd88038268fef1d8` (tagged nightly-20261009 upstream) | 2026-10-08 | **v4.31.0** |
 
 Delta from the previous pin to the current pin: 393 commits, 2,120 changed
 paths, +222,026 / −101,878 lines. Strata-DDM resolves to `b70976b1`.
@@ -155,7 +155,7 @@ Potential benefits include:
 - Better mapping-heavy contract performance
 - Better prospects for concrete counterexamples
 
-StrataSolidity already exposes `--array-theory`. We must confirm that the generated mapping representation reaches the optimized upstream path, because some Solidity state is flattened before Laurel heap parameterization.
+Array theory has been the default since PR #2 (`--no-array-theory` turns it off). Whether the generated mapping frames reach the optimized upstream path is still unconfirmed: key-scoped frames are still quantified, and `LIMITATIONS.md` lists them as a source of `unknown` results.
 
 This optimization alone will not guarantee counterexamples; other mapping axioms and user quantifiers may still require model-based quantifier instantiation.
 
@@ -387,12 +387,26 @@ Semantic subtleties to keep in mind:
 
 Pre-existing gaps found while establishing the baseline (present at `349b1cf4` too):
 
-- An `@custom:strata invariant` in contract-level NatSpec is silently ignored (only state-variable NatSpec is read). `test_spec_failures.sol` expects `breakInvariant` to fail, but no obligation is generated.
-- An `@custom:strata loop-invariant` written as a comment inside a function body is silently ignored (solc does not attach NatSpec to statements).
-- SARIF classifies every result by `VCOutcome.passAndReachable`, which requires a reachability check that is not run by default, so every passing obligation is reported as `strata/unknown`/`open`; rule ids are derived from labels that no longer contain `ensures`/`invariant`.
-- Solver/encoding errors (`VCResult.outcome = .error`) are counted as "unknown" in text mode and do not affect the exit code.
+- An `@custom:strata invariant` in contract-level NatSpec is silently ignored (only state-variable NatSpec is read). `test_spec_failures.sol` expects `breakInvariant` to fail, but no obligation is generated. *Resolved: contract-level invariants are read and checked (PR #4).*
+- An `@custom:strata loop-invariant` written as a comment inside a function body is silently ignored (solc does not attach NatSpec to statements). *Resolved: it is reported with a warning (PR #3).*
+- SARIF classifies every result by `VCOutcome.passAndReachable`, which requires a reachability check that is not run by default, so every passing obligation is reported as `strata/unknown`/`open`; rule ids are derived from labels that no longer contain `ensures`/`invariant`. *Resolved: SARIF shares the CLI's verdicts and classifies results by property (PR #5).*
+- Solver/encoding errors (`VCResult.outcome = .error`) are counted as "unknown" in text mode and do not affect the exit code. *Resolved: they are listed as errors and exit 1.*
 
 ## Phased implementation plan
+
+Status (2026-10):
+
+| Phase | Status |
+|---|---|
+| 0. Migration baseline | Done |
+| 1. Restore compilation | Done, except 1.2: the Ion reader remains, for `.solidity.st.ion` inputs |
+| 2. Behavioral compatibility | Done |
+| 3. Upstream diagnostics | Mostly done: source locations and SARIF rules (PRs #5, #6, #9) |
+| 4. Native `old` and inout | Not started: the `<name>_in` parameters remain. `old()` in a loop invariant means function entry (`strata-solidity-next`, GAP-003) |
+| 5. Array-theory frames | Array theory is the default (PR #2); the frame optimization (5.1) is unconfirmed |
+| 6. Struct fields through mappings | Open (GAP-002) |
+| 7. Native Laurel constructs | Not started: do-while is still desugared; inheritance is resolved in the frontend (REQ-NEXT-SOL-001..025) |
+| 8. Performance and release | Not started |
 
 ### Phase 0: Establish the migration baseline
 
@@ -443,7 +457,7 @@ Pre-existing gaps found while establishing the baseline (present at `349b1cf4` t
 2. Compare default and array-theory SMT output.
 3. Benchmark ERC20, vault, escrow, and nested mappings.
 4. Measure quantifier count and unknown-result rate.
-5. Consider making array theory the default only if correctness and performance are consistently better.
+5. ~~Consider making array theory the default only if correctness and performance are consistently better.~~ Done in PR #2.
 
 ### Phase 6: Investigate struct fields through mappings
 

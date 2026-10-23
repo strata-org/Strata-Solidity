@@ -68,4 +68,16 @@ contract InternalCalls {
     function writeAfterCall(address a, address b) external {
         balances[a] = _set(b);
     }
+
+    function _twiceUnspecified(uint256 x) internal pure returns (uint256) {
+        return 2 * x;
+    }
+
+    // Refuted: the caller knows only what a callee's specification says, so
+    // the result of a callee without one is any uint256, even for a pure
+    // function.
+    /// @custom:strata ensures r == 4
+    function twiceUnspecified() external pure returns (uint256 r) {
+        r = _twiceUnspecified(2);
+    }
 }

@@ -7,8 +7,11 @@ materials you need to read before you open an issue or a pull request.
 
 StrataSolidity is specified under `.kiro/specs/`, not in the mdBook under
 `docs/guide/` and not in `README.md`. The user guide is a friendly overview
-(REQ-DIST-006); the spec is the contract. When the guide and the spec disagree,
-the spec wins and the guide is treated as stale documentation.
+(REQ-DIST-006); the spec is the contract. When the guide and the spec disagree
+about intended behavior, the spec wins and the guide is treated as stale
+documentation. What the current binary verifies is recorded in the
+capability ledger (see [below](#the-capability-ledger)), whose entries are
+checked against the binary's results.
 
 `docs/guide/src/*.md` is the single copy of the guide's content: the mdBook
 build (`docs/guide/book.toml`) and the landing-page/guide site under
@@ -59,11 +62,42 @@ the baseline. When you propose a change:
    the code), a gap closure (listed in §12 of `requirements.md`), or a
    genuinely new capability (new ID in `strata-solidity-next`).
 
+## The capability ledger
+
+[`docs/capabilities.toml`](./docs/capabilities.toml) lists every feature
+with its status (verified, partly verified, unknown values, not verified,
+rejected, fails) and its witnesses: obligations of `test/examples/`
+fixtures as their golden files report them, translation errors, warnings,
+or tests. `scripts/capabilities.py` checks the witnesses against the golden
+files and generates the feature tables of `LIMITATIONS.md`, `README.md`,
+`FAQ.md`, the guide's supported-features and limitations pages and option
+table, the next-spec's gap table, and the landing page.
+
+When a change alters what is verified:
+
+1. Update the fixtures and their golden files (`test/run_tests.sh`), with a
+   true and a false property for what changed. A construct that is rejected
+   or fails gets a `test/examples/gap_<name>.sol` fixture pinning its error.
+2. Update the entry (or add one) in `docs/capabilities.toml`: its status,
+   notes and witnesses. A new command-line option needs a `[[flag]]` entry.
+3. Run `python3 scripts/capabilities.py` to regenerate the tables, and
+   commit them with the change.
+
+CI runs `python3 scripts/capabilities.py --check`, which fails when a
+witness no longer holds, an entry's witnesses do not fit its status, a
+gap's status disagrees with the entries citing it, the option or
+annotation list differs from the code, or a generated table is out of date.
+Edit the text between `<!-- capabilities:begin … -->` and
+`<!-- capabilities:end … -->` only through the ledger.
+
 ## Branch and PR workflow
 
-StrataSolidity uses a **rebase-only history**. The repository is configured
-so that `Rebase and merge` is the only PR-merge button on GitHub; no merge
-commits enter `main`. The sections below describe the day-to-day mechanics.
+Branches are rebased onto their base, not merged with it, so that each pull
+request is a linear series of commits. The repository does not enforce a
+merge method; pull requests have so far been merged with merge commits,
+often as a stack (a pull request based on another one's branch, retargeted
+to `main` when the lower one merges). The sections below describe the
+day-to-day mechanics.
 
 ### 1. Branch hygiene
 
@@ -160,8 +194,8 @@ PR descriptions should include:
 - **What** — one paragraph summary.
 - **How to test** — exact commands.
 - **Out of scope** — what the PR explicitly does NOT do.
-- **Linked specs/issues** — `Closes #N`, `Refs REQ-FEIL-001` (see "Adding
-  new features or closing gaps" above for the citation rules).
+- **Linked specs/issues** — `Closes #N`, `Refs REQ-NEXT-SOL-001` (see
+  "Adding new features or closing gaps" above for the citation rules).
 
 If the PR ends up rebased a few times, add a short "Changelog" section at
 the bottom noting the major revisions ("v2: addressed review of
@@ -171,14 +205,17 @@ check"). Reviewers will thank you.
 ## Where else to look
 
 - [`README.md`](./README.md) — quick-start and build prerequisites.
-- [`LIMITATIONS.md`](./LIMITATIONS.md) and [`FAQ.md`](./FAQ.md) — informal
-  overviews. Authoritative enumerations live in the spec (see §12 of
-  `requirements.md` for the complete `GAP-*` list).
-- [`STRATA_REFERENCE.md`](./STRATA_REFERENCE.md) — reference material for
-  the annotation language. Examples here should match
-  `requirements.md` §4 (`REQ-SPEC-*`).
+- [`LIMITATIONS.md`](./LIMITATIONS.md) — every feature with its status,
+  generated from the capability ledger. The status of each baseline
+  `GAP-*` is in the gap table of
+  [`strata-solidity-next`](./.kiro/specs/strata-solidity-next/requirements.md).
+- [`FAQ.md`](./FAQ.md) — background and comparisons with other tools.
+- [`docs/guide/src/annotation_reference.md`](./docs/guide/src/annotation_reference.md) —
+  the annotation language. Examples there should match `requirements.md` §4
+  (`REQ-SPEC-*`) as amended by `strata-solidity-next`.
 - [`CHANGELOG.md`](./CHANGELOG.md) — release notes.
 
 If something in the user guide, the README, or any other document disagrees
-with `requirements.md` or `design.md`, please open an issue citing the
-baseline ID so the drift can be reconciled.
+with the binary, the ledger, `requirements.md` or `design.md`, please open
+an issue citing the capability or baseline ID so the drift can be
+reconciled.

@@ -6,7 +6,7 @@ All three add deductive verification to existing languages. The differences come
 
 **Spec language:**
 
-- **Strata Solidity** — NatSpec comments (`/// @strata ensures ...`). We avoid modifying solc due to its GPL-3.0 license, so structured comments are our spec mechanism.
+- **Strata Solidity** — NatSpec comments (`/// @custom:strata ensures ...`). We avoid modifying solc due to its GPL-3.0 license, so structured comments are our spec mechanism.
 - **JVerify** — Java library calls (`precondition(x > 0)`). Specs are valid Java that compiles and runs as no-ops. Possible because javac has a plugin API.
 - **Verus** — Rust macros (`ensures(result > 0)`). Specs are part of the type system via a custom rustc fork.
 
@@ -14,7 +14,7 @@ All three have zero runtime overhead — specs are erased before deployment/exec
 
 **Translation pipeline:**
 
-- **Strata Solidity** — solc (AST only) → Python (solast.py) → Ion → Lean (SolToLaurel) → Laurel → Core → SMT
+- **Strata Solidity** — solc (standard-JSON AST only) → Lean (`SolcAstParser`, `SolTranslator`), in one binary → Laurel → Core → SMT (z3)
 - **JVerify** — javac plugin → Java simplification passes → Laurel (Java) → Ion → Core → SMT
 - **Verus** — Custom rustc fork → VIR → SMT (no Strata — standalone tool)
 
@@ -24,7 +24,7 @@ Strata Solidity and JVerify share everything from Laurel onward. Improvements to
 
 Solidity's compiler (solc) does have a plugin system, but solc is licensed under GPL-3.0. Building a compiler plugin would create a derivative work with GPL obligations. Using NatSpec comments avoids any compiler modification — we use solc only to produce the AST, and all spec parsing happens in our own pipeline.
 
-NatSpec is also the standard mechanism for structured metadata in Solidity — it's already used by Etherscan, documentation generators, and static analysis tools. Using `@strata` follows this established convention.
+NatSpec is also the standard mechanism for structured metadata in Solidity — it's already used by Etherscan, documentation generators, and static analysis tools. Using `@custom:strata` (NatSpec's tag for tool-specific annotations) follows this established convention.
 
 The tradeoff: JVerify specs are type-checked by javac (you get IDE autocomplete and compile errors on malformed specs). Strata Solidity specs are parsed by our own spec parser, so spec syntax errors only surface at verification time.
 
@@ -34,7 +34,7 @@ The tradeoff: JVerify specs are type-checked by javac (you get IDE autocomplete 
 - **No concurrency** — The EVM is single-threaded. No concurrent reasoning needed.
 - **Static dispatch** — external calls are explicit, and the contract a function runs in is known: a virtual function's override and the target of `super` follow from the linearization of the contract being verified, with no run-time types to model.
 - **Deterministic execution** — Same inputs always produce same outputs (modulo `block.timestamp`).
-- **Simpler language** — No generics, no lambdas, no closures. The translation from Solidity to Laurel is a single file (~2100 lines) vs JVerify's ~30 files.
+- **Simpler language** — No generics, no lambdas, no closures. The translation from Solidity to Laurel is six Lean files (about 5,200 lines, in `StrataSolidity/SolTranslator/`) vs JVerify's ~30 files.
 
 ## What does Solidity make harder?
 
@@ -48,10 +48,13 @@ The tradeoff: JVerify specs are type-checked by javac (you get IDE autocomplete 
 Everything from Laurel onward:
 
 ```
-JVerify:         Java → javac plugin → Laurel (Java) ─┐
-                                                       ├→ Ion → Laurel → Core → VCG → SMT → z3/cvc5
-Strata Solidity: Sol → solc → solast.py → Lean ────────┘
+JVerify:         Java → javac plugin → Laurel (Java) → Ion ─┐
+                                                            ├→ Laurel → Core → VCG → SMT
+Strata Solidity: Sol → solc JSON AST → Lean translator ─────┘
 ```
+
+Strata Solidity builds its Laurel program in the same process (no Ion
+serialization), and runs z3.
 
 Shared components: Laurel AST, HeapParameterization, the Laurel-to-Core schema pass, ModifiesClauses, Core VCG, SMT encoder, solver interface. A bug fix or optimization in any of these benefits both front-ends.
 
@@ -67,20 +70,42 @@ The alternatives: Core is too low-level (no built-in heap model), C_Simp is a to
 |---|---|---|
 | Source compiler | solc (external, AST only) | javac (in-process plugin) |
 | Spec parsing | Custom parser in Lean | javac parses specs as Java expressions |
-| AST extraction | Python (solast.py) → Ion | Java compiler internals → Java AST |
+| AST extraction | solc's JSON AST, parsed in Lean (`SolcAstParser`) | Java compiler internals → Java AST |
 | Translation language | Lean 4 | Java |
-| Translation to Laurel | Single file (SolToLaurel.lean) | ~30 Java files with simplification passes |
+| Translation to Laurel | Six Lean files (`StrataSolidity/SolTranslator/`) | ~30 Java files with simplification passes |
 | Simplification passes | Minimal (Solidity is simpler) | Extensive (lambdas, generics, erasure, etc.) |
 | Strata invocation | Compiled into the binary | `lake exe strata laurelAnalyzeBinary` subprocess |
 | IDE integration | VS Code extension (standalone) | Any Java IDE (specs are valid Java) |
 
 ## What is the current state of the project?
 
-See `LIMITATIONS.md` for the full supported/unsupported matrix. In summary:
+See `LIMITATIONS.md` for the full supported/unsupported matrix, generated
+from the capability ledger (`docs/capabilities.toml`). In summary:
 
-**Working:** Simple and nested mappings, scalar state vars, `old()`, `forall` with `==>`, key-scoped `modifies`, `sum()` aggregation, contract invariants, loop invariants, `keccak256(...)` as mapping keys, inheritance (inherited state, functions, modifiers, invariants and constructors, and `super`).
+<!-- capabilities:begin highlights -->
+<!-- Generated from docs/capabilities.toml by scripts/capabilities.py: edit the ledger, then run the script. -->
+**Works today:**
 
-**Not working:** Struct fields through mappings (Core limitation), counterexamples for quantified specs (`unknown` instead of a model; see LIMITATIONS.md), external calls/reentrancy, assembly, a base contract in another file.
+- Simple and nested mappings, with `old()`
+- Contract invariants, including `sum(mapping)`, checked across external calls that may re-enter the contract
+- Key-scoped `modifies` frame conditions
+- `forall` quantifiers, with `==>`
+- Loop invariants, with `old()`
+- Inheritance: inherited state, functions, modifiers, invariants and constructors, and `super`
+- Integer conversions, wrapping and signed division as the EVM performs them
+- Plain-text, JSON and SARIF output, with counterexamples when z3 produces a model
+
+**Not yet:**
+
+- Struct-valued mappings and arrays of structs (functions using them are not verified)
+- Library calls and `using … for`
+- `revert("reason")` (`require` and custom errors work)
+- Strings and dynamic `bytes` values
+- Array `pop()`
+- Constructors that call internal functions using state (the `_mint` pattern)
+- A base contract imported from another file
+- Conclusive results for every property over `sum`, `forall` and key-scoped frames: some are ❓ unknown
+<!-- capabilities:end highlights -->
 
 ## Why does Solidity need fewer simplification passes than Java?
 
@@ -88,16 +113,16 @@ JVerify runs ~10 simplification passes on the Java AST before translating to Lau
 
 Solidity doesn't have lambdas, generics, method references, anonymous classes, covariant arrays, checked exceptions, or autoboxing. The language that reaches the translator is essentially what the developer wrote — there's very little to desugar. The spec parser and frame condition generator are the most complex parts of our front-end, not the body translation.
 
-This is why `SolToLaurel.lean` is one file (~2100 lines) while JVerify's translation layer is ~30 Java files. It's not that our code is more compact — Solidity genuinely has fewer constructs to handle.
+This is why the translation is six Lean files (about 5,200 lines) while JVerify's translation layer is ~30 Java files. It's not that our code is more compact — Solidity genuinely has fewer constructs to handle.
 
 ## Why doesn't Solidity need the heap aliasing reasoning that Java does?
 
 In Java, two variables can reference the same object: `List<Integer> a = b;` means `a` and `b` alias the same heap location. Modifying `a` modifies `b`. JVerify must reason about this — every method call could potentially modify any object reachable through any alias. This is the core difficulty of heap verification in object-oriented languages.
 
-Solidity storage has no aliasing. Each state variable occupies a distinct storage slot. `mapping(address => uint256) balances` and `uint256 totalSupply` can never point to the same memory. There are no references, no pointers, no shared mutable state between variables. The only way to modify `balances` is to write to `balances` directly.
+Solidity state variables never alias. Each state variable occupies a distinct storage slot. `mapping(address => uint256) balances` and `uint256 totalSupply` can never point to the same memory, and the only way to modify `balances` is to write to `balances` (or to a `storage` reference to it). Aliasing exists only through `storage` references (`Info storage d = data;`) and between memory values (assigning a memory struct or array to another shares it), which the translator handles case by case: see `LIMITATIONS.md`.
 
 This means our heap model is simpler: each mapping is an independent `Map[int, int]` parameter, and scalar state vars are fields of a single `self` composite. We don't need alias analysis, separation logic, or ownership tracking. The frame condition "only `balances` changed" is a direct equality check on the other variables, not a complex reachability argument.
 
 ## Where is the code hosted?
 
-Currently independent (option 3 per Strata's `frontend_hosting.md`). Target: `strata-org` organization (option 2) once we meet the quality bar — test suite, source location propagation, codebase restructuring. See the "Front-end conformity" task in Asana for the gap analysis.
+In the `strata-org` organization, at <https://github.com/strata-org/Strata-Solidity>, next to [Strata](https://github.com/strata-org/Strata) itself, which it vendors as a git submodule.

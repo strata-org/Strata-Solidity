@@ -1,134 +1,211 @@
-# Strata Solidity — Current Limitations
+# StrataSolidity — Capabilities and Limitations
+
+What StrataSolidity verifies, partly verifies, skips and rejects, feature
+by feature. The table is generated from the capability ledger,
+[`docs/capabilities.toml`](docs/capabilities.toml), where each row names
+the test fixtures that show it; CI checks those fixtures against the
+binary, and this table against the ledger.
+
+A feature that is neither listed nor used in the fixtures is untested:
+please open an issue if it matters to you.
+
+## Statuses
+
+<!-- capabilities:begin statuses -->
+<!-- Generated from docs/capabilities.toml by scripts/capabilities.py: edit the ledger, then run the script. -->
+- ✅ **Verified**: modelled as Solidity runs it. A true property can be proven; a false one is refuted or not proven.
+- ⚠️ **Partly**: modelled, except for what the notes say.
+- ⚠️ **Unknown values**: not interpreted. What it may change or return is unknown afterwards: a property that depends on it is not proven, and nothing false is proven either.
+- ⚠️ **Not verified**: skipped, with a warning. The rest of the file is verified.
+- ❌ **Rejected**: the translation stops with an error that says why. Nothing in the file is verified.
+- ❌ **Fails**: valid Solidity on which the translation stops with an internal error. Nothing in the file is verified.
+<!-- capabilities:end statuses -->
+
+## Capabilities
+
+<!-- capabilities:begin matrix level=3 -->
+<!-- Generated from docs/capabilities.toml by scripts/capabilities.py: edit the ledger, then run the script. -->
+### Specifications
+
+| Feature | Status | Notes |
+|---|---|---|
+| `requires`, `ensures` | ✅ Verified | A precondition is assumed on entry and checked at each internal call; a postcondition is checked on every path that returns. |
+| `old(e)` | ✅ Verified | The value of `e` when the function was entered: of a scalar, a mapping, a mapping entry or an array length. |
+| Contract invariants (`invariant`) | ✅ Verified | Written above the contract or on a state variable. Checked after the constructor (explicit or implicit) and at the exit of every public or external function that may change state, and assumed at their entry; assumed by `view` functions; not assumed by internal functions. `old()` is rejected in an invariant. |
+| `msg.sender`, `msg.value`, `block.*` or `tx.*` in an invariant | ❌ Rejected | They change between transactions, so an invariant over them would be established with one transaction's values and assumed with another's. |
+| `sum(m)` of a mapping | ✅ Verified | The sum of all values of `m`, updated at every write. Its update axiom is quantified, so an obligation that involves it may be unknown (❓) instead of refuted. |
+| `modifies` frames: variables and mapping keys | ✅ Verified | `modifies x, m[k]`: every other state variable, and every other key of `m`, is unchanged. A key may use parameters, constants and hashes (`roles[DEFAULT_ADMIN_ROLE]`). A function without `modifies` may change any state. Frames are not checked for constructors (a warning says so). |
+| `modifies m[a][b]` (a key with two indexes) | ⚠️ Not verified | The key cannot be read, so the frame of `m` is not checked (a warning says so). With one index, `modifies m[a]` allows every `m[a][…]` to change. |
+| Loop invariants (`loop-invariant`) | ✅ Verified | Checked on entry to the loop and preserved by its body, for `for`, `while` and `do`-`while` loops, with `break` and `continue`. |
+| `old(e)` in a loop invariant | ✅ Verified | The value of `e` at the function's entry, as in `ensures`, not at the loop's entry. |
+| A loop that writes contract state | ⚠️ Partly | The function's `heap frame (only this contract is modified)` obligation is unknown (❓): the loop does not keep the fact that only this contract's state changes. Its invariants and postconditions are checked as usual. Writing a local in the loop, and the state after it, avoids this. |
+| `forall v : T :: P` | ✅ Verified | `v` ranges over the values of `T`. An obligation with a `forall` among its assumptions may be unknown (❓): z3 does not instantiate quantifiers by model search. |
+| `exists v : T :: P` | ⚠️ Partly | `v` ranges over the values of `T`. z3 does not search for witnesses, so a true `exists` is often unknown (❓); it is proven when the witness is at hand (a value the function wrote). |
+| Operators in specifications | ✅ Verified | `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, &#124;&#124;, `!`, `==>`, unary `-`, `m[k]`, `s.f`, `a.length`, `type(T).min` and `type(T).max`, named constants. Arithmetic is on unbounded integers (no wrapping); `/` and `%` round toward zero, as in Solidity. |
+| `**`, bitwise and shift operators in specifications | ❌ Rejected | Not part of the specification language: the translation stops with "Unexpected tokens after spec expression". |
+| Type conversions in specifications (`uint8(x)`) | ❌ Fails | `address(x)` is accepted (it is the identity); other conversions stop the translation. In code, conversions work. |
+| `msg.sender`, `msg.value`, `block.*`, `tx.*` and `this` in specifications | ✅ Verified | The values of the transaction the function runs in (see Transaction values). |
+| A `//` comment after an annotation | ✅ Verified | `ensures x == 1 // the new value`: the text from `//` on is not read. |
+| Misspelled, misplaced or multi-line annotations | ⚠️ Not verified | Reported and ignored, never dropped silently: an unknown keyword, an annotation where it has no effect, in a plain `//` comment, inside a function body, in the middle of a comment line, or continued on the next line. |
+| `@custom:strata lemma` | ⚠️ Not verified | Not an annotation StrataSolidity reads: reported as unrecognized, and ignored. (GAP-004) |
+
+### Contracts and functions
+
+| Feature | Status | Notes |
+|---|---|---|
+| Contracts, state variables, functions of any visibility, constructors, `receive`, `fallback` | ✅ Verified | Every function of every contract in the file is verified against its own specification; `view` and `pure` functions too. |
+| Internal calls | ✅ Verified | Modular: the callee's `requires` is checked at the call, and after it the caller knows what the callee's `ensures` and `modifies` say. After a call of a function without a specification, its results and the state are unknown, so give helpers a specification. Named arguments are bound by name. |
+| Modifiers | ✅ Verified | Inlined into each function that uses them, the first one outermost, with their arguments: `_` stands for the rest of the function, and a `return` in the function still runs the code after `_`. |
+| Interfaces, abstract contracts, functions without a body | ✅ Verified | A function without a body may do anything a function of its kind may: a mutating one may change any state. An interface or library contributes no invariants. |
+| Overloaded functions | ✅ Verified | Each overload is verified, and a call goes to the one solc selects. Overloads that differ only between integer and address parameters fail to translate. |
+| Overloads that differ only between integer and address parameters (`f(uint256)`, `f(address)`) | ❌ Fails | Both kinds are integers in the translation, so the two functions get the same signature ("Duplicate definition"). |
+| Events, custom errors, `revert CustomError(…)` | ✅ Verified | `emit` changes nothing (its arguments are still evaluated); `revert` ends the path. |
+| `revert("reason")`, `revert()` | ❌ Fails | Use `require(condition, "reason")` or a custom error. |
+| A constructor that calls an internal function using state (`_mint` in a constructor) | ❌ Rejected | The constructor has no state to pass to the callee yet. |
+| Calling a function that may end the transaction (`selfdestruct`, assembly `return` or `stop`) | ❌ Rejected | The code after such a call would be verified as if it always ran. In the function itself, a halt ends its path. |
+| Library calls (`L.f(x)`, `using L for T`) | ❌ Fails | A library function called from a contract is not found. |
+| Functions declared outside a contract | ❌ Fails | Not verified (a warning says so), and a call of one stops the translation. |
+
+### Inheritance
+
+| Feature | Status | Notes |
+|---|---|---|
+| Inheritance: single, multiple, diamond | ✅ Verified | A contract is verified as the flattening of its bases and itself, ordered by solc's C3 linearization: inherited state, functions, modifiers and invariants are checked in its context (an obligation of an inherited function says so: `(in D)`), and a call of a virtual function calls the most derived override. A public state variable that overrides a function replaces it. |
+| Base constructors | ✅ Verified | Run after the state-variable initializers and before the derived constructor, most base first, each with its own modifiers and the arguments a derived constructor gives it (`constructor() Base(7)`). |
+| Base constructor arguments in an inheritance specifier (`is Base(7)`) | ⚠️ Unknown values | Not read (the AST the translator receives does not keep them): the base constructor runs with unknown values of its parameter types. (GAP-009) |
+| `super.f(…)`, `Base.f(…)` | ✅ Verified | `super` follows the linearization of the contract being verified, from the contract the call is written in (also in a modifier or a base constructor); `Base.f()` calls the first implementation of `f` in `Base`'s linearization. Named arguments are bound by name. |
+| `super.f(…)` or `Base.f(…)` of an overloaded function | ❌ Rejected | The call is not resolved to one of the overloads. (GAP-009) |
+| A base contract from another file | ⚠️ Not verified | Its state, functions and invariants are not part of what is verified, for each contract that inherits it, directly or through another base (a warning says so). (GAP-009) |
+| A base's private state variable declared again in a derived contract | ❌ Rejected | They are different variables, which the translation would merge. (GAP-009) |
+
+### Types and arithmetic
+
+| Feature | Status | Notes |
+|---|---|---|
+| `uint8` … `uint256`, `int8` … `int256` | ✅ Verified | A value is in its type's range: parameters, state variables, results of calls and hashes. Signed state is not assumed to be non-negative. |
+| Checked arithmetic (outside `unchecked`) | ⚠️ Partly | Computed on unbounded integers: an overflow is not modelled as a revert, so the verifier also considers the execution continuing with the out-of-range value. That only adds behaviors: a property that relies on the revert may not be proven (see [Integers](docs/guide/src/integers.md)). |
+| `unchecked` arithmetic | ✅ Verified | Wraps around as in the EVM: `+`, `-`, `*`, signed `/`, a power of constants, `++`, `--`, unary `-` and `op=`. |
+| Type conversions | ✅ Verified | Narrowing truncates (two's complement), a `bytesN` conversion keeps the high bytes, widening keeps the value. |
+| `/` and `%` | ✅ Verified | Signed `/` and `%` round toward zero. A zero divisor is an obligation (`divisor is non-zero`). |
+| Constant expressions, named constants, `1e18`, `2.5 ether`, `2 days` | ✅ Verified | The value solc computes, exactly (rational intermediate values, units, exponents); a power of constants is folded. |
+| `**` with an operand that is not a constant | ❌ Rejected | `x ** 2` can be written `x * x`. |
+| Bitwise operators and shifts | ⚠️ Partly | `~` and shifts by a constant are exact; `&`, &#124;, `^` and shifts by a variable are unknown values of the result's type (an unsigned `x & (2^n - 1)` keeps it below `2^n`). |
+| Enums | ⚠️ Partly | A value is not constrained to the enum's members: a property that relies on it fails with a counterexample the EVM cannot produce. |
+| `bool`, `address`, `bytes1` … `bytes32`, user-defined value types | ✅ Verified | `Wei.wrap` and `Wei.unwrap` are the identity on the underlying value. |
+| `string` and dynamic `bytes` values | ❌ Fails | A local, `.length` or a conversion such as `bytes(s)` stops the translation; a parameter that is only passed on (to an event, say) works. |
+
+### Mappings, arrays and structs
+
+| Feature | Status | Notes |
+|---|---|---|
+| Mappings, simple and nested | ✅ Verified | Every key exists, with the zero value until written. |
+| `keccak256`, `sha256`, `abi.encode`, `abi.encodePacked` | ⚠️ Partly | Uninterpreted functions: equal arguments give equal results, and nothing else is known (collisions are not excluded). They work as mapping keys, in code and in specifications. Up to 6 arguments for `abi.encode` and 4 for `abi.encodePacked`. |
+| `abi.encodeWithSelector` or `abi.encodeWithSignature` with arguments, `abi.encodeCall`, `abi.decode`, more arguments than above | ❌ Fails | The function is not defined in the translation. |
+| `delete` of an integer, an address or a mapping entry | ✅ Verified | Sets it to zero. |
+| `delete` of a `bool`, an array or a struct | ❌ Fails | The translation assigns `0`, which has the wrong type. |
+| Fixed-size and dynamic arrays: indexing, `.length`, `push` | ✅ Verified | A fixed-size array has its declared length; `push` adds one element at the end. A memory array is a reference, as in Solidity. |
+| An array index out of range | ⚠️ Partly | Not modelled as a revert: a property that relies on the index being in range fails with a counterexample the EVM cannot produce. |
+| `pop()` | ❌ Fails | Not modelled. (GAP-008) |
+| `push` on an array in a mapping or a struct, or through a returned storage reference | ❌ Fails | Only `push` on an array state variable is modelled. |
+| `.length` of a memory array created with `new` | ❌ Fails | Creating it works. |
+| Structs | ⚠️ Partly | Copied into storage, and from storage or calldata into memory (assignments, declarations, arguments, returned values), as Solidity does; a memory-to-memory assignment shares the struct, and a function a memory struct is passed to may change its fields. A function that writes a field of a struct that is not a fresh copy reports a spurious `heap frame` failure. |
+| A struct built with positional arguments (`Info(1, 2)`) | ❌ Fails | The named form `Info({a: 1, b: 2})` works. |
+| Struct-valued mappings and arrays of structs | ⚠️ Not verified | A function or constructor that uses one is not verified, and neither is an annotation on a struct field through a mapping (`payments[id].amount`); warnings say so. Separate mappings per field work instead. (GAP-002) |
+| A modifier that uses a struct-valued mapping | ❌ Fails | Unlike a function, which is skipped, it stops the translation. (GAP-002) |
+| A storage reference to a struct (`Info storage d = data;`) | ⚠️ Partly | A read through it reads the storage when it runs, so it sees later writes. A write through it is rejected: it would not reach the storage. (GAP-010) |
+| A storage reference to a mapping or an array | ❌ Rejected | "storage reference must have a user-defined struct type". (GAP-010) |
+| A mapping or array `storage` parameter | ❌ Rejected | It refers to the caller's storage, and a write through it would not reach the variable passed in. |
+
+### Statements and expressions
+
+| Feature | Status | Notes |
+|---|---|---|
+| `if`, `for`, `while`, `do`-`while`, `break`, `continue`, `return` | ✅ Verified | A loop condition is evaluated before every iteration, with its effects. |
+| An `if`/`else` or `try`/`catch` whose branches end with assignments of different types | ❌ Fails | "'if' branches have incompatible types". Branches that end with assignments of the same type work. |
+| `require`, `assert` | ✅ Verified | A false `require` ends the path; its message is evaluated first, with its effects. `assert(c)` is an obligation. |
+| Operators, `? :`, `++`, `--`, `op=`, short-circuit `&&` and &#124;&#124; | ✅ Verified | As in Solidity: `i++` yields the old value, `++i` the new one, and the right operand of `&&` and &#124;&#124; runs only when needed. |
+| An operand that changes a variable another operand reads (`_inc() + x`) | ❌ Rejected | solc's code generators evaluate operands in different orders. |
+| Tuple declarations, several return values | ✅ Verified | `(uint256 a, uint256 b) = f();` declares both for the rest of the block. |
+| Assigning a tuple to existing variables (`(a, b) = (b, a)`) | ❌ Rejected | A tuple declaration works. |
+| A parameter or local named `result` in a function whose return value is unnamed | ❌ Fails | The translation names that return value `result` too. Naming the return value avoids it. |
+| Identifiers starting with `$` | ✅ Verified | As OpenZeppelin 5 uses for storage pointers. |
+
+### Transaction values
+
+| Feature | Status | Notes |
+|---|---|---|
+| `msg.sender`, `msg.value` | ✅ Verified | Of type `address` and `uint256`; `msg.sender` is not the zero address. An internal function sees its caller's values. |
+| `msg.sender` in a constructor | ✅ Verified | The deployer, as in any function. |
+| `msg.value` in a function that is not `payable` | ⚠️ Partly | Not assumed to be 0 (Solidity reverts such a call when it carries Ether): a property that relies on it fails with a counterexample the EVM cannot produce. |
+| `block.*`, `tx.*`, `msg.sig`, `msg.data`, `this` | ⚠️ Partly | One value per transaction, of its type; `block.timestamp` and `block.number` are positive. Nothing relates them across transactions (time need not increase), and an invariant may not use them. A use may print an internal `BUG:` diagnostic, which does not affect the results. (GAP-005) |
+| `gasleft()`, `address.balance`, the result of `send` | ⚠️ Unknown values | A fresh value of the result's type at every read or call. |
+
+### External calls and assembly
+
+| Feature | Status | Notes |
+|---|---|---|
+| External calls and re-entrancy | ⚠️ Unknown values | A call of another contract (through an interface, `this.f()`, an external function value), a low-level `call`, or `new C(…)` may call back into the contract: its state is unknown after the call, except for the contract invariants, which an external function checks before the call and assumes after it. `view` calls and `staticcall` change nothing, nor do `send` and `transfer`; `delegatecall` may change all state, invariants included. Results are unknown values of their type. A constructor cannot be re-entered. `--assume-no-reentrancy` trusts that no call re-enters: calls other than `delegatecall` then change nothing (see [Contract Invariants](docs/guide/src/contract_invariants.md#external-calls-and-reentrancy)). (GAP-007) |
+| Inline assembly | ⚠️ Unknown values | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state (of its type) if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the transaction on some paths. Rejected: assigning a storage reference, writing memory with a memory struct in scope, and ending a constructor. |
+
+### Results and output
+
+| Feature | Status | Notes |
+|---|---|---|
+| Counterexamples | ✅ Verified | Printed under a refuted obligation (❌) when z3 gives a model: parameters, `old` state, `msg.*`, nested mapping values. |
+| Unknown (❓) results | ⚠️ Partly | An obligation is unknown when its verification condition has a quantified assumption (`sum`, `forall`, a key-scoped `modifies` frame, a constructor that zero-initializes a mapping), nonlinear arithmetic, or the solver runs out of time (`--timeout`). Unknown is not a failure: the exit status is 0 unless `--strict`. (GAP-001) |
+| Plain text, `--json`, `--sarif` (SARIF 2.1.0), `--pipeline-json` | ✅ Verified | See [Output Formats](docs/guide/src/output_formats.md) and [SARIF](docs/guide/src/sarif.md). |
+| Exit status | ✅ Verified | 1 when the file cannot be translated, in every format. In plain text, 1 when an obligation is refuted or a verification error occurs, and 0 otherwise (unknown results included). With `--json`, `--sarif` or `--pipeline-json`, 0 whatever the verdicts, which the reader of the output judges. `--strict`, in every format, exits 1 also when an obligation is refuted or unknown, or an annotation or function was not verified. |
+| SMT solver | ⚠️ Partly | z3, found on `PATH`; cvc5 is not supported. Results can differ between z3 versions; the test fixtures pin only results that z3 4.8.12 and 4.15.4 agree on. (GAP-012) |
+<!-- capabilities:end matrix -->
 
 ## Counterexamples and `unknown` results
 
-**Status:** Partially supported
-
 Refuted obligations are reported as failed (❌) with a counterexample
-(`a = 0`, `b = 1`, …) whenever z3 can produce a model. Since the 2026-10
-Strata re-pin, mappings are encoded with SMT array theory, each function is
-verified in its own SMT context, and values carry their Solidity type
-ranges, so most false properties come with concrete values.
+(`a = 0`, `b = 1`, …) whenever z3 can produce a model. Mappings are encoded
+with SMT array theory, each function is verified in its own SMT context,
+and values carry their Solidity type ranges, so most false properties come
+with concrete values.
 
 An obligation is still reported as `unknown` (❓, exit 0) when its
-verification condition contains a universally quantified assumption, because
-z3's model-based quantifier instantiation (MBQI) is off. The remaining
+verification condition contains a universally quantified assumption,
+because z3's model-based quantifier instantiation (MBQI) is off. The
 sources are:
 
-- `sum(m)` specs: the sum update axiom is quantified (only for mappings that
-  some annotation sums);
+- `sum(m)` specs: the sum update axiom is quantified (only for mappings
+  that some annotation sums);
 - constructors that zero-initialize a mapping (Core axiomatizes `mapConst`
   with a quantifier);
-- quantified specs (`forall`) and key-scoped `modifies` frames;
+- quantified specs (`forall`, `exists`) and key-scoped `modifies` frames;
 - nonlinear arithmetic and solver timeouts (`--timeout=<s>`).
 
 `--no-array-theory` restores the older encoding, under which far more
 results are `unknown`.
 
----
+## Struct fields through mappings: a workaround
 
-## Struct Fields Through Mappings
-
-**Status:** Not supported  
 **Tracking:** [Asana P0](https://app.asana.com/1/8442528107068/project/1213978144576593/task/1214065007095245)
 
-Specs cannot reference struct fields accessed through mapping values.
+A function that uses a struct-valued mapping is not verified (see *Struct-valued
+mappings and arrays of structs* above). Flattening the struct into one mapping
+per field makes it verifiable:
 
 ```solidity
-// ❌ NOT SUPPORTED
+// Not verified: `payments` is a struct-valued mapping
 struct Payment { uint256 amount; bool captured; }
 mapping(bytes32 => Payment) public payments;
 
 /// @custom:strata ensures payments[id].amount == amt
+function pay(bytes32 id, uint256 amt) external { payments[id].amount = amt; }
 ```
 
-The Laurel translation is correct, but Strata Core's heap parameterization cannot resolve struct field names through composite types.
-
-**Affected patterns:**
-- `mapping(key => Struct)` with `.field` access in specs
-- Staking contracts (`stakers[msg.sender].stakedAmount`)
-- Vault contracts with per-user position structs
-- Any DeFi protocol with complex per-user/per-position state
-
-**Workaround:** Flatten structs into separate mappings:
-
 ```solidity
-// ✅ SUPPORTED — flatten the struct
+// Verified: one mapping per field
 mapping(bytes32 => uint256) public paymentAmounts;
 mapping(bytes32 => bool) public paymentCaptured;
 
 /// @custom:strata ensures paymentAmounts[id] == amt
+function pay(bytes32 id, uint256 amt) external { paymentAmounts[id] = amt; }
 ```
 
-This is not practical for verifying existing contracts but works for new designs.
-
----
-
-## Supported Patterns (what works today)
-
-| Pattern | Example | Status |
-|---|---|---|
-| Simple mapping | `balances[msg.sender]` | ✅ |
-| Nested mapping | `allowance[from][spender]` | ✅ |
-| Nested mapping with `old()` | `old(allowance[from][msg.sender])` | ✅ |
-| Mapping-only contract (no scalars) | Contract with only `mapping` state vars | ✅ |
-| Scalar state vars | `uint256 totalSupply` | ✅ |
-| `old()` on scalars and mappings | `old(totalSupply)`, `old(balances[addr])` | ✅ |
-| `forall` quantifier with `==>` | `forall addr : address :: addr != msg.sender ==> ...` | ✅ |
-| Key-scoped `modifies` | `modifies balances[msg.sender]` | ✅ |
-| Frame conditions (scalar) | Undeclared scalar writes caught | ✅ |
-| Frame conditions (mapping key) | Undeclared writes to other keys caught | ✅ |
-| Function call as mapping key | `data[keccak256(abi.encodePacked(a, b))]` | ✅ |
-| `msg.sender`, `msg.value` | Used as keys or in expressions | ✅ |
-| `address(0)`, type conversions | Truncate as the EVM does (`uint8(x)`, `int8(u)`, `bytes4(h)` keeps the high bytes); widening keeps the value | ✅ |
-| `type(uint256).max/min` | Compile-time constants | ✅ |
-| Arithmetic | `+`, `-`, `*`, `/`, `%`; `unchecked` wraps; signed `/`, `%` round toward zero, in specifications too; constant expressions have solc's exact value; constant `**` folded; bitwise results stay in their type | ✅ (checked overflow is not modelled as a revert: properties relying on it may not be proven) |
-| Unary operators in specs | `!paused`, negative literals (`-887272`) | ✅ |
-| Named constants in specs | `requires status == NOT_ENTERED`, `modifies roles[DEFAULT_ADMIN_ROLE]` | ✅ |
-| Subdenominations | `1 ether`, `2 days` folded to base units | ✅ |
-| In-contract invariants | `invariant` attached to a state variable's NatSpec | ✅ |
-| Return value + `modifies` | `returns (uint256)` with mapping-state outputs | ✅ |
-| Comparisons | `==`, `!=`, `>=`, `<=`, `>`, `<` | ✅ |
-| Boolean logic | `&&`, `\|\|`, `==>` | ✅ |
-| `requires` / `ensures` | Pre/postconditions | ✅ |
-| `invariant` | Contract-level invariants checked on all functions | ✅ |
-| `modifies` | Field-level and key-scoped frame conditions | ✅ |
-| Modifiers | Inlined into each function using them, with arguments; `return` in the body still runs the code after `_` | ✅ (not modifiers of an imported base contract, which are reported) |
-| Struct assignments | Copied into storage, and from storage or calldata into memory (assignments, declarations, arguments, returned values); memory-to-memory assignments share the struct, and a function a memory struct is passed to may change its fields | ✅ (a function writing a struct that is not a copy it made reports a spurious `heap frame` failure) |
-
-## Not Yet Supported
-
-| Pattern | Status | Notes |
-|---|---|---|
-| Struct fields through mappings | ❌ Blocked (Core) | See above |
-| `old()` in loop invariants | ❌ Blocked (Core) | `__old` marker not resolved in loop context |
-| `@custom:strata lemma` | ❌ Not started | Needs Laurel grammar extension |
-| `block.*`, `tx.*`, `msg.sig` | ✅ Modelled | Fixed for the transaction (two reads agree) and of their Solidity type; `block.timestamp` and `block.number` are positive. Not allowed in invariants, nor are `msg.sender` and `msg.value`: they change between transactions |
-| `gasleft()`, balances, `send` | ⚠️ Unknown | A fresh value of the result type at every read or call |
-| `msg.sender` in constructor | ❌ | Constructor handling incomplete |
-| External calls / reentrancy | ⚠️ Havoc | A call of another contract (through an interface, `this.f()`, an external function value), a low-level `call`, or `new C(…)` may call back into the contract: its state is unknown after the call, except for the contract invariants, which an external function checks before the call and assumes after it. `view` calls and `staticcall` change nothing; nor do `send` and `transfer` (too little gas to). `delegatecall` may change all state, invariants included. Results are unknown values of their type. Constructors cannot be re-entered. `--assume-no-reentrancy` trusts that no call re-enters: calls (other than `delegatecall`) then change nothing |
-| Assembly / inline Yul | ⚠️ Havoc | Not interpreted. Afterwards, unknown: the Solidity variables a block assigns; every memory variable if it writes memory; all contract state (of its type) if it may write storage (`sstore`, calls). A block that may `return` or `stop` ends the transaction on some paths, as `selfdestruct` does. Rejected: assigning a storage reference, writing memory with a memory struct in scope, ending a constructor, and calling a function that may end the transaction (the code after the call would be verified as if it ran) |
-| Dynamic arrays (push/pop) | ⚠️ Partial | `.length` and `push` work; `pop` not modeled |
-| Inheritance | ✅ Modelled | A contract is verified as the flattening of its bases and itself, ordered by solc's C3 linearization: inherited state, functions, modifiers and invariants are checked in the derived contract's context (an obligation of an inherited function names it: `(in D)`), and an inherited function calls the most derived override. Base constructors run before the derived one, with their modifiers and the arguments the derived constructors give. `super.f()` follows the linearization from the contract the call is written in; `Base.f()` calls Base's implementation. Not covered: a base in another file (reported; its members are absent), the arguments of an inheritance specifier `is Base(7)` (unknown values), `super` of an overloaded function and a base's private state variable declared again (rejected) |
-| Events / errors | First-class ops | `revert` prunes its path; `emit` is a verification no-op |
-
-## Storage References
-
-**Status:** Partially supported
-
-Storage references to struct fields through mappings (`Voter storage sender = voters[addr]`) are not supported — blocked by the same struct-through-mapping limitation.
-
-Mapping storage references (`mapping(...) storage ref = stateVar`) are not supported.
-
-A mapping or array `storage` parameter (`function _credit(mapping(address => uint256) storage m, address k)`)
-is rejected: it refers to the caller's storage, and the translator models
-parameters as local copies, so a write through it would not reach the state
-variable passed in.
-
-A storage reference to a struct state variable (`Info storage d = data;`)
-can be read: a read `d.value` reads the storage of `data` when it runs, so
-it sees writes made after the reference was taken, directly or by a call.
-Writing through it (`d.value = 5`) is rejected: the write would not reach
-the storage.
-
-Direct state variable access without storage references works fully.
+This is not practical for verifying existing contracts, but works for new
+designs.

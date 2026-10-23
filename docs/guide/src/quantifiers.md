@@ -22,6 +22,15 @@ The `exists` quantifier states that at least one value satisfying a property exi
 
 This says: "after this function executes, at least one address has a positive balance."
 
+z3 does not search for witnesses, so a true `exists` is often reported
+unknown (❓). It is proven when a witness is at hand, such as the key the
+function wrote: after `balances[to] = v`, `exists a : address :: balances[a] == v`
+is proven.
+
+In both quantifiers, the variable ranges over the values of its type:
+`forall v : uint8 :: v <= 255` is proven, and `exists i : uint8 :: i > 255`
+is refuted.
+
 ## Implication with quantifiers
 
 Quantifiers are most powerful when combined with implication (`==>`). This pattern lets you say "for all addresses *except* these specific ones, nothing changed":

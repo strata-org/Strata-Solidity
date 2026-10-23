@@ -4,30 +4,65 @@ StrataSolidity's SARIF output enables integration with CI/CD pipelines. Verifica
 
 ## GitHub Actions
 
-Upload SARIF results to GitHub Code Scanning:
+Upload SARIF results to GitHub Code Scanning. StrataSolidity is built from
+source, so the job checks it out (with its Strata submodule), builds it,
+and installs solc and z3:
 
 ```yaml
 name: Verify Contracts
 on: [push, pull_request]
 
+permissions:
+  contents: read
+  security-events: write   # upload-sarif needs it
+
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out StrataSolidity
+        uses: actions/checkout@v4
+        with:
+          repository: strata-org/Strata-Solidity
+          path: strata-solidity
+          submodules: recursive
+
+      - name: Build StrataSolidity
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: strata-solidity
+          build: true
+          test: false
+          lint: false
+
+      - name: Install solc and z3
+        run: |
+          sudo add-apt-repository -y ppa:ethereum/ethereum
+          sudo apt-get update
+          sudo apt-get install -y solc z3
+
       # --strict exits 1 unless every obligation is proven and every
-      # annotation was verified; the SARIF is written either way.
+      # annotation was verified. results.sarif is kept only if the run
+      # wrote a document (not, say, when solc is missing).
       - name: Run StrataSolidity
         run: |
-          Tools/Solidity/scripts/strata-verify.sh contracts/Token.sol --sarif --strict > results.sarif
+          status=0
+          strata-solidity/Tools/Solidity/scripts/strata-verify.sh contracts/Token.sol --sarif --strict > out.sarif || status=$?
+          if [ -s out.sarif ]; then mv out.sarif results.sarif; fi
+          exit $status
 
       - name: Upload SARIF
-        if: always()
+        if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
 ```
+
+Building Strata from scratch takes a while: cache `strata-solidity/.lake`
+and `strata-solidity/Strata/.lake` between runs, as this repository's
+`.github/workflows/ci.yml` does.
 
 Without `--strict`, `--sarif` exits 0 whatever the results: the
 machine-readable formats leave the verdict to their consumer.

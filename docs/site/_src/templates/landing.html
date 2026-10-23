@@ -89,15 +89,10 @@
       <table class="spec-table">
         <thead><tr><th scope="col">Annotation</th><th scope="col">Placement</th><th scope="col">Meaning</th></tr></thead>
         <tbody>
-          <tr><td><code>requires &lt;expr&gt;</code></td><td>Function</td><td>Precondition: must hold on entry</td></tr>
-          <tr><td><code>ensures &lt;expr&gt;</code></td><td>Function</td><td>Postcondition: must hold on exit. <code>old(expr)</code> refers to the pre-state</td></tr>
-          <tr><td><code>invariant &lt;expr&gt;</code></td><td>Contract or state variable</td><td>Assumed on entry and checked on exit of every public/external mutating function, assumed by view functions, and checked after the constructor</td></tr>
-          <tr><td><code>modifies &lt;vars&gt;</code></td><td>Function</td><td>Frame condition: only the listed state, or mapping keys, may change</td></tr>
-          <tr><td><code>loop-invariant &lt;expr&gt;</code></td><td>Function</td><td>Maintained across loop iterations</td></tr>
-          <tr><td><code>forall v : T :: &lt;expr&gt;</code><br><code>exists v : T :: &lt;expr&gt;</code></td><td>Function</td><td>Quantifiers over all values of a type</td></tr>
+{{capabilities:annotations}}
         </tbody>
       </table>
-      <p class="note">Every annotation starts with <code>@custom:strata</code>. See the <a href="docs/annotation_reference.html">annotation reference</a>.</p>
+      <p class="note">Every annotation starts with <code>@custom:strata</code>. Inside them, <code>old(e)</code>, <code>sum(m)</code>, <code>forall</code> and <code>exists</code> are expressions. See the <a href="docs/annotation_reference.html">annotation reference</a>.</p>
     </div>
   </section>
 
@@ -122,22 +117,13 @@
         <div>
           <h3 class="status-head status-head--yes">Works today</h3>
           <ul class="plain">
-            <li>Simple and nested mappings, with <code>old()</code></li>
-            <li>Contract invariants, including <code>sum(mapping)</code>, checked across external calls that may re-enter the contract</li>
-            <li>Key-scoped <code>modifies</code> frame conditions</li>
-            <li><code>forall</code> / <code>exists</code> with <code>==&gt;</code></li>
-            <li>Loop invariants</li>
-            <li>Integer conversions, wrapping and signed division as the EVM performs them</li>
-            <li>Plain-text, JSON, and SARIF output, with counterexamples when z3 produces a model</li>
+{{capabilities:works}}
           </ul>
         </div>
         <div>
           <h3 class="status-head status-head--no">Not yet</h3>
           <ul class="plain">
-            <li>Struct fields accessed through mappings</li>
-            <li><code>old()</code> in loop invariants</li>
-            <li><code>msg.sender</code> in constructors</li>
-            <li>Reliable counterexamples: many violations still report ❓ unknown rather than a concrete model</li>
+{{capabilities:not_yet}}
           </ul>
         </div>
       </div>

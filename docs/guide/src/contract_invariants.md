@@ -162,10 +162,11 @@ Use invariants for properties that every function must maintain. Use postconditi
 
 ## When Invariants Fail
 
-If an invariant returns ❓ unknown for a specific function, the IDE shows:
-- Which functions maintain the invariant (✅)
-- Which functions may break it (❌)
-- The offending function gets a red marker: `✗ breaks invariant`
+An invariant is checked separately for the constructor and for each
+function, at the function's line, so the results show which functions
+maintain it (✅), which break it (❌, with a counterexample), and which the
+solver could not decide (❓: not a proof that the function breaks it, only
+that no proof was found; see [Current Limitations](./limitations.md)).
 
 Common causes:
 - A function modifies the invariant's variable without maintaining the property

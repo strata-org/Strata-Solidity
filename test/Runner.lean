@@ -7,13 +7,15 @@
 /-!
 # Typed test runner — Group C scaffold
 
-Replaces (eventually) `test/run_tests.sh` (the bash golden-test runner) with
-a typed Lean program. See `.kiro/specs/pipeline-language-rationalization/`
-(REQ-HARN-001..REQ-HARN-040) for full requirements.
+Would replace `test/run_tests.sh` (the bash golden-test runner) with a typed
+Lean program. The plan it follows was kept outside the repository; the shell
+harnesses were kept instead (`strata-solidity-next`, REQ-NEXT-PIPE-003).
 
 ## Status: SCAFFOLD
 
-Not yet wired into the build. Currently just demonstrates the pattern.
+Not wired into the build, and partly obsolete: the Python frontend it
+invokes below (`python3 -m src.solast`) was removed. Currently just
+demonstrates the pattern.
 The existing `test/run_tests.sh` continues to be the canonical runner
 until this skeleton is fleshed out and gated behind a parity check.
 

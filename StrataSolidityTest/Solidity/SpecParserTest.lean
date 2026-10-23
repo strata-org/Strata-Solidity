@@ -65,6 +65,13 @@ private def parseFail (s : String) : Bool := !parseOk s
 #guard SpecParser.tokenize "a != b" == ["a", "!=", "b"]
 -- Unary minus on a literal (negative tick-bound idiom).
 #guard SpecParser.tokenize "t >= -887272" == ["t", ">=", "-", "887272"]
+-- Non-ASCII text stays whole: the scan is over characters, not bytes
+-- (it used to turn `✅` into `✅AA` and cut the tokens after it short).
+#guard SpecParser.tokenize "x == 1 ✅ holds after the call" ==
+  ["x", "==", "1", "✅", "holds", "after", "the", "call"]
+#guard SpecParser.tokenize "café >= 1" == ["café", ">=", "1"]
+-- Tabs and no-break spaces separate tokens, as spaces do.
+#guard SpecParser.tokenize "a\t==\u00A0b" == ["a", "==", "b"]
 
 /-! ## Expression parsing tests -/
 
@@ -187,6 +194,16 @@ private def parseFail (s : String) : Bool := !parseOk s
 -- A bare tag or a keyword without a body is not an annotation, and is reported
 #guard unrecognizedStrataAnnotations "@custom:strata\n  ensures x" == [""]
 #guard unrecognizedStrataAnnotations "@custom:strata requires" == ["requires"]
+-- A `//` comment ends the annotation's text
+private def bodies (doc : String) : List String :=
+  (parseStrataAnnotations doc).map fun
+    | .requires e | .ensures e | .invariant e | .modifies e | .loopInvariant e => e
+#guard bodies "@custom:strata ensures x == 1  // ✅ the new value" == ["x == 1"]
+#guard bodies "@custom:strata modifies balances[to], totalSupply // nothing else" ==
+  ["balances[to], totalSupply"]
+#guard bodies "@custom:strata requires a / b > 0 // integer division" == ["a / b > 0"]
+-- … and a keyword followed only by a comment has no body, so it is reported
+#guard unrecognizedStrataAnnotations "@custom:strata ensures // TODO" == ["ensures // TODO"]
 -- The tag must be followed by whitespace: `@custom:strataX` is a different tag
 #guard (strataAnnotationLines "@custom:strataX ensures x").isEmpty
 -- Text continuing an annotation on the next line is detected

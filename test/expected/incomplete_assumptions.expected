@@ -1,0 +1,5 @@
+❌ 17: ensures inRange
+❌ 24: ensures i < items.length
+❌ 31: ensures msg.value == 0
+✅ 32: heap frame (only this contract is modified)
+1 passed, 3 failed, 0 unknown out of 4 total

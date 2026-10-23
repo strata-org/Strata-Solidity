@@ -1,0 +1,6 @@
+✅ 14: ensures data[keccak256(abi.encodePacked(a, b))] == v
+✅ 15: modifies frame (data)
+✅ 20: ensures data[sha256(abi.encode(a, b, c))] == 1
+❌ 27: ensures data[keccak256(abi.encode(a, b))] == v
+❌ 35: ensures data[keccak256(abi.encode(b))] == old(data[keccak256(abi.encode(b))])
+3 passed, 2 failed, 0 unknown out of 5 total

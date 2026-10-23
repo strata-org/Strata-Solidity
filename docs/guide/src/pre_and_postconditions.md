@@ -21,6 +21,7 @@ StrataSolidity proves that the function body is correct *assuming* the precondit
 A postcondition states what the function guarantees upon return:
 
 ```solidity
+/// @custom:strata requires to != msg.sender
 /// @custom:strata requires amount <= balances[msg.sender]
 /// @custom:strata ensures balances[msg.sender] == old(balances[msg.sender]) - amount
 /// @custom:strata ensures balances[to] == old(balances[to]) + amount
@@ -31,7 +32,7 @@ function transfer(address to, uint256 amount) external {
 }
 ```
 
-The `old()` expression refers to the value of a variable *before* the function executed. See [Old Expressions](./old_expressions.md) for details.
+The `old()` expression refers to the value of a variable *before* the function executed. See [Old Expressions](./old_expressions.md) for details. Without `requires to != msg.sender`, both postconditions are refuted: when a holder sends tokens to itself, its balance does not change.
 
 ## How verification works
 

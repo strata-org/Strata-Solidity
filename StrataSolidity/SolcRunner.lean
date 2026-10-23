@@ -11,18 +11,15 @@ import Lean.Data.Json.Parser
 /-!
 # Solc runner — invoke `solc --standard-json` and capture its AST output
 
-Group B (front-end-in-Lean) of `.kiro/specs/pipeline-language-rationalization/`.
-This file replaces the subprocess call inside `Tools/Solidity/src/solast.py`
-with a typed Lean entry point. The next file (`SolcAstParser.lean`) walks
-the JSON output and produces a `Solidity.node SourceRange` value, removing
-the Ion intermediate from the default verification path.
+A typed Lean entry point for running solc, which the Python `solast.py` used
+to do (`strata-solidity-next`, Requirement 5). `SolcAstParser.lean` walks the
+JSON output and produces a `Solidity.node SourceRange` value.
 
 ## Status
 
 Subprocess runner only. JSON output is captured as `Lean.Json` and returned;
 the AST extraction (`getAst`) does the minimal navigation `solc-output → sources[<input>].ast`.
-Translation from the JSON AST to the Lean Solidity ADT is in `SolcAstParser.lean`
-(scaffold for now).
+Translation from the JSON AST to the Lean Solidity ADT is in `SolcAstParser.lean`.
 
 ## Why subprocess instead of linking solc directly
 

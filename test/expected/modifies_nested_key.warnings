@@ -1,0 +1,1 @@
+modifies_nested_key.sol:27:9: warning: `@custom:strata modifies allowance[owner][spender]` on function `approveTwoKeys`: the key cannot be read, so the frame of `allowance` is not checked

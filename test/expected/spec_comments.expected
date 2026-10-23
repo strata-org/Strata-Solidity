@@ -1,0 +1,10 @@
+✅ 14: ensures x == v
+✅ 15: heap frame (only this contract is modified)
+❌ 20: ensures x == v + 1
+✅ 21: heap frame (only this contract is modified)
+✅ 29: ensures x < 10
+✅ 30: heap frame (only this contract is modified)
+✅ 30: modifies frame (balances)
+✅ 37: heap frame (only this contract is modified)
+❌ 37: modifies frame (balances)
+7 passed, 2 failed, 0 unknown out of 9 total

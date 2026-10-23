@@ -1,0 +1,1 @@
+gap_file_level_function.sol:7:1: warning: file-level function `twice` is not verified: functions outside a contract are not supported
