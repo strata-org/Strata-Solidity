@@ -1,0 +1,21 @@
+✅ 17: ensures x == val
+✅ 17: ensures x == val (in B)
+✅ 17: ensures x == val (in C)
+✅ 17: ensures x == val (in D)
+✅ 18: heap frame (only this contract is modified)
+✅ 18: heap frame (only this contract is modified)
+✅ 18: heap frame (only this contract is modified)
+✅ 18: heap frame (only this contract is modified)
+✅ 25: ensures x == val + 1
+✅ 25: ensures x == val + 1 (in D)
+✅ 26: heap frame (only this contract is modified)
+✅ 26: heap frame (only this contract is modified)
+❓ 34: ensures x == val + 3
+✅ 34: ensures x == val + 3 (in D)
+✅ 35: heap frame (only this contract is modified)
+✅ 35: heap frame (only this contract is modified)
+✅ 42: ensures x == val + 3
+✅ 43: heap frame (only this contract is modified)
+❓ 48: ensures x == val + 2
+✅ 49: heap frame (only this contract is modified)
+18 passed, 0 failed, 2 unknown out of 20 total

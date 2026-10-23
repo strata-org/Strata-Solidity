@@ -70,6 +70,28 @@ structure StorageAlias where
       read of which is an unknown value. -/
   target : Option StmtExprMd := none
 
+/-- The constructor of a base contract, which runs when a contract
+    inheriting it is deployed: before the derived constructor, after the
+    state-variable initializers. -/
+structure BaseCtor where
+  /-- The contract it is the constructor of. -/
+  contractName : String
+  /-- Its parameters: name, type, Solidity type name (for the type range). -/
+  params : List (String × HighTypeMd × String)
+  /-- The arguments it is given, and the contract whose constructor gives
+      them (`constructor() Base(7)`; its parameters are in scope there).
+      `none` when they are unknown: given where they are not read (an
+      inheritance specifier, `is Base(7)`), or not given (an abstract
+      contract). -/
+  args : Option (List (Solidity.node SourceRange) × String)
+  /-- Its body. -/
+  body : Solidity.node SourceRange
+  /-- Its modifier invocations (base-constructor calls included; those
+      name no modifier and are skipped). -/
+  modifiers : List (Solidity.node SourceRange)
+  /-- What `super.f(…)` calls in it (see `TransCtx.superImpls`). -/
+  superImpls : List (String × String) := []
+
 /-- What an internal call site needs to know about its callee, so that it
     passes the callee's implicit inputs in their declared order and binds
     its state outputs (see `translateFunction` for the signature). -/
@@ -216,6 +238,28 @@ structure TransCtx where
   /-- Names of the contracts and interfaces of the source unit: a value of
       such a type is an address. -/
   contractTypeNames : List String := []
+  /-- Every contract of the source unit, by name. solc does not flatten
+      inherited members into a derived contract, so `translateContract`
+      reads a contract's bases from here and verifies the contract as the
+      flattening of its bases and itself. -/
+  contractNodes : List (String × Solidity.node SourceRange) := []
+  /-- The contract a function defined in one of its bases is being verified
+      in (`none` for a contract's own functions): obligations name it, as
+      the same clause is checked once per contract that inherits it. -/
+  verifiedIn : Option String := none
+  /-- What `super.f(…)` calls in the code being translated, by `f`: the
+      callee's name, or why there is none (`!overloaded`, `!none`). It
+      depends on the contract the code is written in (see
+      `ContractTranslator`). -/
+  superImpls : List (String × String) := []
+  /-- What `X.f(…)` calls, for a base `X`, by `(X, f)`; as `superImpls`. -/
+  explicitImpls : List ((String × String) × String) := []
+  /-- The `superImpls` of each modifier, by name: those of the contract
+      that defines it. -/
+  modifierSuperImpls : List (String × List (String × String)) := []
+  /-- The base constructors a constructor of this contract runs first, in
+      the order they run (most base first). -/
+  baseConstructors : List BaseCtor := []
   /-- The `immutable` state variables, which keep their value once the
       constructor has run. -/
   immutableNames : List String := []

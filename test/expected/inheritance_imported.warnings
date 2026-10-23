@@ -1,0 +1,2 @@
+inheritance_imported.sol:11:1: warning: base contract `Ownable` of `Borrowed` is not defined in this file: its state, functions and invariants are not part of what is verified here
+inheritance_imported.sol:21:1: warning: base contract `Ownable` of `Lent` is not defined in this file: its state, functions and invariants are not part of what is verified here

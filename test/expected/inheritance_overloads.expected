@@ -1,0 +1,7 @@
+✅ 13: ensures r == a
+✅ 13: ensures r == a (in Derived)
+❌ 19: ensures r == a + 1
+❌ 19: ensures r == a + 1 (in Derived)
+✅ 27: ensures r == !a
+✅ 33: ensures r == a + b
+4 passed, 2 failed, 0 unknown out of 6 total

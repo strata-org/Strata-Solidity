@@ -1,0 +1,34 @@
+✅ 10: invariant count <= limit
+✅ 20: ensures r == a + 1
+✅ 20: ensures r == a + 1 (in Fast)
+✅ 25: ensures r == 1
+✅ 33: ensures count == old(count) + 1
+❌ 33: ensures count == old(count) + 1 (in Fast)
+✅ 34: heap frame (only this contract is modified)
+✅ 34: heap frame (only this contract is modified)
+✅ 34: invariant count <= limit
+✅ 34: invariant count <= limit (in Fast)
+✅ 39: invariant count <= limit
+✅ 40: ensures r == 5
+✅ 47: ensures count == old(count) + 5
+✅ 48: heap frame (only this contract is modified)
+✅ 48: invariant count <= limit
+✅ 53: ensures msg.sender == owner
+✅ 54: heap frame (only this contract is modified)
+✅ 54: invariant count <= limit
+❌ 59: ensures msg.sender != owner
+✅ 60: heap frame (only this contract is modified)
+✅ 60: invariant count <= limit
+✅ 66: ensures count == old(count) + 1
+✅ 67: heap frame (only this contract is modified)
+✅ 67: invariant count <= limit
+❌ 73: ensures count == old(count)
+✅ 74: heap frame (only this contract is modified)
+✅ 74: invariant count <= limit
+✅ 79: heap frame (only this contract is modified)
+✅ 79: invariant count <= limit
+✅ 84: heap frame (only this contract is modified)
+❌ 84: invariant count <= limit
+✅ 92: heap frame (only this contract is modified)
+✅ 101: invariant y == 0
+29 passed, 4 failed, 0 unknown out of 33 total

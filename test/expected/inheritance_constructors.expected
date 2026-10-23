@@ -1,0 +1,11 @@
+✅ 29: ensures owner == msg.sender && total == 1
+❌ 39: ensures total == 0
+✅ 68: ensures x == 6 && y == 2
+❌ 80: ensures x == 9
+✅ 99: ensures price == 2 * q
+❌ 106: ensures price == q
+✅ 116: ensures price == 5
+❌ 122: ensures price == 4
+❌ 129: ensures price == 7
+✅ 135: ensures price <= type(uint256).max
+5 passed, 5 failed, 0 unknown out of 10 total

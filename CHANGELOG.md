@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10 — Inheritance
+
+A contract is verified with what it inherits. Before, `contract Child is
+Base` failed to translate (`Resolution failed: 'n' is not defined`) as soon
+as it used anything Base declared; only interfaces and abstract contracts
+that declare no state worked. See REQ-NEXT-SOL-001..025 in
+`.kiro/specs/strata-solidity-next/requirements.md`; fixtures
+`test/examples/inheritance*.sol`.
+
+- Bases are ordered by solc's C3 linearization. Inherited state variables,
+  functions, modifiers, structs, enums and invariants resolve in the
+  derived contract's context, and an inherited function calls the most
+  derived override of a virtual function. An override has the parameter
+  types of what it overrides; an overload stays. A public state variable
+  overrides the base function its getter implements.
+- Each contract of a file is still verified on its own; an obligation of
+  an inherited function names the contract it is checked in, `(in D)`.
+- Base constructors run when a derived contract deploys: after the
+  state-variable initializers, outside the derived constructor's modifiers,
+  most base first, each with its own modifiers and with the arguments the
+  derived constructors give (`constructor() Base(7)`). An inheritance
+  specifier's arguments (`is Base(7)`) are not read: unknown values.
+- `super.f()` follows the linearization from the contract the call is
+  written in (in a function, a modifier or a base constructor), and
+  `Base.f()` calls Base's implementation.
+- Reported: a base the file does not define, directly or through another
+  base. Rejected: `super` of an overloaded function, and a base's private
+  state variable declared again in a derived contract.
+
 ## 2026-10 — Soundness fixes
 
 Each of these made a false property verify; each fix has a fixture under

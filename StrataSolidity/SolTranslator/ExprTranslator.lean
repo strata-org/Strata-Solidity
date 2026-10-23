@@ -598,7 +598,7 @@ def externalCallModel (ctx : TransCtx) (sr : SourceRange) (kind : ExternalCallKi
   else
     let invs := ctx.reentryInvariants.map fun (inv, text) => (withSourceRangeDeep ctx sr inv, text)
     invs.map (fun (inv, text) => mkStmtExprMdAnn ctx sr
-        (mkAssert inv (some s!"invariant {text} holds before the external call"))) ++
+        (mkAssert inv (some s!"invariant {text} holds before the external call{(ctx.verifiedIn.map (s!" (in {·})")).getD ""}"))) ++
       stateHavoc ctx ++ invs.map (fun (inv, _) => mkStmtExprMd (mkAssume inv))
 
 /-- The value returned by the external call at `sr`, by solc's type of the
@@ -1027,6 +1027,34 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       (some (mkStmtExprMd (.Hole (deterministic := false))))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
+    -- `super.f(…)` and `X.f(…)` for a base `X` call an inherited
+    -- implementation (`ctx.superImpls`, `ctx.explicitImpls`), emitted by
+    -- `translateContract` as an internal procedure. Checked before the
+    -- external-call path: solc gives these calls an internal function type.
+    if let .MemberAccess _ (.Identifier _ baseAnn) member := fnExpr then
+      let target? : Option (String × String) :=
+        if baseAnn.val == "super" then
+          (ctx.superImpls.lookup member.val).map (s!"super.{member.val}", ·)
+        else (ctx.explicitImpls.lookup (baseAnn.val, member.val)).map
+          (s!"{baseAnn.val}.{member.val}", ·)
+      if baseAnn.val == "super" && target?.isNone then
+        throw (.unsupported s!"`super.{member.val}(...)`: no implementation of `{member.val}` follows the contract this call is written in")
+      if let some (what, callee) := target? then
+        if callee == "!overloaded" then
+          throw (.unsupported s!"`{what}(...)` of an overloaded function")
+        if callee == "!none" then
+          throw (.unsupported s!"`{what}(...)`: no implementation of `{member.val}` to call")
+        let args ← argsSeq.val.toList.mapM (translateExpr ctx)
+        let sig := (ctx.functionSigs.lookup callee).getD { isPure := false, isView := false }
+        -- Named arguments bind by name, as in any internal call.
+        let names := namesSeq.val.toList.map (·.val)
+        let (argNodes, args) ← if names.isEmpty then pure (argsSeq.val.toList, args) else do
+          let named := names.zip (argsSeq.val.toList.zip args)
+          let ordered ← sig.paramNames.mapM fun p => match named.lookup p with
+            | some a => pure a
+            | none => throw (.typeError s!"call to `{what}` has no argument named `{p}`")
+          pure (ordered.map (·.1), ordered.map (·.2))
+        return ← translateInternalCall ctx sr s!"{ctx.contractName}_{callee}" sig argNodes args
     if let some c ← translateExternalCall? ctx n then return c.toExpr
     -- Check the FunctionCall kind
     match kindAnn.val with
@@ -1108,7 +1136,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _, _ => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
-        | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
+        | [cond] =>
+          -- A function verified in a contract that inherits it names that
+          -- contract: the same `assert` is checked once per such contract.
+          let summary := ctx.verifiedIn.bind fun c => ctx.source.map fun src =>
+            s!"{String.fromUTF8! (src.toUTF8.extract sr.start.byteIdx sr.stop.byteIdx)} (in {c})"
+          return mkStmtExprMdAnn ctx sr (mkAssert cond summary)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (mkCall nameAnn.val args)

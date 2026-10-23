@@ -43,6 +43,9 @@ mapping(bytes32 => bool) public paymentCaptured;
 | `type(uint256).max/min` | ✅ |
 | Contract invariants | ✅ |
 | Loop invariants | ✅ |
+| Inherited state, functions, modifiers and invariants; virtual dispatch | ✅ |
+| Base constructors, with their modifiers and arguments | ✅ |
+| `super` and `Base.f()`, along the C3 linearization | ✅ |
 
 ## Not yet supported
 
@@ -55,5 +58,8 @@ mapping(bytes32 => bool) public paymentCaptured;
 | External calls / reentrancy (GAP-007) | Not interpreted: a call that may re-enter the contract leaves its state unknown, except for the contract invariants (see [Contract Invariants](./contract_invariants.md#external-calls-and-reentrancy)); `--assume-no-reentrancy` trusts that calls do not re-enter |
 | Assembly / inline Yul | Not interpreted: what a block may write (the variables it assigns, memory variables, contract state) is unknown afterwards, and a block that may `return` or `stop` ends the transaction on some paths, as `selfdestruct` does. A call of a function that may end the transaction is rejected |
 | Dynamic arrays (`push`/`pop`) (GAP-008) | `.length` works, `push`/`pop` not modeled |
-| Inheritance (GAP-009) | Single contract only, no virtual dispatch |
+| A base contract in another file (GAP-009) | Only the contracts of the verified file are flattened into their derived contracts: an imported base's state, functions and invariants are reported as not part of the verification |
+| Arguments in an inheritance specifier (`is Base(7)`) | Not read: the base constructor runs with unknown arguments of their types. Arguments given in a constructor (`constructor() Base(7)`) are used |
+| A base's private state variable declared again in a derived contract | Rejected: they are different variables |
+| `super.f()` of an overloaded function | Rejected |
 | Lemmas (`@custom:strata lemma`) (GAP-004) | Needs Laurel grammar extension |
