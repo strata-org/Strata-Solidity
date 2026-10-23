@@ -1,0 +1,13 @@
+✅ 13: ensures notes == old(notes) + 1
+✅ 14: ensures r == notes
+✅ 15: heap frame (only this contract is modified)
+✅ 21: ensures notes == old(notes) + 1
+✅ 22: heap frame (only this contract is modified)
+❓ 27: ensures notes == old(notes)
+✅ 28: heap frame (only this contract is modified)
+✅ 33: ensures notes == old(notes) + 1
+✅ 34: heap frame (only this contract is modified)
+❓ 39: ensures notes == old(notes)
+✅ 40: heap frame (only this contract is modified)
+✅ 45: ensures notes == old(notes)
+10 passed, 0 failed, 2 unknown out of 12 total

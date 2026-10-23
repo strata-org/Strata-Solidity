@@ -929,14 +929,34 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       let args ← argsSeq.val.toList.mapM (translateExpr ctx)
       match nameAnn.val with
       | "require" =>
-        -- require(cond), require(cond, msg), or require(cond, CustomError(args)) → assume(cond)
-        -- The `cond :: _` pattern handles all arities (1, 2, 3+): extra arguments
-        -- (string messages, custom error constructors) are runtime diagnostics only
-        -- and are ignored for verification purposes.
-        -- No source metadata: assume nodes don't generate VCs
-        match args with
-        | cond :: _ => return mkStmtExprMd (mkAssume cond)
-        | [] => throw (.typeError "require() needs at least one argument")
+        -- `require(cond)`, `require(cond, "msg")`, `require(cond, E(args))`:
+        -- assume `cond` (no source metadata: assumes produce no VCs).
+        -- Every argument is evaluated before the check, even when `cond`
+        -- holds (Solidity docs, "require arguments are evaluated
+        -- unconditionally"), so the effects of a message such as `f()`, or
+        -- of the arguments of a custom error `E(f())`, happen on the passing
+        -- path too. The message's value is only used when reverting, so
+        -- only its effects are kept; a custom error itself has none.
+        match argsSeq.val.toList, args with
+        | _ :: msgNodes, cond :: msgs =>
+          let mut effects : List StmtExprMd := []
+          for (node, msg) in msgNodes.zip msgs do
+            match node with
+            | .FunctionCall _ errFn errArgsSeq _ _ =>
+              if (ctx.typeAt? (exprRange errFn) (exprKind errFn)).any (·.endsWith "returns (error)") then
+                effects := effects ++ (← errArgsSeq.val.toList.mapM (translateExpr ctx)).filter hasEffects
+              else if hasEffects msg then effects := effects ++ [msg]
+            | _ => if hasEffects msg then effects := effects ++ [msg]
+          -- solc's order of evaluating the arguments is not specified, so
+          -- an effect that changes what another argument reads is rejected
+          -- (as for any call).
+          let operands := cond :: effects
+          for (a, i) in operands.zipIdx do
+            if (operands.drop (i + 1)).any (operandsConflict ctx a ·) then
+              throw (.unsupported "the arguments of `require`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
+          if effects.isEmpty then return mkStmtExprMd (mkAssume cond)
+          return mkStmtExprMd (.Block (effects ++ [mkStmtExprMd (mkAssume cond)]) none)
+        | _, _ => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
         | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
