@@ -562,6 +562,17 @@ def IntType.ofString? (ts : String) : Option IntType :=
   else if base.startsWith "int" then (bits (base.drop 3).toString).map (⟨true, ·⟩)
   else none
 
+/-- The value of a constant expression, from solc's type of it
+    (`int_const 7`, `int_const -128`). solc evaluates constant expressions
+    exactly, with rational intermediate values (`(7 / 2) * 2` is 7, not 6),
+    and with every unit and exponent applied (`2.5 ether`, `1e18`). `none`
+    for any other type, and for a value solc abbreviates in the type string
+    (`int_const 1157...(70 digits)...9935`). -/
+def intConstValue? (ts : String) : Option Int :=
+  match ts.splitOn " " with
+  | ["int_const", v] => v.toInt?
+  | _ => none
+
 /-- The width in bytes of a solc `bytesN` type string (not dynamic `bytes`). -/
 def bytesWidth? (ts : String) : Option Nat :=
   let base := (ts.splitOn " ").headD ""
@@ -687,7 +698,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     else
       return mkStmtExprMd (mkIdentifier nameAnn.val)
 
-  | .Literal _ valueAnn kindAnn subAnn =>
+  | .Literal lsr valueAnn kindAnn subAnn =>
+    -- A number has the value solc computed (see `intConstValue?`): it
+    -- applies units and exponents exactly (`2.5 ether`, `1e18`).
+    if kindAnn.val == "number" then
+      if let some v := (ctx.typeAt? lsr "Literal").bind intConstValue? then
+        return mkStmtExprMd (.LiteralInt v)
     match kindAnn.val with
     | "number" =>
       let v := valueAnn.val
@@ -725,6 +741,11 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | k => throw (.unsupported s!"Literal kind: {k}")
 
   | .BinaryOperation sr left right opAnn => do
+    -- A constant expression has the exact value solc computed (see
+    -- `intConstValue?`): `(7 / 2) * 2` is 7, where dividing step by step
+    -- in integers would give 6.
+    if let some v := (ctx.typeAt? sr "BinaryOperation").bind intConstValue? then
+      return mkStmtExprMd (.LiteralInt v)
     let l ← translateExpr ctx left
     let r ← translateExpr ctx right
     -- The operands' type (solc's `commonType`), when it is an integer type.
@@ -812,6 +833,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     | none => return result
 
   | .UnaryOperation usr sub opAnn prefixAnn => do
+    -- A constant expression (`-128`, `~0`) has the value solc computed.
+    if let some v := (ctx.typeAt? usr "UnaryOperation").bind intConstValue? then
+      return mkStmtExprMd (.LiteralInt v)
     -- In `unchecked`, `++`, `--` and `-` wrap around within the operand's
     -- type instead of reverting.
     let wrap (e : StmtExprMd) : StmtExprMd :=
