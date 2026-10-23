@@ -589,9 +589,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
         -- of a function share the function's range, so without distinct
         -- summaries every `ensures` of a function would collapse into one
         -- reported obligation.
+        let inheritedBy := match ctx.verifiedIn with
+          | some c => s!" (in {c})"
+          | none => ""
         let mkPost (sr : SourceRange) (summary : String) (p : StmtExprMd) : Condition :=
           { condition := withSourceRangeDeep ctx sr (withSourceRange ctx sr p),
-            summary := some summary }
+            summary := some (summary ++ inheritedBy) }
         let specConds := (specPostExprs.zip natspecPostsAt).map fun (p, (src, r)) =>
           mkPost r s!"ensures {src}" p
         let frameConds := frameConditions.map fun (name, p) =>

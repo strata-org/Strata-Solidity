@@ -1,0 +1,7 @@
+✅ 15: ensures own == v
+✅ 15: ensures own == v (in Lent)
+✅ 16: heap frame (only this contract is modified)
+✅ 16: heap frame (only this contract is modified)
+❌ 23: ensures own == v + 1
+✅ 24: heap frame (only this contract is modified)
+5 passed, 1 failed, 0 unknown out of 6 total

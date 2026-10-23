@@ -61,7 +61,10 @@ private def classifyRule (vcr : VCResult) : String :=
   else if summary == "divisor is non-zero" || summary == "modulus is non-zero" then
     "strata/division-by-zero"
   else if has label "loopinv" then "strata/loop-invariant-fail"
-  else if summary.isEmpty && label.startsWith "assert" then "strata/assert-fail"
+  else if label.startsWith "assert" && (summary.isEmpty || summary.startsWith "assert") then
+    -- (An `assert` in an inherited function carries its text and the
+    -- contract it is verified in as summary.)
+    "strata/assert-fail"
   else "strata/unknown"
 
 /-- How an obligation came out, shared by every output format. -/

@@ -598,7 +598,7 @@ def externalCallModel (ctx : TransCtx) (sr : SourceRange) (kind : ExternalCallKi
   else
     let invs := ctx.reentryInvariants.map fun (inv, text) => (withSourceRangeDeep ctx sr inv, text)
     invs.map (fun (inv, text) => mkStmtExprMdAnn ctx sr
-        (mkAssert inv (some s!"invariant {text} holds before the external call"))) ++
+        (mkAssert inv (some s!"invariant {text} holds before the external call{(ctx.verifiedIn.map (s!" (in {·})")).getD ""}"))) ++
       stateHavoc ctx ++ invs.map (fun (inv, _) => mkStmtExprMd (mkAssume inv))
 
 /-- The value returned by the external call at `sr`, by solc's type of the
@@ -1027,6 +1027,9 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       (some (mkStmtExprMd (.Hole (deterministic := false))))
 
   | .FunctionCall sr fnExpr argsSeq kindAnn namesSeq => do
+    if let .MemberAccess _ (.Identifier _ superAnn) superMember := fnExpr then
+      if superAnn.val == "super" then
+        throw (.unsupported s!"`super.{superMember.val}(...)`: calls of an inherited implementation are not modelled")
     if let some c ← translateExternalCall? ctx n then return c.toExpr
     -- Check the FunctionCall kind
     match kindAnn.val with
@@ -1108,7 +1111,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | _, _ => throw (.typeError "require() needs at least one argument")
       | "assert" =>
         match args with
-        | [cond] => return mkStmtExprMdAnn ctx sr (mkAssert cond)
+        | [cond] =>
+          -- A function verified in a contract that inherits it names that
+          -- contract: the same `assert` is checked once per such contract.
+          let summary := ctx.verifiedIn.bind fun c => ctx.source.map fun src =>
+            s!"{String.fromUTF8! (src.toUTF8.extract sr.start.byteIdx sr.stop.byteIdx)} (in {c})"
+          return mkStmtExprMdAnn ctx sr (mkAssert cond summary)
         | _ => throw (.typeError "assert() expects exactly one argument")
       | "keccak256" | "sha256" =>
         return mkStmtExprMd (mkCall nameAnn.val args)

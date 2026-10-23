@@ -216,6 +216,15 @@ structure TransCtx where
   /-- Names of the contracts and interfaces of the source unit: a value of
       such a type is an address. -/
   contractTypeNames : List String := []
+  /-- Every contract of the source unit, by name. solc does not flatten
+      inherited members into a derived contract, so `translateContract`
+      reads a contract's bases from here and verifies the contract as the
+      flattening of its bases and itself. -/
+  contractNodes : List (String × Solidity.node SourceRange) := []
+  /-- The contract a function defined in one of its bases is being verified
+      in (`none` for a contract's own functions): obligations name it, as
+      the same clause is checked once per contract that inherits it. -/
+  verifiedIn : Option String := none
   /-- The `immutable` state variables, which keep their value once the
       constructor has run. -/
   immutableNames : List String := []
