@@ -151,6 +151,12 @@ closed; those gaps are explicitly **out of scope** here.
   - Stages 1, 2, 3, 5, 6, 7 are green (sibling check, `lake build`, `lake test`, `test/run_tests.sh` including REQ-PBT-007, `bench/bench.sh` + schema check, SARIF jsonschema). Two pre-existing shell defects in `test/run_tests.sh` were surfaced by the checkpoint and fixed (commits `8852f5b`, `9b0cbff`) — both are pure shell-idiom corrections.
 
 - [ ] 5. Group D — Publication and handoff
+  - **Superseded (2026-10); do not carry out as written.** The baseline no
+    longer describes `main` (the Python/Ion frontend it specifies was
+    removed; `strata-solidity-next` records the changes), so publishing it in
+    the mdBook (5.2) or tagging it (5.4) would present a stale spec as
+    current. The tag was never created. What the binary verifies is in the
+    capability ledger, `docs/capabilities.toml`.
   - [~] 5.1 Run requirements analysis against the baseline
     - Run `analyzeRequirements` against `.kiro/specs/strata-solidity-baseline/requirements.md`
     - Only apply auto-resolvable clarifications; surface any non-auto clarifications to the user before changing anything
