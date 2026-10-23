@@ -16,20 +16,19 @@
 # JSON outputs for informational evidence; any difference there is printed as
 # a warning, but only differences in the five structural fields fail the run.
 #
-# Note — SMT field variance. The `obligations[*].smt` field embeds the
-# `strata-verify.sh` temp-directory path in a `(set-info :file …)` annotation,
-# which differs per run because `strata-verify.sh` calls `mktemp -d`. This is
-# an incidental artifact of the shell wrapper, not a pipeline determinism
-# violation, so REQ-PBT-002 deliberately excludes `smt` and `smtResult` from
-# the determinism contract (see tasks.md task 2.3 and requirements.md §13).
+# Note — SMT field. REQ-PBT-002 excludes `obligations[*].smt` and `smtResult`
+# from the contract (see tasks.md task 2.3 and requirements.md §13). In
+# practice the raw output is byte-equal too: `--pipeline-json` writes its SMT
+# files to the same fixed directory on every run, so no per-run path ends up
+# in them.
 #
 # Usage:
 #   StrataSolidityTest/Solidity/run_pbt_determinism.sh [fixture.sol]
 #
 # If no fixture is given, defaults to
 # StrataSolidityTest/Solidity/tests/test_arithmetic.sol, a compact pass-only
-# fixture that minimizes noise from VC status and exercises the full
-# Python → Ion → Lean → Laurel → Core → SMT pipeline (REQ-PIPE-001..005).
+# fixture that minimizes noise from VC status and exercises the whole
+# pipeline (solc → Lean frontend → Laurel → Core → SMT).
 
 set -euo pipefail
 
@@ -81,9 +80,8 @@ if cmp -s "$RUN_A" "$RUN_B"; then
   raw_equal=1
 else
   echo "[warn] raw --pipeline-json output differs across runs"
-  echo "       (diff below; expected to be confined to obligations[*].smt"
-  echo "        which embeds the per-run strata-verify.sh TMPDIR and is NOT"
-  echo "        part of the REQ-PBT-002 determinism contract)"
+  echo "       (diff below; outside the REQ-PBT-002 contract only if it is"
+  echo "        confined to obligations[*].smt)"
   diff -u "$RUN_A" "$RUN_B" || true
   raw_equal=0
 fi

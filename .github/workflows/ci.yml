@@ -174,25 +174,37 @@ jobs:
           LEAN_ABORT_ON_PANIC: '1'
         run: bash test/run_tests.sh
 
-      # ---- Stage 6 (schema-only): REQ-PBT-008 against committed CSV ----
-      # bench/bench.sh itself is intentionally NOT run in CI: b6_erc20
-      # routinely takes 10+ minutes locally, which is too slow for the
-      # hot path. The schema enforcer is run against the committed
-      # bench/results.csv so any drift in the CSV header or row shape
-      # (REQ-TEST-032..REQ-TEST-034) blocks the merge.
-      - name: bench/check_csv_schema.py (REQ-PBT-008, committed CSV)
-        run: python3 bench/check_csv_schema.py bench/results.csv
+      # ---- Stage 6: REQ-PBT-008 benchmark CSV ----
+      # Runs the benchmarks (about 5 s in total) and validates the CSV they
+      # write, so the schema check applies to the current binary's output,
+      # not only to the committed bench/results.csv.
+      - name: bench/bench.sh (REQ-PBT-008)
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
+        run: bash bench/bench.sh
 
-      # ---- Stage 7: SARIF 2.1.0 schema compliance (REQ-PBT-004) ----
-      # The pytest fixture spawns strata-verify.sh --sarif against curated
-      # fixtures and validates the stdout against the vendored OASIS schema.
-      # Skipped automatically if the binary or solc are missing (the test
-      # prints a Skip with a reason); this stage fails only on a real
-      # schema violation.
+      # ---- Stage 7: SARIF 2.1.0 schema and verdicts (REQ-PBT-004) ----
+      # The tests run strata-verify.sh --sarif on curated fixtures: they
+      # validate the output against the vendored OASIS schema and check
+      # that its verdicts, locations, fingerprints and counterexamples
+      # agree with the plain-text and --json output. A test skips itself
+      # when the binary or solc is missing; under CI a skipped test fails
+      # the run (Tools/Solidity/test/conftest.py), so this stage cannot
+      # pass without checking anything.
       - name: pytest Tools/Solidity/test (REQ-PBT-004 SARIF schema)
         env:
           LEAN_ABORT_ON_PANIC: '1'
-        run: python3 -m pytest Tools/Solidity/test -v
+        run: python3 -m pytest Tools/Solidity/test -v -rs
+
+      # ---- Stage 7b: pipeline determinism (REQ-PBT-002) ----
+      # Two --pipeline-json runs of the same fixture must agree on the
+      # Laurel and Core programs, the obligations and their statuses.
+      - name: pipeline determinism (REQ-PBT-002)
+        env:
+          LEAN_ABORT_ON_PANIC: '1'
+        run: |
+          lake run pbt-determinism
+          lake run pbt-determinism test/examples/b3_token.sol
 
       # ---- Stage 8: docs/site builds from current docs/guide/src ----
       # Catches a broken template placeholder or a SUMMARY.md/file-name
