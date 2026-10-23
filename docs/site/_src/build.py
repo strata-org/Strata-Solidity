@@ -11,7 +11,7 @@ Sources:
 Output, at the site root (docs/site/):
   index.html, docs/*.html, assets/search-index.js
 
-Usage:  python3 docs/site/_src/build.py      (needs: pip install markdown pygments)
+Usage:  python3 docs/site/_src/build.py      (needs: pip install -r docs/site/requirements.txt)
 """
 import html
 import json

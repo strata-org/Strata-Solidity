@@ -22,7 +22,7 @@ docs/, index.html, assets/search-index.js   generated — gitignored, not commit
 From the repository root, after `lake build`:
 
 ```bash
-pip install markdown pygments      # once
+pip install -r docs/site/requirements.txt   # once
 python3 docs/site/_src/capture_outputs.py   # refresh examples/*.out (needs a working strataSolidity build)
 python3 docs/site/_src/build.py             # generate the site
 ```
@@ -39,8 +39,13 @@ restriction that isn't appropriate here.
 
 ## Deployment
 
-`.github/workflows/deploy-pages.yml` builds this site and uploads it as a
-Pages artifact. The workflow trigger is intentionally left at
-`workflow_dispatch` only — GitHub Pages is not enabled for this repository.
-Restoring the `push` trigger is a maintainer decision once Pages is turned on
-in the repository settings.
+`.github/workflows/deploy-pages.yml` builds this site and deploys it to
+<https://strata-org.github.io/Strata-Solidity/> on every push to `main` that
+changes `docs/site/` or `docs/guide/src/`, and on demand from the Actions
+tab. It then fails if the published root or guide index does not serve the
+site.
+
+The repository's Pages source must stay "GitHub Actions" (Settings →
+Pages). With a branch source, GitHub's built-in `pages-build-deployment`
+also runs on every push and publishes a Jekyll render of the folder, which
+has no `index.html` because the generated pages are not committed.

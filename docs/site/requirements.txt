@@ -1,0 +1,4 @@
+# Build dependencies of docs/site/_src/build.py, pinned so that the
+# published HTML does not change with whatever PyPI serves on the day.
+markdown==3.11
+pygments==2.19.2
