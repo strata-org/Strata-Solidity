@@ -1,0 +1,60 @@
+✅ 14: ensures x == val + 1
+✅ 14: ensures x == val + 1 (in Mid)
+✅ 14: ensures x == val + 1 (in Top)
+✅ 15: heap frame (only this contract is modified)
+✅ 15: heap frame (only this contract is modified)
+✅ 15: heap frame (only this contract is modified)
+✅ 22: ensures x == val + 3
+✅ 22: ensures x == val + 3 (in Top)
+✅ 23: heap frame (only this contract is modified)
+✅ 23: heap frame (only this contract is modified)
+✅ 30: ensures x == val + 3
+✅ 31: heap frame (only this contract is modified)
+❓ 36: ensures x == val + 1
+✅ 37: heap frame (only this contract is modified)
+✅ 42: ensures x == val + 1
+✅ 43: heap frame (only this contract is modified)
+❓ 48: ensures x == val + 3
+✅ 49: heap frame (only this contract is modified)
+✅ 57: ensures x == a * 10 + b
+✅ 57: ensures x == a * 10 + b (in PairChild)
+✅ 57: ensures x == a * 10 + b (in PairWrong)
+✅ 58: heap frame (only this contract is modified)
+✅ 58: heap frame (only this contract is modified)
+✅ 58: heap frame (only this contract is modified)
+✅ 66: ensures x == a * 10 + b
+✅ 67: heap frame (only this contract is modified)
+❓ 75: ensures x == b * 10 + a
+✅ 76: heap frame (only this contract is modified)
+✅ 84: ensures x == 1
+✅ 84: ensures x == 1 (in Leaf)
+✅ 84: ensures x == 1 (in Middle)
+✅ 85: heap frame (only this contract is modified)
+✅ 85: heap frame (only this contract is modified)
+✅ 85: heap frame (only this contract is modified)
+✅ 93: ensures x == 1
+✅ 93: ensures x == 1 (in Leaf)
+✅ 94: heap frame (only this contract is modified)
+✅ 94: heap frame (only this contract is modified)
+✅ 104: ensures x == 1
+✅ 104: ensures x == 1 (in MC)
+✅ 105: heap frame (only this contract is modified)
+✅ 105: heap frame (only this contract is modified)
+✅ 111: ensures x == 2
+✅ 112: heap frame (only this contract is modified)
+✅ 123: ensures x == 3
+✅ 124: heap frame (only this contract is modified)
+✅ 129: ensures x == 1
+✅ 130: heap frame (only this contract is modified)
+❓ 133: ensures x == 2
+✅ 134: heap frame (only this contract is modified)
+✅ 138: ensures r == 1
+✅ 138: ensures r == 1 (in KB)
+✅ 138: ensures r == 1 (in KC)
+✅ 138: ensures r == 1 (in KCWrong)
+✅ 147: ensures r == 2
+✅ 158: ensures r == 3
+✅ 164: ensures x == 1
+✅ 169: ensures r == 3
+❌ 175: ensures x == 2
+54 passed, 1 failed, 4 unknown out of 59 total

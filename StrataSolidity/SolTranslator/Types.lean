@@ -89,6 +89,8 @@ structure BaseCtor where
   /-- Its modifier invocations (base-constructor calls included; those
       name no modifier and are skipped). -/
   modifiers : List (Solidity.node SourceRange)
+  /-- What `super.f(…)` calls in it (see `TransCtx.superImpls`). -/
+  superImpls : List (String × String) := []
 
 /-- What an internal call site needs to know about its callee, so that it
     passes the callee's implicit inputs in their declared order and binds
@@ -245,6 +247,16 @@ structure TransCtx where
       in (`none` for a contract's own functions): obligations name it, as
       the same clause is checked once per contract that inherits it. -/
   verifiedIn : Option String := none
+  /-- What `super.f(…)` calls in the code being translated, by `f`: the
+      callee's name, or why there is none (`!overloaded`, `!none`). It
+      depends on the contract the code is written in (see
+      `ContractTranslator`). -/
+  superImpls : List (String × String) := []
+  /-- What `X.f(…)` calls, for a base `X`, by `(X, f)`; as `superImpls`. -/
+  explicitImpls : List ((String × String) × String) := []
+  /-- The `superImpls` of each modifier, by name: those of the contract
+      that defines it. -/
+  modifierSuperImpls : List (String × List (String × String)) := []
   /-- The base constructors a constructor of this contract runs first, in
       the order they run (most base first). -/
   baseConstructors : List BaseCtor := []

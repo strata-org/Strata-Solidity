@@ -112,7 +112,10 @@ def inlineModifiers (bodyCtx : TransCtx) (pre : String) (alwaysLabel : Bool)
     let marker := s!"{pre}__placeholder{k}"
     let modCtx := { partCtx s!"__mod{k}" with
       localNames := (bodyCtx.localNames.filter (!ownNames.contains ·)) ++ params.map (·.1),
-      placeholder := some (mkStmtExprMd (.Block [] (some marker))) }
+      placeholder := some (mkStmtExprMd (.Block [] (some marker))),
+      -- `super` in a modifier refers to the contracts after the one that
+      -- defines the modifier.
+      superImpls := (bodyCtx.modifierSuperImpls.lookup m).getD bodyCtx.superImpls }
     let modStmts ← translateBlockStmts modCtx stmts
     let renames := (params.map (·.1) ++ declaredLocals modStmts).eraseDups.map fun n =>
       (n, s!"{pre}__m{k}_{n}")
@@ -174,7 +177,8 @@ def baseConstructorStmts (bodyCtx : TransCtx) (ctorOf : String) (ownParams : Lis
       | .ModifierInvocation _ m argsSeq =>
         (bodyCtx.modifierDefs.lookup m.val).map fun d => (m.val, d, argsSeq.val.toList)
       | _ => none
-    let inner ← inlineModifiers (scopeOf params) s!"__ctor_{b.contractName}" true params b.body invocations
+    let inner ← inlineModifiers { scopeOf params with superImpls := b.superImpls }
+      s!"__ctor_{b.contractName}" true params b.body invocations
     let own := (params ++ (declaredLocals [inner]).filter (!·.startsWith "__")).eraseDups
     bodies := bodies ++ [mkStmtExprMd (.Block
       [renameLocals (own.map fun n => (n, renamed b.contractName n)) inner]

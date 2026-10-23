@@ -177,6 +177,22 @@ private def overrideKey (ctx : TransCtx) : Solidity.node SourceRange → Option 
   | .ModifierDefinition _ nameAnn .. => some s!"mod {nameAnn.val}"
   | _ => none
 
+/-- The name under which the implementation of `fname` written in `owner`
+    is emitted when a more derived contract overrides it and a call
+    reaches it (`super.fname(…)`, `owner.fname(…)`): an internal procedure
+    of the contract being verified. -/
+private def inheritedImplName (owner fname : String) : String :=
+  s!"__base_{owner}_{fname}"
+
+/-- A function definition renamed `name`, with internal visibility: how an
+    overridden implementation is emitted, reachable only from the calls
+    that name it. -/
+private def asInheritedImpl (name : String) : Solidity.node SourceRange → Option (Solidity.node SourceRange)
+  | .FunctionDefinition sr nameAnn kindAnn mutAnn _visAnn virtAnn params rets body doc mods =>
+    some (.FunctionDefinition sr { nameAnn with val := name } kindAnn mutAnn
+      { nameAnn with val := "internal" } virtAnn params rets body doc mods)
+  | _ => none
+
 /-- Translate a Solidity ContractDefinition to Laurel types and procedures.
     Contracts become a CompositeType with state variables as fields;
     functions are emitted as static procedures.
@@ -245,6 +261,51 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- reported where it is written, when its own contract is verified, so
     -- only these produce warnings here.
     let isOwn (owner : String) : Bool := owner == nameAnn.val
+
+    -- `super.f(…)` in code written in contract `cn` calls the implementation
+    -- of `f` that follows `cn` in the linearization, and `X.f(…)` (for a
+    -- base `X`) the first one in X's own linearization. One that a more
+    -- derived contract overrides is emitted, when a call reaches it, as the
+    -- internal procedure `__base_<owner>_<f>`.
+    let membersOf (cn : String) : List (Solidity.node SourceRange) :=
+      (((ctx.contractNodes.lookup cn).bind contractInfo?).map (·.members)).getD []
+    let fnImpl (fname : String) : Solidity.node SourceRange → Bool
+      | .FunctionDefinition _ n k _ _ _ _ _ body _ _ =>
+        k.val == "function" && n.val == fname && !(body matches .missing_node _)
+      | _ => false
+    let implsIn (order : List String) (fname : String) : List (String × Solidity.node SourceRange) :=
+      order.flatMap fun cn => (membersOf cn).filterMap fun m => if fnImpl fname m then some (cn, m) else none
+    -- What a call of the implementation of `fname` in `owner` is: the
+    -- procedure itself when it is the one this contract keeps.
+    let implCallee (owner fname : String) : String :=
+      if taggedMembers.any fun (o, m) => o == owner && fnImpl fname m then fname
+      else inheritedImplName owner fname
+    -- The callee of a call of `fname` resolved along `order`, or why there
+    -- is none to call: `!overloaded` (calls of an overloaded function by
+    -- `super` are not resolved), `!none`.
+    let resolveIn (order : List String) (fname : String) : String :=
+      let impls := implsIn order fname
+      let keys := (impls.filterMap fun (_, m) => overrideKey ctx m).eraseDups
+      if keys.length > 1 then "!overloaded"
+      else match impls.head? with
+        | some (owner, _) => implCallee owner fname
+        | none => "!none"
+    let fnNamesIn (order : List String) : List String :=
+      (order.flatMap fun cn => (membersOf cn).filterMap fun
+        | .FunctionDefinition _ n k .. => if k.val == "function" then some n.val else none
+        | _ => none).eraseDups
+    let superImplsFrom (cn : String) : List (String × String) :=
+      let after := (linearization.dropWhile (· != cn)).drop 1
+      (fnNamesIn after).map fun f => (f, resolveIn after f)
+    let explicitImpls : List ((String × String) × String) :=
+      (linearization.filter fun x => ctx.contractNodes.any (·.1 == x)).flatMap fun x =>
+        let order := (linearize ctx x).getD [x]
+        (fnNamesIn order).map fun f => ((x, f), resolveIn order f)
+    -- Every overridden implementation a call may reach, for its signature.
+    let overriddenImpls : List (String × String × Solidity.node SourceRange) :=
+      (fnNamesIn linearization).flatMap fun f =>
+        (implsIn linearization f).filterMap fun (owner, m) =>
+          if implCallee owner f == f then none else some (owner, f, m)
 
     -- Contract invariants may be attached to the contract itself or to any
     -- of its state variables; solc attaches each NatSpec block to one
@@ -351,9 +412,11 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 1b: collect modifier definitions (extract pre-_ require statement nodes)
     -- Modifiers, inlined into the functions that use them.
     let mut modifierDefs : List (String × List (String × HighTypeMd) × List (Solidity.node SourceRange)) := []
-    for (_, member) in taggedMembers do
+    let mut modifierSuperImpls : List (String × List (String × String)) := []
+    for (owner, member) in taggedMembers do
       match member with
       | .ModifierDefinition _ modNameAnn paramsNode bodyOpt =>
+        modifierSuperImpls := modifierSuperImpls ++ [(modNameAnn.val, superImplsFrom owner)]
         let stmts := match bodyOpt with
           | .some_node _ (.Block _ stmtsSeq) => stmtsSeq.val.toList
           | _ => []
@@ -408,7 +471,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
       | _ => pure ()
     let mut nonPureFunctions : List String := []
     let mut functionSigs : List (String × FnSig) := []
-    for (_, member) in taggedMembers do
+    -- The overridden implementations a call may reach are internal
+    -- procedures of this contract, so they need signatures too.
+    let sigMembers : List (Solidity.node SourceRange) :=
+      taggedMembers.map (·.2) ++ overriddenImpls.filterMap fun (owner, f, m) =>
+        asInheritedImpl (inheritedImplName owner f) m
+    for member in sigMembers do
       match member with
       | .FunctionDefinition _ fnNameAnn fnKindAnn fnMutAnn fnVisAnn _ params retParams _ _ _ =>
         let fnIsPure := fnMutAnn.val == "pure"
@@ -514,7 +582,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
               | _ => none
           | _ => none
         some { contractName := b.name, params, body := bodyNode, modifiers := mods.val.toList,
-               args := if params.isEmpty then some ([], nameAnn.val) else given }
+               args := if params.isEmpty then some ([], nameAnn.val) else given,
+               superImpls := superImplsFrom b.name }
       | _ => none
     -- Mappings some annotation of this contract, or of a base, sums.
     let summed := (contractDocAnn :: bases.map (·.doc) ++ taggedMembers.filterMap fun
@@ -541,6 +610,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                                    summedMappings := summed.eraseDups,
                                    contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
                                    modifierDefs := modifierDefs,
+                                   modifierSuperImpls := modifierSuperImpls,
+                                   explicitImpls := explicitImpls,
                                    baseConstructors := baseCtors }
     for (owner, member) in taggedMembers do
       match member with
@@ -598,11 +669,14 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                 s!"{fnDesc} is not verified: {how} the struct-valued mapping {names}, which is not supported" }]
           else do
             -- An inherited function is verified in this contract's context:
-            -- its state, its invariants.
-            let memberCtx := if isOwn owner then fnCtx else { fnCtx with verifiedIn := some nameAnn.val }
+            -- its state, its invariants. `super` in it refers to the
+            -- contracts after the one that defines it.
+            let memberCtx := { fnCtx with superImpls := superImplsFrom owner }
+            let memberCtx := if isOwn owner then memberCtx else { memberCtx with verifiedIn := some nameAnn.val }
             let proc ← translateFunction memberCtx member
             procedures := procedures ++ [proc]
       | _ => pure ()
+
 
     -- Without an explicit constructor, deployment runs only the default
     -- initialization and the state-variable initializers. Check that this
@@ -624,6 +698,29 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           ⟨contractSr, #[]⟩
       procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
 
+    let implOf (p : Procedure) : Option StmtExprMd := match p.body with
+      | .Transparent e => some e
+      | .Opaque _ impl _ => impl
+      | _ => none
+
+    -- The overridden implementations that `super.f(…)` and `X.f(…)` calls
+    -- reach, directly or through one another.
+    let mut emittedImpls : List String := []
+    for _ in [0:overriddenImpls.length] do
+      let called := procedures.flatMap fun p => ((implOf p).map calledNames).getD []
+      let reached := overriddenImpls.filter fun (owner, f, _) =>
+        let name := inheritedImplName owner f
+        called.contains s!"{nameAnn.val}_{name}" && !emittedImpls.contains name
+      if reached.isEmpty then break
+      for (owner, f, m) in reached do
+        let name := inheritedImplName owner f
+        emittedImpls := emittedImpls ++ [name]
+        if structMappingNames.any (reprMentions (toString (repr m)) ·) then
+          throw (.unsupported s!"the implementation of `{f}` in `{owner}`, which a `super.{f}(...)` or `{owner}.{f}(...)` call reaches: it uses a struct-valued mapping, which is not supported")
+        if let some impl := asInheritedImpl name m then
+          procedures := procedures ++ [← translateFunction
+            { fnCtx with superImpls := superImplsFrom owner, verifiedIn := some nameAnn.val } impl]
+
     -- A halt (assembly `return` or `stop`, `selfdestruct`) ends the whole
     -- transaction, keeping the state written so far. It is modelled as a
     -- return from the function it is in (see `haltLabel`): right in an
@@ -631,10 +728,6 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- but a function that calls one containing a halt would continue after
     -- the call, and its remaining code be verified as if it ran. Such calls
     -- are rejected.
-    let implOf (p : Procedure) : Option StmtExprMd := match p.body with
-      | .Transparent e => some e
-      | .Opaque _ impl _ => impl
-      | _ => none
     let solidityName (proc : String) := (proc.drop (nameAnn.val.length + 1)).toString
     let halting := procedures.filterMap fun p =>
       if (implOf p).any containsHalt then some p.name.text else none
