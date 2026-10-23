@@ -1,2 +1,9 @@
-✅ Passed (8):
+✅ 12: ensures deposits[msg.sender] == old(deposits[msg.sender]) + msg.value
+✅ 13: ensures totalDeposits == old(totalDeposits) + msg.value
+✅ 14: heap frame (only this contract is modified)
+✅ 22: ensures deposits[msg.sender] == old(deposits[msg.sender]) - amount
+✅ 23: ensures totalDeposits == old(totalDeposits) - amount
+✅ 24: heap frame (only this contract is modified)
+✅ 33: ensures feeBps == newFee
+✅ 34: heap frame (only this contract is modified)
 8 passed, 0 failed, 0 unknown out of 8 total

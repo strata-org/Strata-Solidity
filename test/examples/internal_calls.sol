@@ -32,7 +32,7 @@ contract InternalCalls {
         _credit(to, amount);
     }
 
-    // Refuted: the helper's mapping write is visible to the caller.
+    // Not proven: the helper's mapping write is visible to the caller.
     /// @custom:strata ensures balances[to] == old(balances[to])
     function depositWrong(address to, uint256 amount) external {
         require(amount > 0);

@@ -1,3 +1,17 @@
-❌ Failures (4):
-✅ Passed (12):
+✅ 10: invariant x <= 10
+✅ 14: heap frame (only this contract is modified)
+✅ 14: invariant x <= 10
+❌ 21: invariant x >= 1
+✅ 25: heap frame (only this contract is modified)
+✅ 25: invariant x >= 1
+✅ 26: assert(x != 0)
+✅ 33: invariant x < 5
+❌ 33: invariant x > 10
+✅ 38: invariant x < 5
+✅ 38: invariant x > 10
+✅ 39: assert(false)
+❌ 45: invariant x >= 1
+✅ 49: heap frame (only this contract is modified)
+✅ 49: invariant x >= 1
+❌ 70: assert(false)
 12 passed, 4 failed, 0 unknown out of 16 total

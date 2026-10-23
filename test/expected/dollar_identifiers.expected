@@ -1,2 +1,5 @@
-✅ Passed (4):
+✅ 12: ensures $total == old($total) + $a
+✅ 13: ensures $bal[to] == old($bal[to]) + $a
+✅ 14: heap frame (only this contract is modified)
+✅ 14: modifies frame (strata$dollar$bal)
 4 passed, 0 failed, 0 unknown out of 4 total

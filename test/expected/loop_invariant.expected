@@ -1,3 +1,6 @@
-❓ Unknown (2):
-✅ Passed (3):
+❓ 9: ensures totalSupply == old(totalSupply) + n
+✅ 10: loop invariant #1 of loop 1 holds on entry
+✅ 10: loop invariant #1 of loop 1 is preserved by the loop body
+❓ 11: heap frame (only this contract is modified)
+✅ 11: modifies frame (balances)
 3 passed, 0 failed, 2 unknown out of 5 total

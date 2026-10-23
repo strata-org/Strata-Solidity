@@ -1,3 +1,7 @@
-❓ Unknown (2):
-✅ Passed (4):
+❓ 16: ensures x == 5
+✅ 17: heap frame (only this contract is modified)
+❓ 23: ensures balances[who] == old(balances[who])
+✅ 24: heap frame (only this contract is modified)
+✅ 29: ensures x == 5
+✅ 30: heap frame (only this contract is modified)
 4 passed, 0 failed, 2 unknown out of 6 total

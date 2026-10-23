@@ -1,3 +1,5 @@
-❌ Failures (2):
-✅ Passed (2):
+❌ 12: ensures x == 1
+✅ 13: heap frame (only this contract is modified)
+❌ 19: ensures ok
+✅ 20: heap frame (only this contract is modified)
 2 passed, 2 failed, 0 unknown out of 4 total

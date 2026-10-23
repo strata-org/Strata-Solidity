@@ -1,3 +1,11 @@
-❌ Failures (1):
-✅ Passed (9):
+✅ 17: ensures total <= type(uint256).max
+✅ 18: heap frame (only this contract is modified)
+✅ 22: ensures small <= 255
+✅ 23: heap frame (only this contract is modified)
+✅ 27: heap frame (only this contract is modified)
+❌ 32: ensures tick >= 0
+✅ 33: heap frame (only this contract is modified)
+✅ 37: ensures last >= 0
+✅ 38: heap frame (only this contract is modified)
+✅ 46: ensures r >= 0
 9 passed, 1 failed, 0 unknown out of 10 total

@@ -1,3 +1,43 @@
-❌ Failures (5):
-✅ Passed (35):
+✅ 24: ensures fee == 1
+✅ 25: invariant fee <= 100
+✅ 31: heap frame (only this contract is modified)
+✅ 31: invariant fee <= 100
+✅ 37: ensures fee == old(fee)
+✅ 38: ensures b >= 0
+✅ 39: ensures address(this) != address(0)
+✅ 40: invariant fee <= 100
+❌ 47: ensures fee == old(fee)
+✅ 48: ensures fee <= 100
+✅ 49: ensures token == old(token)
+✅ 50: heap frame (only this contract is modified)
+✅ 50: invariant fee <= 100
+✅ 51: invariant fee <= 100 holds before the external call
+✅ 56: heap frame (only this contract is modified)
+✅ 56: invariant fee <= 100
+❌ 58: invariant fee <= 100 holds before the external call
+✅ 63: ensures fee <= 100
+✅ 64: heap frame (only this contract is modified)
+✅ 64: invariant fee <= 100
+✅ 65: invariant fee <= 100 holds before the external call
+✅ 68: ensures fee == old(fee)
+✅ 69: invariant fee <= 100
+✅ 74: ensures fee <= 100
+✅ 75: heap frame (only this contract is modified)
+✅ 75: invariant fee <= 100
+✅ 76: invariant fee <= 100 holds before the external call
+❌ 82: ensures fee <= 100
+✅ 83: heap frame (only this contract is modified)
+❌ 83: invariant fee <= 100
+✅ 89: ensures fee == old(fee)
+✅ 90: invariant fee <= 100
+✅ 97: heap frame (only this contract is modified)
+✅ 97: invariant fee <= 100
+✅ 99: invariant fee <= 100 holds before the external call
+✅ 101: assert(fee == before)
+❌ 106: ensures fee == old(fee)
+✅ 107: heap frame (only this contract is modified)
+✅ 107: invariant fee <= 100
+✅ 108: invariant fee <= 100 holds before the external call
 35 passed, 5 failed, 0 unknown out of 40 total
+BUG: static call to this_address not to a procedure but to a Strata.Laurel.ResolvedNode.constant
+BUG: static call to this_address not to a procedure but to a Strata.Laurel.ResolvedNode.constant

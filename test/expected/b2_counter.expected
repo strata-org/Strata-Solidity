@@ -1,2 +1,7 @@
-✅ Passed (6):
+✅ 10: ensures count == old(count) + amount
+✅ 11: ensures lastDelta == amount
+✅ 12: heap frame (only this contract is modified)
+✅ 20: ensures count == old(count) - amount
+✅ 21: ensures lastDelta == amount
+✅ 22: heap frame (only this contract is modified)
 6 passed, 0 failed, 0 unknown out of 6 total

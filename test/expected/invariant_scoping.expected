@@ -1,3 +1,13 @@
-❌ Failures (1):
-✅ Passed (11):
+✅ 22: invariant cap >= 1
+✅ 22: invariant items.length <= MAX
+✅ 22: invariant x <= MAX
+✅ 27: heap frame (only this contract is modified)
+✅ 27: invariant cap >= 1
+✅ 27: invariant items.length <= MAX
+✅ 27: invariant x <= MAX
+✅ 35: heap frame (only this contract is modified)
+✅ 35: invariant cap >= 1
+✅ 35: invariant items.length <= MAX
+✅ 35: invariant x <= MAX
+❌ 36: assert(cap != 0)
 11 passed, 1 failed, 0 unknown out of 12 total

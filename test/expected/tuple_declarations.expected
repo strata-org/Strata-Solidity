@@ -1,3 +1,7 @@
-❌ Failures (1):
-✅ Passed (5):
+✅ 11: ensures a == x && b == y
+✅ 17: ensures balances[to] == old(balances[to]) + amount
+✅ 18: ensures ok
+✅ 25: ensures r == 3
+✅ 31: ensures r == 3
+❌ 39: ensures balances[to] == old(balances[to])
 5 passed, 1 failed, 0 unknown out of 6 total

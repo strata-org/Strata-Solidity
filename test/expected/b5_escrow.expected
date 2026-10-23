@@ -1,2 +1,10 @@
-✅ Passed (9):
+✅ 17: ensures state == 1
+✅ 18: ensures fundedAt > 0
+✅ 19: heap frame (only this contract is modified)
+✅ 29: ensures state == 2
+✅ 30: heap frame (only this contract is modified)
+✅ 38: ensures state == 3
+✅ 39: heap frame (only this contract is modified)
+✅ 47: ensures state == 4
+✅ 48: heap frame (only this contract is modified)
 9 passed, 0 failed, 0 unknown out of 9 total

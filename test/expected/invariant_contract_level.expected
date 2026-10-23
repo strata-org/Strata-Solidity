@@ -1,3 +1,11 @@
-❌ Failures (1):
-✅ Passed (9):
+✅ 10: invariant reserve >= minReserve
+✅ 14: heap frame (only this contract is modified)
+✅ 14: invariant reserve >= minReserve
+✅ 19: heap frame (only this contract is modified)
+✅ 19: invariant reserve >= minReserve
+✅ 25: invariant count <= limit
+✅ 29: heap frame (only this contract is modified)
+✅ 29: invariant count <= limit
+✅ 47: ensures r == a
+❌ 52: ensures r == 12345
 9 passed, 1 failed, 0 unknown out of 10 total

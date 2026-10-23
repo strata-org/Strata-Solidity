@@ -1,2 +1,9 @@
-✅ Passed (8):
+✅ 17: ensures balances[msg.sender] == old(balances[msg.sender]) - amount
+✅ 18: ensures balances[to] == old(balances[to]) + amount
+✅ 19: modifies frame (balances)
+✅ 19: modifies frame (totalSupply)
+✅ 28: ensures balances[to] == old(balances[to]) + amount
+✅ 29: ensures totalSupply == old(totalSupply) + amount
+✅ 30: heap frame (only this contract is modified)
+✅ 30: modifies frame (balances)
 8 passed, 0 failed, 0 unknown out of 8 total
