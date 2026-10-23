@@ -13,7 +13,7 @@ StrataSolidity supports a substantial subset of Solidity. Support is being expan
 - `uint`/`int` (all sizes 8–256), `bool`, `address`, `bytes32`
 - Mappings (simple and nested)
 - Arrays (fixed and dynamic)
-- Structs, enums, user-defined value types
+- Structs (an assignment copies or shares the struct as Solidity does), enums, user-defined value types
 
 **Statements:**
 - `if`/`else`, `while`, `for`, `return`

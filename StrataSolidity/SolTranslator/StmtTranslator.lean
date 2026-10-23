@@ -333,6 +333,11 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
                               mayWriteState := !isPure && !isView,
                               isConstructor := isConstructor,
                               returnNames := baseOutputs.map (·.name.text),
+                              returnLocations := match retParams with
+                                | .ParameterList _ retSeq => retSeq.val.toList.map fun
+                                  | .VariableDeclaration _ _ _ _ _ _ _ _ loc _ _ => loc.val
+                                  | _ => ""
+                                | _ => [],
                               memoryVars := memoryParams,
                               valuedReturnTarget := valuedReturnTarget,
                               loopInvariantExprs := natspecLoopInvExprs }

@@ -284,9 +284,12 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           let paramNames := (decls params).map fun
             | .VariableDeclaration _ nameAnn .. => nameAnn.val
             | _ => ""
+          let paramLocations := (decls params).map fun
+            | .VariableDeclaration _ _ _ _ _ _ _ _ storageLoc _ _ => storageLoc.val
+            | _ => ""
           functionSigs := functionSigs ++ [(fnNameAnn.val,
             { isPure := fnIsPure, isView := fnMutAnn.val == "view", memArrayParams, returnTypes,
-              paramNames })]
+              paramNames, paramLocations })]
       | _ => pure ()
 
     -- Pass 3: Parse contract invariants from NatSpec and set up function context

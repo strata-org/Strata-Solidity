@@ -80,6 +80,9 @@ structure FnSig where
   /-- Names of the user parameters, in declaration order (for calls with
       named arguments). -/
   paramNames : List String := []
+  /-- Data locations of the user parameters (`memory`, `storage`,
+      `calldata`, or `default` for a value type), in declaration order. -/
+  paramLocations : List String := []
 
 /-- Translation context carrying the source file URI for metadata
     and struct field orders for argument reordering. -/
@@ -142,6 +145,8 @@ structure TransCtx where
   isConstructor : Bool := false
   /-- The current function's declared return variables. -/
   returnNames : List String := []
+  /-- Their data locations (see `FnSig.paramLocations`). -/
+  returnLocations : List String := []
   /-- Parameters and locals in memory or calldata, with their types: what
       inline assembly that writes memory may change. -/
   memoryVars : List (String × HighTypeMd) := []

@@ -151,6 +151,105 @@ def hasEffects (e : StmtExprMd) : Bool :=
 def declareLocal (x : String) (e : StmtExprMd) : StmtExprMd :=
   mkStmtExprMd (.Assign [{ val := .Declare { name := x, type := none }, source := .unknown }] e)
 
+/-- The data location of a struct, from solc's type of it: `storage ref`
+    (a state variable or a part of one), `storage pointer` (a local storage
+    reference), `memory` or `calldata`. `none` if the type is not a struct. -/
+def structLocation? (ts : String) : Option String :=
+  if !ts.startsWith "struct " then none
+  else match (ts.splitOn " ").drop 2 with
+    | [] => none
+    | loc => some (" ".intercalate loc)
+
+/-- The name of the struct in solc's type of it (`struct C.Info memory` is
+    `Info`). -/
+def structName? (ts : String) : Option String :=
+  if !ts.startsWith "struct " then none
+  else ((ts.splitOn " ")[1]?).bind fun q => (q.splitOn ".").getLast?
+
+/-- Whether storing a struct at data location `src` into one at `dst`
+    copies it. Structs are heap objects in the model, so an assignment
+    shares one object between both sides; Solidity shares it only between
+    memory variables (and a storage reference aliases its storage). It
+    copies the struct into storage, and from storage or calldata into
+    memory. -/
+def structCopies (dst src : String) : Bool :=
+  dst == "storage ref" || (dst == "memory" && src != "memory")
+
+/-- A new struct object of type `s` with the fields of `src` (nested
+    structs copied in turn), as a block whose value is the copy (`tmp`).
+    `src` is read once per field: it must have no effects. -/
+partial def structCopy (ctx : TransCtx) (s : String) (src : StmtExprMd) (tmp : String) : StmtExprMd :=
+  match ctx.structFields.lookup s with
+  | none => src
+  | some fields =>
+    let t := mkStmtExprMd (mkIdentifier tmp)
+    let decl := mkStmtExprMd (mkLocalVar tmp (mkHighTypeMd (.UserDefined (mkIdent s)))
+      (some (mkStmtExprMd (.New (mkIdent s)))))
+    let copies := fields.zipIdx.map fun ((f, ty), i) =>
+      let v := mkStmtExprMd (mkFieldSelect src f)
+      let v := match ty with
+        | .UserDefined id => structCopy ctx id.text v s!"{tmp}_{i}"
+        | _ => v
+      mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkFieldSelect t f))] v)
+    mkStmtExprMd (.Block (decl :: copies ++ [t]) none)
+
+/-- Statements giving the fields of the struct `e` of type `s` unknown
+    values: a memory struct is passed to a function by reference, and the
+    function may write it. A field holding a struct gets an unknown struct,
+    after that struct's own fields get unknown values (the caller may hold
+    another reference to it). -/
+partial def havocStruct (ctx : TransCtx) (s : String) (e : StmtExprMd) : List StmtExprMd :=
+  match ctx.structFields.lookup s with
+  | none => []
+  | some fields => fields.flatMap fun (f, ty) =>
+    let fe := mkStmtExprMd (mkFieldSelect e f)
+    let inner := match ty with
+      | .UserDefined id => havocStruct ctx id.text fe
+      | _ => []
+    inner ++ [mkStmtExprMd (.Assign [toAssignTarget fe] (mkStmtExprMd (.Hole (deterministic := false))))]
+
+/-- The kind (solc `nodeType`) of an expression node, as in `ExprTypes`. -/
+def exprKind : Solidity.node SourceRange → String
+  | .BinaryOperation .. => "BinaryOperation" | .UnaryOperation .. => "UnaryOperation"
+  | .FunctionCall .. => "FunctionCall" | .IndexAccess .. => "IndexAccess"
+  | .MemberAccess .. => "MemberAccess" | .Conditional .. => "Conditional"
+  | .Assignment .. => "Assignment" | .TupleExpression .. => "TupleExpression"
+  | .FunctionCallOptions .. => "FunctionCallOptions" | .Identifier .. => "Identifier"
+  | .Literal .. => "Literal" | _ => ""
+
+/-- Source range of an expression node (`none` for other node kinds). -/
+def exprRange : Solidity.node SourceRange → SourceRange
+  | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
+  | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
+  | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
+  | _ => .none
+
+/-- solc's struct type of the expression `node` as (data location, struct
+    name), if it is a struct. -/
+def structTypeOf? (ctx : TransCtx) (node : Solidity.node SourceRange) : Option (String × String) := do
+  let ts ← ctx.typeAt? (exprRange node) (exprKind node)
+  return (← structLocation? ts, ← structName? ts)
+
+/-- `e`, the translation of the expression `node`, stored at data location
+    `dst` (an assignment, a declaration, an argument or a returned value):
+    a copy if `node` is a struct that Solidity copies there (see
+    `structCopies`), otherwise `e`. -/
+def storeStruct (ctx : TransCtx) (dst : String) (node : Solidity.node SourceRange)
+    (e : StmtExprMd) : StmtExprMd :=
+  match structTypeOf? ctx node with
+  | some (src, s) =>
+    if !structCopies dst src then e else
+    let off := (exprRange node).start.byteIdx
+    let copyOf (x : StmtExprMd) := structCopy ctx s x s!"__copy{off}"
+    if !hasEffects e then copyOf e
+    else
+      -- Evaluated once, then copied field by field.
+      let srcVar := s!"__copysrc{off}"
+      match copyOf (mkStmtExprMd (mkIdentifier srcVar)) with
+      | { val := .Block stmts none, .. } => mkStmtExprMd (.Block (declareLocal srcVar e :: stmts) none)
+      | c => mkStmtExprMd (.Block [declareLocal srcVar e, c] none)
+  | none => e
+
 /-- Evaluate expressions once each, in order: if any of them has effects,
     bind every one to a fresh local `<pre>_<i>` (declarations to run first)
     and use the locals instead; otherwise use the expressions as they are. -/
@@ -229,10 +328,11 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
   for (a, i) in args.zipIdx do
     if (args.drop (i + 1)).any (operandsConflict ctx a ·) then
       throw (.unsupported s!"the arguments of `{callee}`: one changes a variable another reads, and solc's evaluation order of arguments is unspecified")
-  -- User arguments, each memory-array argument followed by its length.
+  -- User arguments, each memory-array argument followed by its length. A
+  -- storage or calldata struct passed to a memory parameter is copied.
   let mut userArgs : List StmtExprMd := []
   for ((node, arg), i) in (argNodes.zip args).zipIdx do
-    userArgs := userArgs ++ [arg]
+    userArgs := userArgs ++ [storeStruct ctx (sig.paramLocations.getD i "") node arg]
     if sig.memArrayParams.getD i false then
       match node with
       | .Identifier _ nameAnn =>
@@ -249,6 +349,13 @@ def translateInternalCall (ctx : TransCtx) (sr : SourceRange) (callee : String) 
       | _ => none
   let havocs := memArgs.map fun a => mkStmtExprMd (.Assign [toAssignTarget (ident a)]
     (mkStmtExprMd (.Hole (deterministic := false))))
+  -- So is a memory struct: its fields are unknown afterwards. (The heap
+  -- frame of the callee does not cover the structs it is passed, so it
+  -- would otherwise claim them unchanged.)
+  let havocs := havocs ++ (argNodes.zip args).flatMap fun (node, arg) =>
+    match structTypeOf? ctx node, arg.val with
+    | some ("memory", s), .Var _ => havocStruct ctx s arg
+    | _, _ => []
   -- The call's statements, then the havocs, then its value (if any).
   let finish (stmts : List StmtExprMd) (value : Option StmtExprMd) : StmtExprMd :=
     match stmts, havocs, value with
@@ -628,22 +735,6 @@ def convertValue (src? dst? : Option String) (e : StmtExprMd) : StmtExprMd :=
         else if n < m then mkStmtExprMd (mkCall "$intDiv" [e, lit (2 ^ (8 * (m - n)))])
         else mkStmtExprMd (mkPrimOp .Mul [e, lit (2 ^ (8 * (n - m)))])
       | _, _ => e
-
-/-- The kind (solc `nodeType`) of an expression node, as in `ExprTypes`. -/
-def exprKind : Solidity.node SourceRange → String
-  | .BinaryOperation .. => "BinaryOperation" | .UnaryOperation .. => "UnaryOperation"
-  | .FunctionCall .. => "FunctionCall" | .IndexAccess .. => "IndexAccess"
-  | .MemberAccess .. => "MemberAccess" | .Conditional .. => "Conditional"
-  | .Assignment .. => "Assignment" | .TupleExpression .. => "TupleExpression"
-  | .FunctionCallOptions .. => "FunctionCallOptions" | .Identifier .. => "Identifier"
-  | .Literal .. => "Literal" | _ => ""
-
-/-- Source range of an expression node (`none` for other node kinds). -/
-def exprRange : Solidity.node SourceRange → SourceRange
-  | .BinaryOperation sr .. | .UnaryOperation sr .. | .FunctionCall sr .. | .IndexAccess sr ..
-  | .MemberAccess sr .. | .Conditional sr .. | .Assignment sr .. | .TupleExpression sr ..
-  | .FunctionCallOptions sr .. | .Identifier sr .. | .Literal sr .. => sr
-  | _ => .none
 
 /-- The conversion of `arg` (translated: `e`) by the conversion call at
     `sr`, with solc's types (see `convertValue`). A conversion to an enum
@@ -1276,6 +1367,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
     if let some d := storageRefTarget? ctx lhs then
       throw (.unsupported s!"writing through the storage reference `{d}`")
     let rhsExpr ← translateExpr ctx rhs
+    -- `b = a` copies a struct into storage, or from storage or calldata
+    -- into memory (see `structCopies`).
+    let rhsExpr := if opAnn.val != "=" then rhsExpr else
+      match (ctx.typeAt? (exprRange lhs) (exprKind lhs)).bind structLocation? with
+      | some dst => storeStruct ctx dst rhs rhsExpr
+      | none => rhsExpr
     -- Solidity evaluates the right-hand side first, then the indices, then
     -- reads the target (for `op=`). If any of them has effects (a call
     -- that writes the same mapping, `k++`), they are bound to locals in
@@ -1607,6 +1704,10 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
   | .ExpressionStatement _ expr => translateExpr ctx expr
 
   | .Return sr exprOpt =>
+    -- A returned storage or calldata struct is copied into a memory return
+    -- variable (see `structCopies`).
+    let returned (i : Nat) (node : Solidity.node SourceRange) : Except TranslationError StmtExprMd := do
+      return storeStruct ctx (ctx.returnLocations.getD i "") node (← translateExpr ctx node)
     -- Under modifiers (`ctx.returnLabel`), `return` ends the function body
     -- or the modifier, not the procedure: the code after `_` still runs.
     if let some lbl := ctx.returnLabel then
@@ -1615,24 +1716,30 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         | .some_node _ (.TupleExpression _ compsSeq) =>
           if compsSeq.val.size == ctx.returnNames.length && compsSeq.val.size > 1 then
             -- `return (a, b)`: the components first, then the outputs.
-            let comps ← compsSeq.val.toList.mapM (translateExpr ctx)
+            let comps ← compsSeq.val.toList.zipIdx.mapM fun (c, i) => returned i c
             let temps := comps.zipIdx.map fun (c, i) => (s!"__retv{sr.start.byteIdx}_{i}", c)
             pure (temps.map (fun (t, c) => declareLocal t c) ++
               (ctx.returnNames.zip temps).map fun (out, (t, _)) =>
                 mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))]
                   (mkStmtExprMd (mkIdentifier t))))
           else do
-            let e ← translateExpr ctx (.TupleExpression sr compsSeq)
+            let e ← returned 0 (.TupleExpression sr compsSeq)
             pure (ctx.returnNames.take 1 |>.map fun out =>
               mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
         | .some_node _ expr => do
-          let e ← translateExpr ctx expr
+          let e ← returned 0 expr
           pure (ctx.returnNames.take 1 |>.map fun out =>
             mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier out))] e))
       return withSourceRange ctx sr (mkStmtExprMd (.Block (assigns ++ [mkStmtExprMd (.Exit lbl)]) none))
     match exprOpt with
     | .some_node _ expr => do
-      let e ← translateExpr ctx expr
+      -- `return (a, b)` with a struct that would be copied: not modelled.
+      if let .TupleExpression _ compsSeq := expr then
+        for (c, i) in compsSeq.val.toList.zipIdx do
+          if let some (src, _) := structTypeOf? ctx c then
+            if structCopies (ctx.returnLocations.getD i "") src then
+              throw (.unsupported "returning a tuple with a struct that is copied (from storage or calldata to memory)")
+      let e ← returned 0 expr
       -- Located at the statement, so that the checks Laurel lifts out of
       -- the expression (a callee's precondition, a divisor) are too.
       match ctx.valuedReturnTarget with
@@ -1823,7 +1930,8 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
         let initVal ← match initOpt with
           | .some_node _ initNode => do
             let e ← translateExpr ctx initNode
-            pure (some e)
+            -- `Info memory m = a` copies a storage or calldata struct.
+            pure (some (storeStruct ctx storageLocAnn.val initNode e))
           | .missing_node _ => pure none
         -- Storage reference declarations are handled by translateBlockStmts
         -- (alias recorded in context, no LocalVariable emitted).

@@ -94,6 +94,7 @@ This is not practical for verifying existing contracts but works for new designs
 | `invariant` | Contract-level invariants checked on all functions | ✅ |
 | `modifies` | Field-level and key-scoped frame conditions | ✅ |
 | Modifiers | Inlined into each function using them, with arguments; `return` in the body still runs the code after `_` | ✅ (not modifiers of an imported base contract, which are reported) |
+| Struct assignments | Copied into storage, and from storage or calldata into memory (assignments, declarations, arguments, returned values); memory-to-memory assignments share the struct, and a function a memory struct is passed to may change its fields | ✅ (a function writing a struct that is not a copy it made reports a spurious `heap frame` failure) |
 
 ## Not Yet Supported
 
