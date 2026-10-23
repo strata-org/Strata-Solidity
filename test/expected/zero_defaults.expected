@@ -1,3 +1,8 @@
-❌ Failures (1):
-✅ Passed (6):
+✅ 8: ensures r == 0
+✅ 12: ensures x > 10 || r == 0
+✅ 20: ensures r == x
+✅ 28: ensures !r
+❌ 35: ensures r == 0
+✅ 49: ensures count == 1
+✅ 50: ensures info.value == 0 && !info.flag
 6 passed, 1 failed, 0 unknown out of 7 total

@@ -1,3 +1,6 @@
-❌ Failures (2):
-✅ Passed (3):
+✅ 9: ensures x == j && y == j + 2
+✅ 16: ensures counts[who] == old(counts[who]) + 1
+✅ 21: ensures a == old(counts[w]) && b == old(counts[w]) + 2
+❌ 28: ensures counts[1] == old(counts[1]) + 1
+❌ 39: assert(k == 0)
 3 passed, 2 failed, 0 unknown out of 5 total

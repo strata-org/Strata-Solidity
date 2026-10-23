@@ -1,2 +1,8 @@
-✅ Passed (7):
+✅ 9: ensures result >= 1
+✅ 17: loop invariant #1 of loop 1 holds on entry
+✅ 17: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 18: ensures n == 0 ==> found == false
+✅ 29: loop invariant #1 of loop 1 holds on entry
+✅ 29: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 30: ensures n == 0 ==> total == 0
 7 passed, 0 failed, 0 unknown out of 7 total

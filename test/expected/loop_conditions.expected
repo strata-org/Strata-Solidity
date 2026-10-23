@@ -1,3 +1,8 @@
-❌ Failures (3):
-✅ Passed (4):
+✅ 10: ensures r == (x < 3)
+❌ 21: assert(k == 0)
+❌ 30: assert(x == 2)
+✅ 37: divisor is non-zero
+✅ 38: divisor is non-zero
+❌ 40: assert(a >= d)
+✅ 44: ensures i == old(i)
 4 passed, 3 failed, 0 unknown out of 7 total

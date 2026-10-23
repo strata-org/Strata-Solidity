@@ -1,2 +1,12 @@
-✅ Passed (11):
+✅ 5: invariant totalSupply == sum(balances)
+✅ 10: ensures balances[to] == old(balances[to]) + amount
+✅ 11: ensures totalSupply == old(totalSupply) + amount
+✅ 12: heap frame (only this contract is modified)
+✅ 12: invariant totalSupply == sum(balances)
+✅ 12: modifies frame (balances)
+✅ 20: ensures balances[from] == old(balances[from]) - amount
+✅ 21: ensures balances[to] == old(balances[to]) + amount
+✅ 22: invariant totalSupply == sum(balances)
+✅ 22: modifies frame (balances)
+✅ 22: modifies frame (totalSupply)
 11 passed, 0 failed, 0 unknown out of 11 total

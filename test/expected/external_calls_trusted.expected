@@ -1,3 +1,11 @@
-❌ Failures (2):
-✅ Passed (8):
+✅ 14: invariant fee <= 100
+✅ 18: heap frame (only this contract is modified)
+✅ 18: invariant fee <= 100
+✅ 23: ensures fee == old(fee)
+✅ 24: invariant fee <= 100
+✅ 30: heap frame (only this contract is modified)
+✅ 30: invariant fee <= 100
+❌ 37: ensures fee == old(fee)
+✅ 38: heap frame (only this contract is modified)
+❌ 38: invariant fee <= 100
 8 passed, 2 failed, 0 unknown out of 10 total

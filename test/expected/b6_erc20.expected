@@ -1,2 +1,12 @@
-✅ Passed (11):
+✅ 13: ensures totalSupply == old(totalSupply) + amount
+✅ 14: ensures balanceOf[to] == old(balanceOf[to]) + amount
+✅ 15: heap frame (only this contract is modified)
+✅ 23: ensures balanceOf[msg.sender] == old(balanceOf[msg.sender]) - amount
+✅ 24: ensures balanceOf[to] == old(balanceOf[to]) + amount
+✅ 25: ensures totalSupply == old(totalSupply)
+✅ 33: ensures allowance[msg.sender][spender] == amount
+✅ 41: ensures balanceOf[from] == old(balanceOf[from]) - amount
+✅ 42: ensures balanceOf[to] == old(balanceOf[to]) + amount
+✅ 43: ensures allowance[from][msg.sender] == old(allowance[from][msg.sender]) - amount
+✅ 44: ensures totalSupply == old(totalSupply)
 11 passed, 0 failed, 0 unknown out of 11 total

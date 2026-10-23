@@ -1,3 +1,4 @@
-❌ Failures (2):
-✅ Passed (1):
+❌ 23: assert(b[0] == 0)
+❌ 27: ensures items.length == old(items.length)
+✅ 32: ensures items.length == other.length
 1 passed, 2 failed, 0 unknown out of 3 total

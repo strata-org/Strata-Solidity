@@ -1,3 +1,13 @@
-❌ Failures (1):
-✅ Passed (11):
+✅ 43: ensures count == old(count) + 1
+✅ 44: ensures !locked
+✅ 45: heap frame (only this contract is modified)
+❌ 50: ensures count <= 100
+✅ 51: heap frame (only this contract is modified)
+✅ 55: ensures admins[msg.sender]
+✅ 59: ensures r == 5 && count == old(count) + 10
+✅ 60: heap frame (only this contract is modified)
+✅ 64: ensures count == 1
+✅ 65: heap frame (only this contract is modified)
+✅ 71: ensures count == 1
+✅ 72: heap frame (only this contract is modified)
 11 passed, 1 failed, 0 unknown out of 12 total

@@ -1,3 +1,7 @@
-❌ Failures (3):
-✅ Passed (3):
+✅ 14: ensures balances[msg.sender] == 0
+✅ 15: ensures total == 0
+❌ 20: ensures r == a + b + 1
+❌ 35: divisor is non-zero
+❌ 35: ensures r == a / b
+✅ 37: divisor is non-zero
 3 passed, 3 failed, 0 unknown out of 6 total

@@ -1,3 +1,6 @@
-❓ Unknown (1):
-✅ Passed (4):
+❓ 8: invariant slots.length == 0
+✅ 13: ensures r == 3
+✅ 18: ensures items.length == old(items.length) + 1
+✅ 19: invariant slots.length == 0
+✅ 23: ensures r == 2
 4 passed, 0 failed, 1 unknown out of 5 total

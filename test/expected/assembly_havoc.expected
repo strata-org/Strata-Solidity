@@ -1,3 +1,20 @@
-❌ Failures (11):
-✅ Passed (8):
+❌ 19: ensures stored == 0
+❌ 25: ensures r == 5
+❌ 33: ensures r == 7
+❌ 40: ensures r == x
+✅ 47: ensures r == x
+❌ 58: ensures a == b
+✅ 65: ensures r == balances[who]
+❌ 72: ensures balances[who] == old(balances[who])
+✅ 73: heap frame (only this contract is modified)
+❌ 78: ensures ok
+✅ 79: heap frame (only this contract is modified)
+✅ 87: ensures small <= 255
+✅ 88: heap frame (only this contract is modified)
+✅ 93: ensures stored == old(stored)
+✅ 99: ensures r == x
+❌ 110: ensures ok
+❌ 119: ensures ok
+❌ 127: ensures r == 7
+❌ 137: ensures balances[who] == 1
 8 passed, 11 failed, 0 unknown out of 19 total

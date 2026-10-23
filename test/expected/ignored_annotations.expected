@@ -1,2 +1,18 @@
-✅ Passed (17):
+✅ 17: ensures count == old(count) + 1
+✅ 18: heap frame (only this contract is modified)
+✅ 24: heap frame (only this contract is modified)
+✅ 28: loop invariant #1 of loop 1 holds on entry
+✅ 28: loop invariant #1 of loop 1 is preserved by the loop body
+✅ 29: loop invariant #2 of loop 1 holds on entry
+✅ 29: loop invariant #2 of loop 1 is preserved by the loop body
+✅ 30: ensures s == n
+✅ 40: heap frame (only this contract is modified)
+✅ 59: heap frame (only this contract is modified)
+✅ 73: ensures x == v
+✅ 74: heap frame (only this contract is modified)
+✅ 77: heap frame (only this contract is modified)
+✅ 80: ensures x == old(x) + 1
+✅ 81: heap frame (only this contract is modified)
+✅ 84: heap frame (only this contract is modified)
+✅ 86: heap frame (only this contract is modified)
 17 passed, 0 failed, 0 unknown out of 17 total

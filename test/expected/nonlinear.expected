@@ -1,2 +1,22 @@
-✅ Passed (21):
+✅ 10: ensures x == old(x) + amount
+✅ 11: heap frame (only this contract is modified)
+✅ 11: modifies frame (y)
+✅ 17: ensures x == old(x) * 2
+✅ 18: heap frame (only this contract is modified)
+✅ 18: modifies frame (y)
+✅ 26: ensures x == a * b
+✅ 27: heap frame (only this contract is modified)
+✅ 27: modifies frame (y)
+✅ 35: ensures x <= a
+✅ 36: heap frame (only this contract is modified)
+✅ 36: modifies frame (y)
+✅ 38: divisor is non-zero
+✅ 44: ensures x >= old(x)
+✅ 45: heap frame (only this contract is modified)
+✅ 45: modifies frame (y)
+✅ 47: divisor is non-zero
+✅ 52: ensures x <= amount
+✅ 53: heap frame (only this contract is modified)
+✅ 53: modifies frame (y)
+✅ 54: divisor is non-zero
 21 passed, 0 failed, 0 unknown out of 21 total

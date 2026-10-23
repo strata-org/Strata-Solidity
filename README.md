@@ -203,6 +203,16 @@ lake test               # Lean unit + characterization tests (#guard suites, JSO
 bash test/run_tests.sh  # golden suite (test/examples/*.sol vs test/expected/) + exit-code contract
 ```
 
+The golden suite pins the verdict of every obligation, so a change that
+flips one property from proven to refuted (or back) fails even when the
+totals stay the same. A comment line starting with `// Passes`,
+`// Fails`, `// Refuted` or `// Not proven` in a fixture states the
+intended outcome of the obligations below it, and is checked too. After a
+deliberate change in results, rewrite the golden files with
+`UPDATE=1 bash test/run_tests.sh` and review the diff. In CI a fixture
+without a golden file fails. The header of `test/run_tests.sh` has the
+details.
+
 ## License
 
 Copyright Strata Contributors. SPDX-License-Identifier: Apache-2.0 OR MIT

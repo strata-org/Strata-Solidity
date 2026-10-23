@@ -1,3 +1,11 @@
-❌ Failures (2):
-✅ Passed (6):
+✅ 11: ensures r == 0
+✅ 20: ensures r
+✅ 26: ensures r <= type(uint160).max
+❌ 32: ensures r
+✅ 40: ensures r <= type(uint256).max
+✅ 47: ensures r == (address(e) == address(this))
+✅ 48: ensures address(this) != address(0)
+❌ 54: ensures ok
 6 passed, 2 failed, 0 unknown out of 8 total
+BUG: static call to this_address not to a procedure but to a Strata.Laurel.ResolvedNode.constant
+BUG: static call to this_address not to a procedure but to a Strata.Laurel.ResolvedNode.constant

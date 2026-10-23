@@ -1,3 +1,9 @@
-❌ Failures (2):
-✅ Passed (6):
+✅ 16: invariant cap == 1000
+✅ 16: invariant fee <= 100
+✅ 18: ensures fee == newFee
+✅ 19: heap frame (only this contract is modified)
+✅ 19: invariant cap == 1000
+✅ 19: invariant fee <= 100
+❌ 31: invariant x <= 100
+❌ 46: invariant items.length == 0
 6 passed, 2 failed, 0 unknown out of 8 total

@@ -1,2 +1,4 @@
-✅ Passed (3):
+✅ 16: ensures r == x
+✅ 21: ensures _supply == old(_supply) + amount
+✅ 22: heap frame (only this contract is modified)
 3 passed, 0 failed, 0 unknown out of 3 total

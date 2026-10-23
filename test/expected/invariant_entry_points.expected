@@ -1,2 +1,9 @@
-✅ Passed (8):
+✅ 8: invariant a == b
+✅ 13: ensures a == old(a) + v
+✅ 14: heap frame (only this contract is modified)
+✅ 14: invariant a == b
+✅ 20: heap frame (only this contract is modified)
+✅ 24: ensures r == 0
+✅ 33: invariant total == sum(balances)
+✅ 37: ensures r == sum(balances)
 8 passed, 0 failed, 0 unknown out of 8 total

@@ -1,2 +1,7 @@
-✅ Passed (6):
+✅ 14: ensures tick == t
+✅ 15: heap frame (only this contract is modified)
+✅ 15: modifies frame (n)
+✅ 23: ensures n == old(n) + 1
+✅ 24: heap frame (only this contract is modified)
+✅ 24: modifies frame (tick)
 6 passed, 0 failed, 0 unknown out of 6 total

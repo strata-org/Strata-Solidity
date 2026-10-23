@@ -1,2 +1,7 @@
-✅ Passed (6):
+✅ 19: ensures status == ENTERED
+✅ 20: heap frame (only this contract is modified)
+✅ 20: modifies frame (flags)
+✅ 27: ensures flags[DEFAULT_ROLE] == true
+✅ 28: modifies frame (flags)
+✅ 28: modifies frame (status)
 6 passed, 0 failed, 0 unknown out of 6 total

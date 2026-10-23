@@ -1,3 +1,13 @@
-❌ Failures (2):
-✅ Passed (10):
+❌ 16: assert(c > a)
+✅ 22: assert(i == 0)
+❌ 28: assert(s == v)
+✅ 33: assert(s <= 255)
+✅ 38: assert(uint8(a) == 255)
+✅ 39: assert(int8(uint8(200)) == -56)
+✅ 45: assert(a / b == -3)
+✅ 45: divisor is non-zero
+✅ 46: assert(a % b == -1)
+✅ 46: modulus is non-zero
+✅ 51: assert(uint32(x) <= type(uint32).max)
+✅ 56: assert(v <= 1)
 10 passed, 2 failed, 0 unknown out of 12 total

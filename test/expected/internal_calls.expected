@@ -1,3 +1,17 @@
-❓ Unknown (1):
-✅ Passed (15):
+✅ 13: ensures balances[to] == old(balances[to]) + amount
+✅ 14: ensures total == old(total) + amount
+✅ 15: heap frame (only this contract is modified)
+✅ 20: ensures r == 2 * x
+✅ 25: ensures s == msg.sender
+✅ 30: ensures balances[to] == old(balances[to]) + amount
+✅ 31: heap frame (only this contract is modified)
+❓ 36: ensures balances[to] == old(balances[to])
+✅ 37: heap frame (only this contract is modified)
+✅ 42: ensures r == 2 * x
+✅ 47: ensures who == msg.sender
+✅ 52: ensures balances[to] == old(balances[to]) + amount
+✅ 53: heap frame (only this contract is modified)
+✅ 57: ensures balances[who] == 9
+✅ 58: ensures r == 6
+✅ 67: ensures balances[a] == 6 && balances[b] == 9
 15 passed, 0 failed, 1 unknown out of 16 total

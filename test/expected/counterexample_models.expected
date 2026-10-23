@@ -1,2 +1,2 @@
-❌ Failures (1):
+❌ 16: ensures allow[b][1] == 0
 0 passed, 1 failed, 0 unknown out of 1 total
