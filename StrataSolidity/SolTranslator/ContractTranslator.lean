@@ -429,6 +429,24 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
           ⟨contractSr, #[]⟩
       procedures := procedures ++ [← translateFunction fnCtx implicitCtor]
 
+    -- A halt (assembly `return` or `stop`, `selfdestruct`) ends the whole
+    -- transaction, keeping the state written so far. It is modelled as a
+    -- return from the function it is in (see `haltLabel`): right in an
+    -- entry point, whose postconditions and invariants are checked there,
+    -- but a function that calls one containing a halt would continue after
+    -- the call, and its remaining code be verified as if it ran. Such calls
+    -- are rejected.
+    let implOf (p : Procedure) : Option StmtExprMd := match p.body with
+      | .Transparent e => some e
+      | .Opaque _ impl _ => impl
+      | _ => none
+    let solidityName (proc : String) := (proc.drop (nameAnn.val.length + 1)).toString
+    let halting := procedures.filterMap fun p =>
+      if (implOf p).any containsHalt then some p.name.text else none
+    for p in procedures do
+      if let some callee := ((implOf p).map calledNames).getD [] |>.find? halting.contains then
+        throw (.unsupported s!"the call of `{solidityName callee}` in `{solidityName p.name.text}`: `{solidityName callee}` may end the transaction (assembly `return` or `stop`, `selfdestruct`), and the code after the call would be verified as if it ran")
+
     -- Contract invariants are checked via injection into public functions'
     -- pre/postconditions. No separate invariant procedure is needed.
 

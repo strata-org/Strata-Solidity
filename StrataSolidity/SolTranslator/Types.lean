@@ -495,6 +495,25 @@ def readsVariable (name : String) (e : StmtExprMd) : Bool :=
     | .Var (.Local id) => id.text == name
     | _ => false) e
 
+/-- The prefix of the label of the block a halt translates to: assembly
+    `return` or `stop`, or `selfdestruct`. A halt ends the transaction; the
+    block models that as a return from the function it is in, which is
+    right only in an entry point (see `ContractTranslator`, which rejects
+    calls of a function that contains one). -/
+def haltLabel : String := "__halt"
+
+/-- Whether `e` contains a halt (a block labelled `haltLabel…`). -/
+def containsHalt (e : StmtExprMd) : Bool :=
+  anyStmtExpr (fun n => match n.val with
+    | .Block _ (some l) => l.startsWith haltLabel
+    | _ => false) e
+
+/-- The names of the procedures `e` calls. -/
+def calledNames (e : StmtExprMd) : List String :=
+  collectStmtExprList (fun n => match n.val with
+    | .StaticCall id _ _ => [id.text]
+    | _ => []) e
+
 /-- Generate the Solidity default (zero) value for a given HighType.
     Scalars get 0 or false; mappings get `mapConst(defaultVal(valueType))`. -/
 partial def defaultValueForType (ty : HighTypeMd) : StmtExprMd :=

@@ -395,11 +395,11 @@ def stateHavoc (ctx : TransCtx) : List StmtExprMd :=
       (`stateHavoc`), where solc lets assembly write it (not in `view` and
       `pure` functions).
     - If it may end the function, it does so on some paths, with unknown
-      return values.
+      return values (a halt: see `haltLabel`).
     Fresh values are nondeterministic holes: a deterministic hole is a
     function of the procedure's inputs, so a block in a loop would produce
     the same value at every iteration. -/
-def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError StmtExprMd := do
+def assemblyModel (ctx : TransCtx) (sr : SourceRange) (s : YulSummary) : Except TranslationError StmtExprMd := do
   let fresh := mkStmtExprMd (.Hole (deterministic := false))
   let assign (target : StmtExprMd) := mkStmtExprMd (.Assign [toAssignTarget target] fresh)
   let ident (n : String) := mkStmtExprMd (mkIdentifier n)
@@ -418,7 +418,8 @@ def assemblyModel (ctx : TransCtx) (s : YulSummary) : Except TranslationError St
   let havocs := vars.eraseDups.map (assign ∘ ident) ++ state
   let exit := if !s.exits then [] else
     [mkStmtExprMd (.IfThenElse fresh
-      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)]) none))
+      (mkStmtExprMd (.Block (ctx.returnNames.map (assign ∘ ident) ++ [mkStmtExprMd (.Return none)])
+        (some s!"{haltLabel}{sr.start.byteIdx}")))
       none)]
   return mkStmtExprMd (.Block (havocs ++ exit) none)
 
@@ -1024,11 +1025,12 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
         return mkStmtExprMd (mkCall "gasleft" [])
       | "selfdestruct" =>
         -- selfdestruct(addr) ends the execution: an early return, with
-        -- unknown return values (no data is returned)
+        -- unknown return values (no data is returned); a halt (see
+        -- `haltLabel`)
         let fresh := mkStmtExprMd (.Hole (deterministic := false))
         return mkStmtExprMd (.Block (ctx.returnNames.map (fun n =>
           mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier n))] fresh)) ++
-          [mkStmtExprMd (.Return none)]) none)
+          [mkStmtExprMd (.Return none)]) (some s!"{haltLabel}{sr.start.byteIdx}"))
       | funcName =>
         -- Internal call: prefix with contract name to match procedure declaration
         let qualifiedName := s!"{ctx.contractName}_{funcName}"
@@ -1584,11 +1586,11 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   -- Inline assembly: see `assemblyModel`. Without this arm, InlineAssembly
   -- would fall through to the statement catch-all.
-  | .InlineAssembly _ yulAnn =>
+  | .InlineAssembly asmSr yulAnn =>
     -- A block whose Yul AST is unreadable may do anything.
-    assemblyModel ctx ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
+    assemblyModel ctx asmSr ((yulSummary? yulAnn.val).getD (.any (assemblyAssignable ctx)))
 
-  | .ExpressionStatement _ (.Literal _ valAnn kindAnn subAnn) =>
+  | .ExpressionStatement stmtSr (.Literal _ valAnn kindAnn subAnn) =>
     -- `_` in a modifier body: the code it stands for.
     if valAnn.val == "_" then
       match ctx.placeholder with
@@ -1598,7 +1600,7 @@ partial def translateStmt (ctx : TransCtx) (n : Solidity.node SourceRange)
     -- compatibility with any Ion produced by an older solast.py. There is
     -- no Yul AST, so every Solidity variable in scope may be assigned.
     else if valAnn.val == "__assembly__" && kindAnn.val == "string" then
-      assemblyModel ctx (.any (assemblyAssignable ctx))
+      assemblyModel ctx stmtSr (.any (assemblyAssignable ctx))
     else
       translateExpr ctx (.ExpressionStatement default (.Literal default valAnn kindAnn subAnn))
 
