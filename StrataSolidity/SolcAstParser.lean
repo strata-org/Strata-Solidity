@@ -11,22 +11,11 @@ public import StrataSolidity.SolidityDialect
 /-!
 # Solc JSON AST → typed Lean Solidity ADT
 
-Group B (front-end-in-Lean) of `.kiro/specs/pipeline-language-rationalization/`.
 This file walks the JSON AST produced by `solc --standard-json` and constructs
-a typed `Solidity.node SourceRange` value, replacing the Python `solast.py`
-JSON-AST-to-Ion path on the default verification path.
-
-## Status: SCAFFOLD
-
-The skeleton is in place: error types, source-range parsing, the dispatch
-shell on `nodeType`, and TODO stubs for each of the ~30 AST node kinds.
-The full per-node translation lives in subsequent commits on this branch.
-
-## Counterpart in Python
-
-Mirrors `Tools/Solidity/src/solast.py:Converter.convert_node` and the
-per-node `convert_*` methods. The Lean version produces typed AST nodes
-directly (no DDM/Ion intermediate).
+a typed `Solidity.node SourceRange` value: the frontend of every `.sol` input.
+It replaced the Python `solast.py`, which serialized the same AST to Ion
+(`strata-solidity-next`, Requirement 5); the Ion reader remains only for
+`.solidity.st.ion` inputs.
 
 ## Why typed instead of going through Ion
 
@@ -35,19 +24,6 @@ carries every field we'd serialize; Lean's type system can validate the
 shape at parse time. Skipping Ion removes a serialization round-trip and
 avoids a class of "Ion encoder/decoder disagreements" bugs.
 
-## Migration plan
-
-1. **(this PR)** Land the scaffold + dispatch shell.
-2. Fill in `convert*` for the 30+ node kinds. Group by area: top-level,
-   modifiers, functions, statements, expressions, structs/enums, type names.
-3. Add a sibling test in `StrataSolidityTest/Solidity/` that runs solc
-   directly on the smoke-test fixtures and asserts the resulting Lean ADT
-   matches the existing Ion-derived ADT for those fixtures (parity gate).
-4. Once parity holds, switch `StrataSolidityMain.lean` to dispatch on
-   `.sol` inputs through this path. Keep the `.solidity.st.ion` path as
-   a fallback for now (bench scripts, CI golden tests).
-5. After a parallel-run window, drop the Ion path entirely (REQ-MIGR-002)
-   and `solast.py`'s sole remaining purpose (Ion serialization) goes away.
 -/
 
 public section

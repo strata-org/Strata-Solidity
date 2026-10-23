@@ -19,16 +19,16 @@ lean_lib StrataSolidityTest where
   needs := #[strataSolidity]
 
 /--
-Group A step 2: print a structural summary of the Lean-built Solidity DDM
-dialect (`StrataSolidity/SolidityDialectLean.lean`). One line per
-declaration, sorted by name, deterministic.
+Print a structural summary of the Solidity DDM dialect
+(`StrataSolidity/SolidityDialect.lean`). One line per declaration, sorted by
+name, deterministic.
 
 Usage:
   lake exe gen-dialect-summary
-  lake exe gen-dialect-summary > snapshots/lean-dialect.txt
+  lake exe gen-dialect-summary > lean-dialect.txt
 
 Diff two versions of the Lean dialect across a PR with:
-  diff -u snapshots/lean-dialect.txt <(lake exe gen-dialect-summary)
+  diff -u lean-dialect.txt <(lake exe gen-dialect-summary)
 
 See `StrataSolidity/DialectSummary.lean` for full rationale.
 -/

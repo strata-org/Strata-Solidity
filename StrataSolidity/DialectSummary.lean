@@ -9,14 +9,12 @@ import StrataSolidity.SolidityDialect
 /-!
 # `lake exe gen-dialect-summary` — print a structural snapshot of the Lean dialect
 
-Group A step 2 of `.kiro/specs/pipeline-language-rationalization/`.
 Produces a deterministic, human-readable summary of the canonical `Solidity` dialect so
 contributors can:
 
   * inspect what the Lean dialect declares without reading the Lean source,
   * diff two versions of the Lean dialect across PRs (the output is sorted
-    by name for stable diffs),
-  * cross-check against `Tools/Solidity/src/base_dialect.py` line-by-line.
+    by name for stable diffs).
 
 Step 3 (in a follow-up PR) adds a compile-time structural parity check that
 compares this same shape against the Ion-loaded canonical dialect, failing
