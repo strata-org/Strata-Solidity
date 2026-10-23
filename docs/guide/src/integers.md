@@ -28,7 +28,7 @@ unchecked {
 }
 ```
 
-StrataSolidity models the wrapping (`+`, `-`, `*`, `++`, `--`, unary `-` and `op=`, within the operands' type). If your postcondition assumes no wrapping occurred, you need a precondition to prevent it:
+StrataSolidity models the wrapping (`+`, `-`, `*`, a signed `/`, a power of constants, `++`, `--`, unary `-` and `op=`, within the operands' type). If your postcondition assumes no wrapping occurred, you need a precondition to prevent it:
 
 ```solidity
 /// @custom:strata requires totalSupply + amount <= type(uint256).max
@@ -48,7 +48,7 @@ An explicit conversion behaves as on the EVM:
 - `bytesN` to a shorter `bytesM` keeps the high-order bytes, to a longer one pads on the right;
 - to an enum, a value out of range reverts.
 
-Signed `/` and `%` round toward zero (`-7 / 2 == -3`, `-7 % 2 == -1`). A power of constants (`2 ** 64`) is folded; a shift by a constant is a division (`>>`) or a wrapping multiplication (`<<`), and an unsigned `x & (2^n - 1)` keeps the low `n` bits. Other bitwise operations are uninterpreted functions.
+Signed `/` and `%` round toward zero (`-7 / 2 == -3`, `-7 % 2 == -1`). A constant expression has the value solc computes, exactly: `(7 / 2) * 2` is 7, and units and exponents may be fractional (`2.5 ether`, `1e18`). A power of named constants (`B ** 2`) is folded; a shift by a constant is a division (`>>`) or a wrapping multiplication (`<<`), an unsigned `x & (2^n - 1)` keeps the low `n` bits, and `~x` is exact (`-x - 1` for a signed `x`, `2^N - 1 - x` for an N-bit unsigned one). Other bitwise operations are uninterpreted functions whose result can be any value of the result's type.
 
 ## Type constants
 
