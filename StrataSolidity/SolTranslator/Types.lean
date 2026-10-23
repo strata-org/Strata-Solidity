@@ -70,6 +70,26 @@ structure StorageAlias where
       read of which is an unknown value. -/
   target : Option StmtExprMd := none
 
+/-- The constructor of a base contract, which runs when a contract
+    inheriting it is deployed: before the derived constructor, after the
+    state-variable initializers. -/
+structure BaseCtor where
+  /-- The contract it is the constructor of. -/
+  contractName : String
+  /-- Its parameters: name, type, Solidity type name (for the type range). -/
+  params : List (String × HighTypeMd × String)
+  /-- The arguments it is given, and the contract whose constructor gives
+      them (`constructor() Base(7)`; its parameters are in scope there).
+      `none` when they are unknown: given where they are not read (an
+      inheritance specifier, `is Base(7)`), or not given (an abstract
+      contract). -/
+  args : Option (List (Solidity.node SourceRange) × String)
+  /-- Its body. -/
+  body : Solidity.node SourceRange
+  /-- Its modifier invocations (base-constructor calls included; those
+      name no modifier and are skipped). -/
+  modifiers : List (Solidity.node SourceRange)
+
 /-- What an internal call site needs to know about its callee, so that it
     passes the callee's implicit inputs in their declared order and binds
     its state outputs (see `translateFunction` for the signature). -/
@@ -225,6 +245,9 @@ structure TransCtx where
       in (`none` for a contract's own functions): obligations name it, as
       the same clause is checked once per contract that inherits it. -/
   verifiedIn : Option String := none
+  /-- The base constructors a constructor of this contract runs first, in
+      the order they run (most base first). -/
+  baseConstructors : List BaseCtor := []
   /-- The `immutable` state variables, which keep their value once the
       constructor has run. -/
   immutableNames : List String := []

@@ -1,0 +1,3 @@
+inheritance_struct_mapping.sol:15:5: warning: the constructor is not verified: it uses the struct-valued mapping `ps`, which is not supported
+inheritance_struct_mapping.sol:21:1: warning: the invariants of contract `Child` are not verified: its constructor, which must establish them, is not verified
+inheritance_struct_mapping.sol:24:5: warning: the constructor is not verified: a base constructor it runs uses the struct-valued mapping `ps`, which is not supported

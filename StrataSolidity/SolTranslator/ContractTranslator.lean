@@ -241,17 +241,6 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     if let some (v, o) := varOwners.find? fun (v, o) => varOwners.any fun (v', o') => v' == v && o' != o then
       let others := varOwners.filterMap fun (v', o') => if v' == v && o' != o then some s!"`{o'}`" else none
       throw (.unsupported s!"the state variable `{v}` of `{o}`, declared again in {", ".intercalate others}: they are different variables")
-    -- Base constructors run as part of deployment: not modelled yet.
-    for b in bases do
-      for m in b.members do
-        if let .FunctionDefinition _ _ k _ _ _ ps _ body _ mods := m then
-          if k.val == "constructor" then
-            let empty := match ps, body with
-              | .ParameterList _ ps, .some_node _ (.Block _ stmts) =>
-                ps.val.isEmpty && stmts.val.isEmpty && mods.val.isEmpty
-              | _, _ => false
-            if !empty then
-              throw (.unsupported s!"the constructor of `{b.name}`, a base of `{nameAnn.val}`: base constructors are not modelled")
     -- Members this contract declares itself. Everything inherited is
     -- reported where it is written, when its own contract is verified, so
     -- only these produce warnings here.
@@ -498,16 +487,47 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     -- Pass 4: translate functions with struct field info, state context, and invariant nodes
     -- Invariant nodes are re-translated per function so that state variable references
     -- resolve correctly in each function's context.
+    -- The base constructors deployment runs, most base first. Each gets
+    -- the arguments that the most derived constructor naming its contract
+    -- (`constructor() Base(7)`) gives it; those of an inheritance specifier
+    -- (`is Base(7)`) are not in the AST, and are unknown.
+    let tctx := { ctx with enumDefs, udvtNames }
+    let ctorOf (c : String) : Option (Solidity.node SourceRange) :=
+      (((ctx.contractNodes.lookup c).bind contractInfo?).map (·.members)).bind (·.find? isConstructorMember)
+    let baseCtors : List BaseCtor := bases.filterMap fun b =>
+      match ctorOf b.name with
+      | some (.FunctionDefinition _ _ _ _ _ _ ps _ (.some_node _ bodyNode) _ mods) =>
+        let params := match ps with
+          | .ParameterList _ seq => seq.val.toList.filterMap fun
+            | .VariableDeclaration _ n (.some_type_name _ tn) .. =>
+              let t := translateTypeNode tctx tn
+              some (n.val, t.highType, t.solName)
+            | _ => none
+          | _ => []
+        let derived := linearization.takeWhile (· != b.name)
+        let given := derived.findSome? fun x =>
+          match ctorOf x with
+          | some (.FunctionDefinition _ _ _ _ _ _ _ _ _ _ xMods) =>
+            xMods.val.toList.findSome? fun
+              | .ModifierInvocation _ m argsSeq =>
+                if m.val == b.name then some (argsSeq.val.toList, x) else none
+              | _ => none
+          | _ => none
+        some { contractName := b.name, params, body := bodyNode, modifiers := mods.val.toList,
+               args := if params.isEmpty then some ([], nameAnn.val) else given }
+      | _ => none
     -- Mappings some annotation of this contract, or of a base, sums.
     let summed := (contractDocAnn :: bases.map (·.doc) ++ taggedMembers.filterMap fun
         | (_, .FunctionDefinition _ _ _ _ _ _ _ _ _ doc _) => some doc
         | (_, .VariableDeclaration _ _ _ _ _ _ _ _ _ _ doc) => some doc
         | _ => none).flatMap (summedNames ·.val)
-    -- A constructor that is not verified (it uses a struct-valued mapping)
-    -- establishes nothing, so the invariants are neither assumed nor
-    -- checked: assuming them would make every obligation that relies on
-    -- them pass.
-    let ctorSkipped := ownMembers.any fun
+    -- A constructor that is not verified (it, or a base constructor it
+    -- runs, uses a struct-valued mapping) establishes nothing, so the
+    -- invariants are neither assumed nor checked: assuming them would make
+    -- every obligation that relies on them pass.
+    let usesStructMapping (n : Solidity.node SourceRange) : Bool :=
+      structMappingNames.any (reprMentions (toString (repr n)) ·)
+    let ctorSkipped := baseCtors.any (usesStructMapping ·.body) || ownMembers.any fun
       | .FunctionDefinition _ _ k _ _ _ _ _ bodyOpt _ _ =>
         k.val == "constructor" && match bodyOpt with
           | .some_node _ _ => structMappingNames.any (reprMentions (toString (repr bodyOpt)) ·)
@@ -520,7 +540,8 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
     let fnCtx := { baseFnCtx with contractInvariantNatspec := invariants,
                                    summedMappings := summed.eraseDups,
                                    contractInvariantTexts := if ctorSkipped then [] else natspecInvariantStrs,
-                                   modifierDefs := modifierDefs }
+                                   modifierDefs := modifierDefs,
+                                   baseConstructors := baseCtors }
     for (owner, member) in taggedMembers do
       match member with
       | .FunctionDefinition fnSr fnNameAnn fnKindAnn _ _ _ _ _ bodyOpt fnDocAnn fnModifiers => do
@@ -563,13 +584,18 @@ def translateContract (ctx : TransCtx) (contract : Solidity.node SourceRange)
                   warnings := warnings ++ [{ range := r, message :=
                     s!"`@custom:strata modifies {m}[{key}]` on {fnDesc}: the key cannot be read, so the frame of `{m}` is not checked" }]
               | _ => pure ()
-          -- Skip functions that reference struct-valued mappings (unsupported in Core)
-          let usedStructMappings := structMappingNames.filter (reprMentions bodyText ·)
+          -- Skip functions that reference struct-valued mappings (unsupported in
+          -- Core); a constructor also when a base constructor it runs does.
+          let usedStructMappings := structMappingNames.filter fun m =>
+            reprMentions bodyText m ||
+              (isCtor && baseCtors.any fun (b : BaseCtor) => reprMentions (toString (repr b.body)) m)
           if !usedStructMappings.isEmpty then
             if isOwn owner then
               let names := ", ".intercalate (usedStructMappings.map (s!"`{·}`"))
+              let how := if usedStructMappings.any (reprMentions bodyText ·) then "it uses"
+                else "a base constructor it runs uses"
               warnings := warnings ++ [{ range := fnSr, message :=
-                s!"{fnDesc} is not verified: it uses the struct-valued mapping {names}, which is not supported" }]
+                s!"{fnDesc} is not verified: {how} the struct-valued mapping {names}, which is not supported" }]
           else do
             -- An inherited function is verified in this contract's context:
             -- its state, its invariants.

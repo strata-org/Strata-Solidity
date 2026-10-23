@@ -1,0 +1,5 @@
+✅ 30: ensures m == v
+✅ 31: heap frame (only this contract is modified)
+❌ 37: ensures m == v + 1
+✅ 38: heap frame (only this contract is modified)
+3 passed, 1 failed, 0 unknown out of 4 total

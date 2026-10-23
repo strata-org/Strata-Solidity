@@ -73,6 +73,114 @@ def resolveInvariants (ctx : TransCtx) (isConstructor : Bool) (invs : List StmtE
   else
     invs.map (rewriteStateVarRefs ctx.stateVarNames ctx.mappingStateVars [] · ctx.constantDefs)
 
+/-- The local variables `stmts` declare. -/
+def declaredLocals (stmts : List StmtExprMd) : List String :=
+  stmts.flatMap (collectStmtExprList fun n => match n.val with
+    | .Assign ts _ => ts.filterMap fun t => match t.val with
+      | .Declare p => some p.name.text
+      | _ => none
+    | .Var (.Declare p) => [p.name.text]
+    | _ => [])
+
+/-- The body `bodyNode` of a function or constructor with the modifiers
+    `invocations` (name, definition, argument nodes) inlined, the first
+    outermost: each runs its body with its `_` standing for the next
+    modifier, or for the body. Each part is a labelled block that a `return`
+    in it exits (the code after `_` still runs), and a modifier's parameters
+    and locals are renamed apart (they are scoped to it; nor does it see the
+    function's own `ownNames`). Without modifiers the body is labelled only
+    when `alwaysLabel`. Labels and renamed names start with `pre`, so that
+    several bodies can be inlined into one procedure (base constructors into
+    the derived one). -/
+def inlineModifiers (bodyCtx : TransCtx) (pre : String) (alwaysLabel : Bool)
+    (ownNames : List String) (bodyNode : Solidity.node SourceRange)
+    (invocations : List (String × (List (String × HighTypeMd) × List (Solidity.node SourceRange)) ×
+      List (Solidity.node SourceRange)))
+    : Except TranslationError StmtExprMd := do
+  let labelled := alwaysLabel || !invocations.isEmpty
+  let partCtx (label : String) := if !labelled then bodyCtx
+    else { bodyCtx with returnLabel := some s!"{pre}{label}" }
+  let bodyStmts ← match bodyNode with
+    | .Block _ stmtsSeq => translateBlockStmts (partCtx "__body") stmtsSeq.val.toList
+    | _ => pure [← translateStmt (partCtx "__body") bodyNode]
+  let mut b := mkStmtExprMd (.Block bodyStmts (if labelled then some s!"{pre}__body" else none))
+  for ((m, (params, stmts), argNodes), j) in invocations.reverse.zipIdx do
+    let k := invocations.length - 1 - j
+    let args ← argNodes.mapM (translateExpr bodyCtx)
+    if args.length != params.length then
+      throw (.typeError s!"modifier `{m}` takes {params.length} argument(s), given {args.length}")
+    let marker := s!"{pre}__placeholder{k}"
+    let modCtx := { partCtx s!"__mod{k}" with
+      localNames := (bodyCtx.localNames.filter (!ownNames.contains ·)) ++ params.map (·.1),
+      placeholder := some (mkStmtExprMd (.Block [] (some marker))) }
+    let modStmts ← translateBlockStmts modCtx stmts
+    let renames := (params.map (·.1) ++ declaredLocals modStmts).eraseDups.map fun n =>
+      (n, s!"{pre}__m{k}_{n}")
+    let paramDecls := (params.zip args).map fun ((p, ty), a) =>
+      mkStmtExprMd (mkLocalVar s!"{pre}__m{k}_{p}" ty (some a))
+    let modBlock := mkStmtExprMd (.Block (paramDecls ++ modStmts.map (renameLocals renames))
+      (some s!"{pre}__mod{k}"))
+    let inner := b
+    b := mapStmtExpr (fun n => match n.val with
+      | .Block [] (some l) => if l == marker then inner else n
+      | _ => n) modBlock
+  return b
+
+/-- The base constructors `bases` (most base first) of the constructor
+    whose body context is `bodyCtx` and whose own parameters are
+    `ownParams`, as statements to run before it: first every base
+    constructor's parameters get their arguments, in the order solc
+    evaluates them (most derived first: an argument may read a parameter of
+    the constructor that gives it), then the bodies run, most base first.
+    Each body is a block, with its modifiers, that its `return` exits; its
+    parameters and locals are renamed apart (`__ctor_<Base>_<name>`). An
+    unknown argument is an unknown value of the parameter's type. -/
+def baseConstructorStmts (bodyCtx : TransCtx) (ctorOf : String) (ownParams : List String)
+    (bases : List BaseCtor) : Except TranslationError (List StmtExprMd) := do
+  let renamed (k : String) (n : String) := s!"__ctor_{k}_{n}"
+  let paramsOf (k : String) : List String :=
+    ((bases.find? (·.contractName == k)).map fun b => b.params.map (·.1)).getD []
+  -- The context of a base constructor's own code: the contract's state, and
+  -- only that constructor's parameters (which are renamed afterwards).
+  let scopeOf (params : List String) : TransCtx :=
+    { bodyCtx with localNames := (bodyCtx.localNames.filter (!ownParams.contains ·)) ++ params,
+                   returnNames := [], returnLocations := [] }
+  let mut binds : List StmtExprMd := []
+  for b in bases.reverse do
+    let args? ← match b.args with
+      | some (nodes, giver) =>
+        if nodes.length != b.params.length then
+          throw (.typeError s!"the constructor of `{b.contractName}` takes {b.params.length} argument(s), given {nodes.length}")
+        if giver == ctorOf then
+          pure (some (← nodes.mapM (translateExpr bodyCtx)))
+        else
+          let gp := paramsOf giver
+          let args ← nodes.mapM (translateExpr (scopeOf gp))
+          pure (some (args.map (renameLocals (gp.map fun p => (p, renamed giver p)))))
+      | none => pure none
+    for ((p, ty, solName), i) in b.params.zipIdx do
+      let v := renamed b.contractName p
+      match args? with
+      | some args =>
+        binds := binds ++ [mkStmtExprMd (mkLocalVar v ty args[i]?)]
+      | none =>
+        binds := binds ++ [mkStmtExprMd (mkLocalVar v ty (some (mkStmtExprMd (.Hole (deterministic := false)))))]
+        if let some c := mkRangeCond solName (mkStmtExprMd (mkIdentifier v)) then
+          binds := binds ++ [mkStmtExprMd (mkAssume c)]
+  let mut bodies : List StmtExprMd := []
+  for b in bases do
+    let params := b.params.map (·.1)
+    let invocations := b.modifiers.filterMap fun
+      | .ModifierInvocation _ m argsSeq =>
+        (bodyCtx.modifierDefs.lookup m.val).map fun d => (m.val, d, argsSeq.val.toList)
+      | _ => none
+    let inner ← inlineModifiers (scopeOf params) s!"__ctor_{b.contractName}" true params b.body invocations
+    let own := (params ++ (declaredLocals [inner]).filter (!·.startsWith "__")).eraseDups
+    bodies := bodies ++ [mkStmtExprMd (.Block
+      [renameLocals (own.map fun n => (n, renamed b.contractName n)) inner]
+      (some s!"__ctor_{b.contractName}"))]
+  return binds ++ bodies
+
 /-- Translate a Solidity FunctionDefinition to a Laurel Procedure.
     Inputs, in order (internal call sites must match, see
     `translateInternalCall`): `self` and `<scalar>_in` for each scalar state
@@ -377,48 +485,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
           withSourceRangeDeep ctx r (withSourceRange ctx r e)
         -- Rewrite postcondition expressions: user parameter names → _param names
         let specPostExprs := specPostExprs.map (rewriteParamRefs userParamNames)
-        -- Translate body statements. Modifiers are inlined, the first one
-        -- outermost: each runs its body with its `_` standing for the next
-        -- modifier, or for the function's body. Each part is a labelled
-        -- block that a `return` in it exits (the code after `_` still
-        -- runs), and a modifier's parameters and locals are renamed apart
-        -- (they are scoped to it; nor does it see the function's own).
         let invocations := modifiersSeq.val.toList.filterMap fun
           | .ModifierInvocation _ m argsSeq =>
             (ctx.modifierDefs.lookup m.val).map fun d => (m.val, d, argsSeq.val.toList)
           | _ => none
-        let partCtx (label : String) := if invocations.isEmpty then bodyCtx
-          else { bodyCtx with returnLabel := some label }
-        let bodyStmts ← match bodyNode with
-          | .Block _ stmtsSeq => translateBlockStmts (partCtx "__body") stmtsSeq.val.toList
-          | _ => pure [← translateStmt (partCtx "__body") bodyNode]
-        let mut b := mkStmtExprMd (.Block bodyStmts (if invocations.isEmpty then none else some "__body"))
         let ownNames := userParamInfo.map (·.1) ++ baseOutputs.map (·.name.text)
-        for ((m, (params, stmts), argNodes), j) in invocations.reverse.zipIdx do
-          let k := invocations.length - 1 - j
-          let args ← argNodes.mapM (translateExpr bodyCtx)
-          if args.length != params.length then
-            throw (.typeError s!"modifier `{m}` takes {params.length} argument(s), given {args.length}")
-          let marker := s!"__placeholder{k}"
-          let modCtx := { partCtx s!"__mod{k}" with
-            localNames := (bodyCtx.localNames.filter (!ownNames.contains ·)) ++ params.map (·.1),
-            placeholder := some (mkStmtExprMd (.Block [] (some marker))) }
-          let modStmts ← translateBlockStmts modCtx stmts
-          let declared := modStmts.flatMap (collectStmtExprList fun n => match n.val with
-            | .Assign ts _ => ts.filterMap fun t => match t.val with
-              | .Declare p => some p.name.text
-              | _ => none
-            | .Var (.Declare p) => [p.name.text]
-            | _ => [])
-          let renames := (params.map (·.1) ++ declared).eraseDups.map fun n => (n, s!"__m{k}_{n}")
-          let paramDecls := (params.zip args).map fun ((p, ty), a) =>
-            mkStmtExprMd (mkLocalVar s!"__m{k}_{p}" ty (some a))
-          let modBlock := mkStmtExprMd (.Block (paramDecls ++ modStmts.map (renameLocals renames))
-            (some s!"__mod{k}"))
-          let inner := b
-          b := mapStmtExpr (fun n => match n.val with
-            | .Block [] (some l) => if l == marker then inner else n
-            | _ => n) modBlock
+        let b ← inlineModifiers bodyCtx "" false ownNames bodyNode invocations
         -- Build preamble: local copies of user params + mapping init assigns
         let mut preamble : List StmtExprMd := []
         -- 0. Return variables start at their type's zero value, as in
@@ -477,6 +549,12 @@ def translateFunction (ctx : TransCtx) (fn : Solidity.node SourceRange)
             if ctx.arrayStateVars.contains name then
               preamble := preamble ++ [mkStmtExprMd (.Assign [toAssignTarget (mkStmtExprMd (mkIdentifier s!"{name}_length"))]
                 (mkStmtExprMd (mkIdentifier s!"{name}_length_in")))]
+        -- 4. A constructor runs the base constructors first, after the
+        -- state-variable initializers (solc's legacy order) and outside its
+        -- own modifiers.
+        if isConstructor && !ctx.baseConstructors.isEmpty then
+          preamble := preamble ++ (← baseConstructorStmts bodyCtx ctx.contractName
+            (userParamInfo.map (·.1)) ctx.baseConstructors)
         let bodyExpr := if preamble.isEmpty then b
           else mkStmtExprMd (.Block (preamble ++ [b]) none)
         -- Translate contract invariant nodes once in this function's body context,
