@@ -43,13 +43,13 @@ lake build
 
 1. Checks out StrataSolidity with `submodules: recursive` so the Strata submodule is materialized at the recorded SHA
 2. Verifies the submodule layout via `scripts/check-strata.sh`
-3. Installs `solc` (via the `ethereum/ethereum` PPA) and the CI-only Python deps in `Tools/Solidity/requirements-dev.txt`
-4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action), which handles elan install and caches the root `.lake`; Strata builds into `Strata/.lake`, which separate steps restore and save, keyed on the toolchain, the manifest and the submodule commit
+3. Installs `solc` (via the `ethereum/ethereum` PPA), z3, and the CI-only Python deps in `Tools/Solidity/requirements-dev.txt`
+4. Runs `lake build` and `lake test` via [`leanprover/lean-action`](https://github.com/leanprover/lean-action), which handles elan install and caches the root `.lake`; Strata builds into `Strata/.lake`, which separate steps restore and save, keyed on the toolchain, the manifest and the submodule commit. `lake test` runs the tests again when the binary or a fixture under `StrataSolidityTest/Solidity/tests` changes
 5. Runs `test/run_tests.sh` (golden suite + REQ-PBT-007 exit-code sub-stage)
-6. Runs `python3 bench/check_csv_schema.py bench/results.csv` (REQ-PBT-008 schema enforcer against the committed CSV)
-7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema compliance)
-
-`bench/bench.sh` itself is intentionally not in the hot path (b6_erc20 is slow).
+6. Runs `bench/bench.sh`, which validates the CSV it writes (REQ-PBT-008)
+7. Runs `python3 -m pytest Tools/Solidity/test` (REQ-PBT-004 SARIF 2.1.0 schema and verdicts); a skipped test fails the run under CI
+8. Runs the pipeline-determinism check twice (`lake run pbt-determinism`, REQ-PBT-002)
+9. Builds the documentation site (`docs/site`)
 
 Lean panics are errors in CI. A `panic!` prints a message and continues with
 a default value, which in the verifier could mean a wrong verdict, so every

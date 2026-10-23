@@ -12,11 +12,21 @@ require Strata from "Strata"
 
 @[default_target] lean_exe strataSolidity where root := `StrataSolidityMain
 
+/-- The Solidity fixtures that `JsonOutputTest` runs the binary on. Lake does
+not see the files a test reads while it runs; listing them here makes the
+tests run again when a fixture changes, instead of replaying their cached
+result. -/
+input_dir solidityTestFixtures where
+  path := "StrataSolidityTest/Solidity/tests"
+  text := true
+  filter := .extension "sol"
+
 lean_lib StrataSolidityTest where
   globs := #[`StrataSolidityTest.+]
-  -- `JsonOutputTest` runs the binary: build it first, and run the tests
-  -- again whenever it changes (otherwise Lake replays their cached result).
-  needs := #[strataSolidity]
+  -- `JsonOutputTest` runs the binary on fixtures: build it first, and run
+  -- the tests again whenever the binary or a fixture changes (otherwise
+  -- Lake replays their cached result).
+  needs := #[strataSolidity, solidityTestFixtures]
 
 /--
 Group A step 2: print a structural summary of the Lean-built Solidity DDM
