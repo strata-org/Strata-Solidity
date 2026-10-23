@@ -8,7 +8,7 @@ StrataSolidity can currently only be used by building from source.
 2. **[Strata](https://github.com/strata-org/Strata)** vendored as a git submodule at `./Strata`.
 3. **Python 3.12+** — only for development and CI tooling (the SARIF schema check and the benchmark CSV check). You don't need it to verify contracts.
 4. **[solc](https://docs.soliditylang.org/en/latest/installing-solidity.html)** — the Solidity compiler (used for AST extraction only).
-5. **z3** SMT solver on your `PATH`.
+5. **[z3](https://github.com/Z3Prover/z3/releases)** SMT solver on your `PATH`. CI uses z3 4.15.4 (pinned in `.github/workflows/ci.yml`). Another version can decide some obligations differently, typically reporting `unknown` where 4.15.4 proves or refutes, so use 4.15.4 to reproduce CI's results and the golden files under `test/expected/`.
 
 ## Building
 
