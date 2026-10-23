@@ -1,0 +1,11 @@
+✅ 15: divisor is non-zero
+✅ 16: assert(c == -128)
+✅ 23: divisor is non-zero
+❌ 24: assert(c > 0)
+✅ 30: divisor is non-zero
+✅ 31: assert(a == -128)
+✅ 37: divisor is non-zero
+❌ 38: assert(a > 0)
+✅ 45: assert(c == 0)
+❌ 52: assert(c == 256)
+7 passed, 3 failed, 0 unknown out of 10 total

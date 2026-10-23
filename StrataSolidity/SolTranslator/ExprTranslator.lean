@@ -769,10 +769,15 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
       | "%" => .ok (if common.any (·.signed) then Operation.ModT else Operation.Mod)
       | "**" =>
         -- A constant power (`2 ** 64`) is folded; any other is not modelled.
+        -- A power of named constants (`B ** 2`, `B` a `uint8` constant)
+        -- has their type, and in `unchecked` wraps within it like `*`.
         match l.val, r.val with
         | .LiteralInt b, .LiteralInt n =>
           if n ≥ 0 && n * (b.natAbs.log2 + 1) ≤ 4096 then
-            return mkStmtExprMd (.LiteralInt (b ^ n.toNat))
+            let v := mkStmtExprMd (.LiteralInt (b ^ n.toNat))
+            match resultType with
+            | some t => return (if ctx.isInsideUnchecked then wrapTo t v else v)
+            | none => return v
           else throw (.unsupported "a constant power this large")
         | _, _ => throw (.unsupported "`**` with an operand that is not a constant")
       | "==" => .ok Operation.Eq
@@ -822,13 +827,16 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
           else return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
         | _, _ => return bitsInType resultType (mkStmtExprMd (mkCall "bit_shr" [l, r]))
       | o => throw (.unsupported s!"Binary operator: {o}")
-    let result := mkStmtExprMd (mkPrimOp op [l, r])
-    -- In `unchecked`, `+`, `-` and `*` wrap around instead of reverting.
-    -- (Checked arithmetic stays unbounded: a result out of range reverts,
-    -- and an execution that continues with it only adds behaviours.)
+    -- Located here, not only at the wrap below: Laurel locates the
+    -- `divisor is non-zero` check of a division at the division's node.
+    let result := withSourceRange ctx sr (mkStmtExprMd (mkPrimOp op [l, r]))
+    -- In `unchecked`, `+`, `-`, `*` and a signed `/` wrap around instead of
+    -- reverting (`type(int8).min / -1` is `type(int8).min`). (Checked
+    -- arithmetic stays unbounded: a result out of range reverts, and an
+    -- execution that continues with it only adds behaviours.)
     match common with
     | some t =>
-      if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then return wrapTo t result
+      if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul | .DivT) then return wrapTo t result
       else return result
     | none => return result
 
@@ -1237,16 +1245,17 @@ partial def translateExprAt (ctx : TransCtx) (n : Solidity.node SourceRange)
 
   | .Assignment asr lhs rhs opAnn => do
     -- `x op= y`: `x op y`, with the target's type for the signedness of
-    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*`;
-    -- an uninterpreted bitwise result is reduced to the target's type (see
-    -- `bitsInType`).
+    -- `/` and `%` and, in `unchecked`, the wrap-around of `+`, `-`, `*` and
+    -- a signed `/`; an uninterpreted bitwise result is reduced to the
+    -- target's type (see `bitsInType`).
     let target := (ctx.typeAt? asr "Assignment").bind IntType.ofString?
     let signed := target.any (·.signed)
     let compound (cur rhs : StmtExprMd) : Except TranslationError StmtExprMd := do
       let arith (op : Operation) : StmtExprMd :=
-        let e := mkStmtExprMd (mkPrimOp op [cur, rhs])
+        -- Located here, not only at a wrap around it (see the binary case).
+        let e := withSourceRange ctx asr (mkStmtExprMd (mkPrimOp op [cur, rhs]))
         match target with
-        | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul) then wrapTo t e else e
+        | some t => if ctx.isInsideUnchecked && (op matches .Add | .Sub | .Mul | .DivT) then wrapTo t e else e
         | none => e
       let bits (f : String) : StmtExprMd := bitsInType target (mkStmtExprMd (mkCall f [cur, rhs]))
       match opAnn.val with
