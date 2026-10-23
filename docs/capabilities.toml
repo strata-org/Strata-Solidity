@@ -1,0 +1,1371 @@
+# The capability ledger: what StrataSolidity verifies, partly verifies,
+# skips or rejects, one entry per feature, each backed by the tests that
+# show it. The feature tables in LIMITATIONS.md, README.md, FAQ.md, the
+# guide (supported_features.md, limitations.md, first_verification.md),
+# the next-spec's gap table and the landing page are generated from this
+# file: edit it, then run `python3 scripts/capabilities.py`. CI runs
+# `python3 scripts/capabilities.py --check`, which fails when a witness no
+# longer holds or a generated table is out of date. See the script's
+# docstring for the checks, and CONTRIBUTING.md ("The capability ledger").
+#
+# A capability:
+#   id        stable name; fixtures for a gap cite it (gap_<…>.sol)
+#   area      one of the [[area]] ids below
+#   feature   what a user writes, in Markdown (no `|`)
+#   status    verified | partial | unknown | skipped | rejected | fails
+#             (meanings: STATUSES in scripts/capabilities.py)
+#   notes     what holds, in Markdown (no `|`); `](guide:page.md#anchor)`
+#             links to a guide page
+#   gap       the baseline GAP it concerns, if any (see [[gap]])
+#   works / not_yet   the text of the entry in the short lists of the
+#             README, the FAQ and the landing page, if it has one there
+#   witness   evidence, each one of:
+#     { fixture = "<name>", proven | refuted | unknown | not_proven = "<obligation>", line = N }
+#         an obligation of test/examples/<name>.sol, as its golden file
+#         test/expected/<name>.expected reports it (`line` optional)
+#     { fixture = "<name>", error = "<text>" }     a translation error containing <text>
+#     { fixture = "<name>", warning = "<text>" }   a warning (<name>.warnings) containing <text>
+#     { test = "<path>", contains = "<text>" }     a test that CI runs
+#     { source = "<path>", contains = "<text>" }   a fact of the code
+
+# The short lists of the README, the FAQ and the landing page, in order: the
+# ids of the entries whose `works` or `not_yet` text they show.
+[highlights]
+works = ["mappings", "invariant", "modifies", "forall", "loop-invariant-old",
+         "inheritance", "unchecked", "counterexamples"]
+not_yet = ["struct-mapping", "libraries", "revert-call", "string-bytes",
+           "array-pop", "constructor-internal-call", "inheritance-imported",
+           "unknown-results"]
+
+[[area]]
+id = "spec"
+title = "Specifications"
+
+[[area]]
+id = "contracts"
+title = "Contracts and functions"
+
+[[area]]
+id = "inheritance"
+title = "Inheritance"
+
+[[area]]
+id = "types"
+title = "Types and arithmetic"
+
+[[area]]
+id = "data"
+title = "Mappings, arrays and structs"
+
+[[area]]
+id = "statements"
+title = "Statements and expressions"
+
+[[area]]
+id = "environment"
+title = "Transaction values"
+
+[[area]]
+id = "calls"
+title = "External calls and assembly"
+
+[[area]]
+id = "results"
+title = "Results and output"
+
+# ------------------------------------------------------------ specifications
+
+[[capability]]
+id = "requires-ensures"
+area = "spec"
+feature = "`requires`, `ensures`"
+status = "verified"
+notes = '''A precondition is assumed on entry and checked at each internal call; a
+postcondition is checked on every path that returns.'''
+witness = [
+  { fixture = "spec_division", proven = "ensures r == a / 2" },
+  { fixture = "spec_division", refuted = "ensures a % 2 == 0 || a % 2 == 1" },
+]
+
+[[capability]]
+id = "old"
+area = "spec"
+feature = "`old(e)`"
+status = "verified"
+notes = '''The value of `e` when the function was entered: of a scalar, a mapping, a
+mapping entry or an array length.'''
+witness = [
+  { fixture = "sum_token", proven = "ensures balances[to] == old(balances[to]) + amount" },
+  { fixture = "dynamic_arrays", refuted = "ensures items.length == old(items.length) + 2" },
+]
+
+[[capability]]
+id = "invariant"
+area = "spec"
+feature = "Contract invariants (`invariant`)"
+status = "verified"
+notes = '''Written above the contract or on a state variable. Checked after the
+constructor (explicit or implicit) and at the exit of every public or
+external function that may change state, and assumed at their entry; assumed
+by `view` functions; not assumed by internal functions. `old()` is rejected
+in an invariant.'''
+works = "Contract invariants, including `sum(mapping)`, checked across external calls that may re-enter the contract"
+witness = [
+  { fixture = "invariant_entry_points", proven = "invariant a == b" },
+  { fixture = "invariant_initializers", refuted = "invariant items.length == 0" },
+]
+
+[[capability]]
+id = "invariant-transaction-values"
+area = "spec"
+feature = "`msg.sender`, `msg.value`, `block.*` or `tx.*` in an invariant"
+status = "rejected"
+notes = '''They change between transactions, so an invariant over them would be
+established with one transaction's values and assumed with another's.'''
+witness = [
+  { fixture = "invariant_msg_sender", error = "`msg.sender` is not allowed in an invariant" },
+  { fixture = "invariant_msg_value", error = "`msg.value` is not allowed in an invariant" },
+  { fixture = "invariant_block_value", error = "`block.timestamp` is not allowed in an invariant" },
+]
+
+[[capability]]
+id = "sum"
+area = "spec"
+feature = "`sum(m)` of a mapping"
+status = "verified"
+notes = '''The sum of all values of `m`, updated at every write. Its update axiom is
+quantified, so an obligation that involves it may be unknown (❓) instead of
+refuted.'''
+witness = [
+  { fixture = "sum_token", proven = "invariant totalSupply == sum(balances)" },
+  { fixture = "invariant_entry_points", proven = "ensures r == sum(balances)" },
+  { fixture = "sum_token", not_proven = "invariant totalSupply == sum(balances)" },
+]
+
+[[capability]]
+id = "modifies"
+area = "spec"
+feature = "`modifies` frames: variables and mapping keys"
+status = "verified"
+notes = '''`modifies x, m[k]`: every other state variable, and every other key of
+`m`, is unchanged. A key may use parameters, constants and hashes
+(`roles[DEFAULT_ADMIN_ROLE]`). A function without `modifies` may change any
+state. Frames are not checked for constructors (a warning says so).'''
+works = "Key-scoped `modifies` frame conditions"
+witness = [
+  { fixture = "sum_token", proven = "modifies frame (balances)" },
+  { fixture = "spec_comments", refuted = "modifies frame (balances)" },
+]
+
+[[capability]]
+id = "modifies-nested-key"
+area = "spec"
+feature = "`modifies m[a][b]` (a key with two indexes)"
+status = "skipped"
+notes = '''The key cannot be read, so the frame of `m` is not checked (a warning says
+so). With one index, `modifies m[a]` allows every `m[a][…]` to change.'''
+witness = [
+  { fixture = "modifies_nested_key", warning = "the key cannot be read, so the frame of `allowance` is not checked" },
+]
+
+[[capability]]
+id = "loop-invariant"
+area = "spec"
+feature = "Loop invariants (`loop-invariant`)"
+status = "verified"
+notes = '''Checked on entry to the loop and preserved by its body, for `for`, `while`
+and `do`-`while` loops, with `break` and `continue`.'''
+witness = [
+  { fixture = "control_flow", proven = "loop invariant #1 of loop 1 is preserved by the loop body" },
+  { fixture = "loop_invariant_old", refuted = "loop invariant #1 of loop 1 holds on entry" },
+]
+
+[[capability]]
+id = "loop-invariant-old"
+area = "spec"
+feature = "`old(e)` in a loop invariant"
+status = "verified"
+gap = "GAP-003"
+notes = '''The value of `e` at the function's entry, as in `ensures`, not at the
+loop's entry.'''
+works = "Loop invariants, with `old()`"
+witness = [
+  { fixture = "loop_invariant_old", proven = "ensures x == old(x) + 5 + n" },
+  { fixture = "loop_invariant_old", refuted = "loop invariant #1 of loop 1 holds on entry", line = 30 },
+]
+
+[[capability]]
+id = "loop-heap-frame"
+area = "spec"
+feature = "A loop that writes contract state"
+status = "partial"
+notes = '''The function's `heap frame (only this contract is modified)` obligation is
+unknown (❓): the loop does not keep the fact that only this contract's state
+changes. Its invariants and postconditions are checked as usual. Writing a
+local in the loop, and the state after it, avoids this.'''
+witness = [
+  { fixture = "loop_invariant_old", proven = "heap frame (only this contract is modified)", line = 17 },
+  { fixture = "loop_invariant_old", unknown = "heap frame (only this contract is modified)", line = 50 },
+]
+
+[[capability]]
+id = "forall"
+area = "spec"
+feature = "`forall v : T :: P`"
+status = "verified"
+notes = '''`v` ranges over the values of `T`. An obligation with a `forall` among its
+assumptions may be unknown (❓): z3 does not instantiate quantifiers by model
+search.'''
+works = "`forall` quantifiers, with `==>`"
+witness = [
+  { fixture = "quantifier_types", proven = "ensures forall v : uint8 :: v <= 255" },
+  { fixture = "quantifier_types", refuted = "ensures forall v : uint8 :: v < 255" },
+  { fixture = "forall_frame", proven = "ensures forall addr : address :: addr != msg.sender ==> balances[addr] == old(balances[addr])" },
+]
+
+[[capability]]
+id = "exists"
+area = "spec"
+feature = "`exists v : T :: P`"
+status = "partial"
+notes = '''`v` ranges over the values of `T`. z3 does not search for witnesses, so a
+true `exists` is often unknown (❓); it is proven when the witness is at hand
+(a value the function wrote).'''
+witness = [
+  { fixture = "quantifier_types", proven = "ensures exists a : address :: balances[a] == v" },
+  { fixture = "quantifier_types", refuted = "ensures exists i : uint8 :: i > 255" },
+]
+
+[[capability]]
+id = "spec-operators"
+area = "spec"
+feature = "Operators in specifications"
+status = "verified"
+notes = '''`==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, &#124;&#124;,
+`!`, `==>`, unary `-`, `m[k]`, `s.f`, `a.length`, `type(T).min` and
+`type(T).max`, named constants. Arithmetic is on unbounded integers (no
+wrapping); `/` and `%` round toward zero, as in Solidity.'''
+witness = [
+  { fixture = "spec_division", proven = "ensures r == a % 2" },
+  { fixture = "spec_division", refuted = "ensures r == a / 2" },
+  { fixture = "unary_ops", proven = "ensures tick == t" },
+  { fixture = "spec_constants", proven = "ensures status == ENTERED" },
+]
+
+[[capability]]
+id = "spec-operators-missing"
+area = "spec"
+feature = "`**`, bitwise and shift operators in specifications"
+status = "rejected"
+notes = '''Not part of the specification language: the translation stops with
+"Unexpected tokens after spec expression".'''
+witness = [
+  { fixture = "gap_spec_operators", error = "Unexpected tokens after spec expression" },
+]
+
+[[capability]]
+id = "spec-conversion"
+area = "spec"
+feature = "Type conversions in specifications (`uint8(x)`)"
+status = "fails"
+notes = '''`address(x)` is accepted (it is the identity); other conversions stop the
+translation. In code, conversions work.'''
+witness = [
+  { fixture = "gap_spec_conversion", error = "'uint8' is not defined" },
+]
+
+[[capability]]
+id = "spec-environment"
+area = "spec"
+feature = "`msg.sender`, `msg.value`, `block.*`, `tx.*` and `this` in specifications"
+status = "verified"
+notes = '''The values of the transaction the function runs in (see Transaction values).'''
+witness = [
+  { fixture = "environment", proven = "ensures address(this) != address(0)" },
+  { fixture = "inheritance", refuted = "ensures msg.sender != owner" },
+]
+
+[[capability]]
+id = "spec-comments"
+area = "spec"
+feature = "A `//` comment after an annotation"
+status = "verified"
+notes = '''`ensures x == 1  // the new value`: the text from `//` on is not read.'''
+witness = [
+  { fixture = "spec_comments", proven = "ensures x == v" },
+  { fixture = "spec_comments", refuted = "ensures x == v + 1" },
+]
+
+[[capability]]
+id = "annotation-misuse"
+area = "spec"
+feature = "Misspelled, misplaced or multi-line annotations"
+status = "skipped"
+notes = '''Reported and ignored, never dropped silently: an unknown keyword, an
+annotation where it has no effect, in a plain `//` comment, inside a function
+body, in the middle of a comment line, or continued on the next line.'''
+witness = [
+  { fixture = "ignored_annotations", warning = "unrecognized annotation `@custom:strata ensure count == old(count) + 1`" },
+  { fixture = "ignored_annotations", warning = "inside a function or modifier body is ignored" },
+  { fixture = "ignored_annotations", warning = "each annotation must fit on one line" },
+]
+
+[[capability]]
+id = "lemma"
+area = "spec"
+feature = "`@custom:strata lemma`"
+status = "skipped"
+gap = "GAP-004"
+notes = '''Not an annotation StrataSolidity reads: reported as unrecognized, and
+ignored.'''
+witness = [
+  { fixture = "ignored_annotations", warning = "unrecognized annotation `@custom:strata lemma x == x`" },
+]
+
+# ------------------------------------------------------ contracts, functions
+
+[[capability]]
+id = "functions"
+area = "contracts"
+feature = "Contracts, state variables, functions of any visibility, constructors, `receive`, `fallback`"
+status = "verified"
+notes = '''Every function of every contract in the file is verified against its own
+specification; `view` and `pure` functions too.'''
+witness = [
+  { fixture = "invariant_contract_level", proven = "ensures r == a" },
+  { fixture = "invariant_contract_level", refuted = "ensures r == 12345" },
+]
+
+[[capability]]
+id = "internal-calls"
+area = "contracts"
+feature = "Internal calls"
+status = "verified"
+notes = '''Modular: the callee's `requires` is checked at the call, and after it the
+caller knows what the callee's `ensures` and `modifies` say. After a call of a
+function without a specification, its results and the state are unknown, so
+give helpers a specification. Named arguments are bound by name.'''
+witness = [
+  { fixture = "internal_calls", proven = "ensures balances[to] == old(balances[to]) + amount" },
+  { fixture = "internal_calls", not_proven = "ensures balances[to] == old(balances[to])" },
+  { fixture = "internal_calls", refuted = "ensures r == 4" },
+]
+
+[[capability]]
+id = "modifiers"
+area = "contracts"
+feature = "Modifiers"
+status = "verified"
+notes = '''Inlined into each function that uses them, the first one outermost, with
+their arguments: `_` stands for the rest of the function, and a `return` in
+the function still runs the code after `_`.'''
+witness = [
+  { fixture = "modifiers", proven = "ensures count == old(count) + 1" },
+  { fixture = "modifiers", refuted = "ensures count <= 100" },
+]
+
+[[capability]]
+id = "interfaces"
+area = "contracts"
+feature = "Interfaces, abstract contracts, functions without a body"
+status = "verified"
+notes = '''A function without a body may do anything a function of its kind may: a
+mutating one may change any state. An interface or library contributes no
+invariants.'''
+witness = [
+  { fixture = "virtual_functions", proven = "ensures x == 5" },
+  { fixture = "virtual_functions", unknown = "ensures x == 5" },
+]
+
+[[capability]]
+id = "overloads"
+area = "contracts"
+feature = "Overloaded functions"
+status = "verified"
+notes = '''Each overload is verified, and a call goes to the one solc selects. Overloads
+that differ only between integer and address parameters fail to translate.'''
+witness = [
+  { fixture = "inheritance_overloads", proven = "ensures r == a + b" },
+  { fixture = "inheritance_overloads", refuted = "ensures r == a + 1" },
+]
+
+[[capability]]
+id = "overload-types"
+area = "contracts"
+feature = "Overloads that differ only between integer and address parameters (`f(uint256)`, `f(address)`)"
+status = "fails"
+notes = '''Both kinds are integers in the translation, so the two functions get the
+same signature ("Duplicate definition").'''
+witness = [
+  { fixture = "gap_overload_types", error = "Duplicate definition 'GapOverloadTypes_set'" },
+]
+
+[[capability]]
+id = "events-errors"
+area = "contracts"
+feature = "Events, custom errors, `revert CustomError(…)`"
+status = "verified"
+notes = '''`emit` changes nothing (its arguments are still evaluated); `revert` ends
+the path.'''
+witness = [
+  { fixture = "events_errors", proven = "ensures balances[to] == old(balances[to]) + amount" },
+  { fixture = "argument_effects", refuted = "ensures counts[0] == old(counts[0])" },
+]
+
+[[capability]]
+id = "revert-call"
+area = "contracts"
+feature = '`revert("reason")`, `revert()`'
+status = "fails"
+notes = '''Use `require(condition, "reason")` or a custom error.'''
+not_yet = '`revert("reason")` (`require` and custom errors work)'
+witness = [
+  { fixture = "gap_revert_call", error = "'GapRevertCall_revert' is not defined" },
+]
+
+[[capability]]
+id = "constructor-internal-call"
+area = "contracts"
+feature = "A constructor that calls an internal function using state (`_mint` in a constructor)"
+status = "rejected"
+notes = '''The constructor has no state to pass to the callee yet.'''
+not_yet = "Constructors that call internal functions using state (the `_mint` pattern)"
+witness = [
+  { fixture = "gap_constructor_call", error = "from a function without contract state access" },
+]
+
+[[capability]]
+id = "halting-calls"
+area = "contracts"
+feature = "Calling a function that may end the transaction (`selfdestruct`, assembly `return` or `stop`)"
+status = "rejected"
+notes = '''The code after such a call would be verified as if it always ran. In the
+function itself, a halt ends its path.'''
+witness = [
+  { fixture = "halt_in_helper", error = "may end the transaction" },
+  { fixture = "selfdestruct_in_helper", error = "may end the transaction" },
+]
+
+[[capability]]
+id = "libraries"
+area = "contracts"
+feature = "Library calls (`L.f(x)`, `using L for T`)"
+status = "fails"
+notes = '''A library function called from a contract is not found.'''
+not_yet = "Library calls and `using … for`"
+witness = [
+  { fixture = "gap_library_call", error = "'max' is not defined" },
+]
+
+[[capability]]
+id = "file-level-functions"
+area = "contracts"
+feature = "Functions declared outside a contract"
+status = "fails"
+notes = '''Not verified (a warning says so), and a call of one stops the translation.'''
+witness = [
+  { fixture = "gap_file_level_function", warning = "file-level function `twice` is not verified" },
+  { fixture = "gap_file_level_function", error = "'GapFileLevelFunction_twice' is not defined" },
+]
+
+# ---------------------------------------------------------------- inheritance
+
+[[capability]]
+id = "inheritance"
+area = "inheritance"
+feature = "Inheritance: single, multiple, diamond"
+status = "verified"
+gap = "GAP-009"
+notes = '''A contract is verified as the flattening of its bases and itself, ordered
+by solc's C3 linearization: inherited state, functions, modifiers and
+invariants are checked in its context (an obligation of an inherited function
+says so: `(in D)`), and a call of a virtual function calls the most derived
+override. A public state variable that overrides a function replaces it.'''
+works = "Inheritance: inherited state, functions, modifiers, invariants and constructors, and `super`"
+witness = [
+  { fixture = "inheritance", proven = "ensures r == a + 1 (in Fast)" },
+  { fixture = "inheritance", refuted = "ensures count == old(count) + 1 (in Fast)" },
+]
+
+[[capability]]
+id = "base-constructors"
+area = "inheritance"
+feature = "Base constructors"
+status = "verified"
+gap = "GAP-009"
+notes = '''Run after the state-variable initializers and before the derived
+constructor, most base first, each with its own modifiers and the arguments a
+derived constructor gives it (`constructor() Base(7)`).'''
+witness = [
+  { fixture = "inheritance_constructors", proven = "ensures price == 5" },
+  { fixture = "inheritance_constructors", refuted = "ensures price == 4" },
+]
+
+[[capability]]
+id = "inheritance-specifier-args"
+area = "inheritance"
+feature = "Base constructor arguments in an inheritance specifier (`is Base(7)`)"
+status = "unknown"
+gap = "GAP-009"
+notes = '''Not read (the AST the translator receives does not keep them): the base
+constructor runs with unknown values of its parameter types.'''
+witness = [
+  { fixture = "inheritance_constructors", proven = "ensures price <= type(uint256).max" },
+  { fixture = "inheritance_constructors", refuted = "ensures price == 7" },
+]
+
+[[capability]]
+id = "super"
+area = "inheritance"
+feature = "`super.f(…)`, `Base.f(…)`"
+status = "verified"
+gap = "GAP-009"
+notes = '''`super` follows the linearization of the contract being verified, from the
+contract the call is written in (also in a modifier or a base constructor);
+`Base.f()` calls the first implementation of `f` in `Base`'s linearization.
+Named arguments are bound by name.'''
+witness = [
+  { fixture = "inheritance_super", proven = "ensures x == val + 1 (in Mid)" },
+  { fixture = "inheritance_super", refuted = "ensures x == 2" },
+  { fixture = "inheritance_diamond", proven = "ensures x == val + 3 (in D)" },
+]
+
+[[capability]]
+id = "super-overloaded"
+area = "inheritance"
+feature = "`super.f(…)` or `Base.f(…)` of an overloaded function"
+status = "rejected"
+gap = "GAP-009"
+notes = '''The call is not resolved to one of the overloads.'''
+witness = [
+  { fixture = "gap_super_overloaded", error = "of an overloaded function" },
+]
+
+[[capability]]
+id = "inheritance-imported"
+area = "inheritance"
+feature = "A base contract from another file"
+status = "skipped"
+gap = "GAP-009"
+notes = '''Its state, functions and invariants are not part of what is verified, for
+each contract that inherits it, directly or through another base (a warning
+says so).'''
+not_yet = "A base contract imported from another file"
+witness = [
+  { fixture = "inheritance_imported", warning = "is not defined in this file: its state, functions and invariants are not part of what is verified here" },
+]
+
+[[capability]]
+id = "inheritance-shadowed-state"
+area = "inheritance"
+feature = "A base's private state variable declared again in a derived contract"
+status = "rejected"
+gap = "GAP-009"
+notes = '''They are different variables, which the translation would merge.'''
+witness = [
+  { fixture = "inheritance_shadowed_state", error = "declared again" },
+]
+
+# ------------------------------------------------------- types and arithmetic
+
+[[capability]]
+id = "integers"
+area = "types"
+feature = "`uint8` … `uint256`, `int8` … `int256`"
+status = "verified"
+notes = '''A value is in its type's range: parameters, state variables, results of
+calls and hashes. Signed state is not assumed to be non-negative.'''
+witness = [
+  { fixture = "type_ranges", proven = "ensures small <= 255" },
+  { fixture = "type_ranges", refuted = "ensures tick >= 0" },
+]
+
+[[capability]]
+id = "checked-overflow"
+area = "types"
+feature = "Checked arithmetic (outside `unchecked`)"
+status = "partial"
+notes = '''Computed on unbounded integers: an overflow is not modelled as a revert, so
+the verifier also considers the execution continuing with the out-of-range
+value. That only adds behaviors: a property that relies on the revert may not
+be proven (see [Integers](guide:integers.md)).'''
+witness = [
+  { fixture = "integer_semantics", proven = "assert(s <= 255)" },
+  { fixture = "integer_semantics", refuted = "assert(c > a)" },
+]
+
+[[capability]]
+id = "unchecked"
+area = "types"
+feature = "`unchecked` arithmetic"
+status = "verified"
+notes = '''Wraps around as in the EVM: `+`, `-`, `*`, signed `/`, a power of
+constants, `++`, `--`, unary `-` and `op=`.'''
+works = "Integer conversions, wrapping and signed division as the EVM performs them"
+witness = [
+  { fixture = "unchecked_wrapping", proven = "assert(c == -128)" },
+  { fixture = "unchecked_wrapping", refuted = "assert(c == 256)" },
+]
+
+[[capability]]
+id = "conversions"
+area = "types"
+feature = "Type conversions"
+status = "verified"
+notes = '''Narrowing truncates (two's complement), a `bytesN` conversion keeps the
+high bytes, widening keeps the value.'''
+witness = [
+  { fixture = "integer_semantics", proven = "assert(int8(uint8(200)) == -56)" },
+  { fixture = "integer_semantics", refuted = "assert(s == v)" },
+]
+
+[[capability]]
+id = "division"
+area = "types"
+feature = "`/` and `%`"
+status = "verified"
+notes = '''Signed `/` and `%` round toward zero. A zero divisor is an obligation
+(`divisor is non-zero`).'''
+witness = [
+  { fixture = "integer_semantics", proven = "assert(a / b == -3)" },
+  { fixture = "axiom_isolation", refuted = "divisor is non-zero" },
+]
+
+[[capability]]
+id = "constants"
+area = "types"
+feature = "Constant expressions, named constants, `1e18`, `2.5 ether`, `2 days`"
+status = "verified"
+notes = '''The value solc computes, exactly (rational intermediate values, units,
+exponents); a power of constants is folded.'''
+witness = [
+  { fixture = "constant_expressions", proven = "assert(2.5 ether == 2500000000000000000 && 1e18 == 10 ** 18)" },
+  { fixture = "constant_expressions", refuted = "assert(1.5 gwei == 1500000001)" },
+]
+
+[[capability]]
+id = "power-variable"
+area = "types"
+feature = "`**` with an operand that is not a constant"
+status = "rejected"
+notes = '''`x ** 2` can be written `x * x`.'''
+witness = [
+  { fixture = "gap_power_variable", error = "`**` with an operand that is not a constant" },
+]
+
+[[capability]]
+id = "bitwise"
+area = "types"
+feature = "Bitwise operators and shifts"
+status = "partial"
+notes = '''`~` and shifts by a constant are exact; `&`, &#124;, `^` and shifts by a
+variable are unknown values of the result's type (an unsigned `x & (2^n - 1)`
+keeps it below `2^n`).'''
+witness = [
+  { fixture = "bitwise_types", proven = "assert(~x == -1)" },
+  { fixture = "bitwise_types", refuted = "assert((a & b) >= 1)" },
+]
+
+[[capability]]
+id = "enums"
+area = "types"
+feature = "Enums"
+status = "partial"
+notes = '''A value is not constrained to the enum's members: a property that relies on
+it fails with a counterexample the EVM cannot produce.'''
+witness = [
+  { fixture = "b5_escrow", proven = "ensures state == 2" },
+  { fixture = "incomplete_assumptions", refuted = "ensures inRange" },
+]
+
+[[capability]]
+id = "value-types"
+area = "types"
+feature = "`bool`, `address`, `bytes1` … `bytes32`, user-defined value types"
+status = "verified"
+notes = '''`Wei.wrap` and `Wei.unwrap` are the identity on the underlying value.'''
+witness = [
+  { fixture = "modern_types", proven = "ensures r == raw" },
+  { fixture = "integer_semantics", proven = "assert(v <= 1)" },
+  { fixture = "short_circuit", refuted = "ensures counts[who] == old(counts[who]) + 1" },
+]
+
+[[capability]]
+id = "string-bytes"
+area = "types"
+feature = "`string` and dynamic `bytes` values"
+status = "fails"
+notes = '''A local, `.length` or a conversion such as `bytes(s)` stops the
+translation; a parameter that is only passed on (to an event, say) works.'''
+not_yet = "Strings and dynamic `bytes` values"
+witness = [
+  { fixture = "gap_string_value", error = "expected 'int', got 'string'" },
+]
+
+# ------------------------------------------------ mappings, arrays, structs
+
+[[capability]]
+id = "mappings"
+area = "data"
+feature = "Mappings, simple and nested"
+status = "verified"
+notes = '''Every key exists, with the zero value until written.'''
+works = "Simple and nested mappings, with `old()`"
+witness = [
+  { fixture = "in_contract_invariant", proven = "ensures balances[from] == old(balances[from]) - amount" },
+  { fixture = "counterexample_models", refuted = "ensures allow[b][1] == 0" },
+]
+
+[[capability]]
+id = "hashes"
+area = "data"
+feature = "`keccak256`, `sha256`, `abi.encode`, `abi.encodePacked`"
+status = "partial"
+notes = '''Uninterpreted functions: equal arguments give equal results, and nothing
+else is known (collisions are not excluded). They work as mapping keys, in code
+and in specifications. Up to 6 arguments for `abi.encode` and 4 for
+`abi.encodePacked`.'''
+witness = [
+  { fixture = "hash_keys", proven = "ensures data[keccak256(abi.encodePacked(a, b))] == v" },
+  { fixture = "hash_keys", refuted = "ensures data[keccak256(abi.encode(b))] == old(data[keccak256(abi.encode(b))])" },
+]
+
+[[capability]]
+id = "abi-functions"
+area = "data"
+feature = "`abi.encodeWithSelector` or `abi.encodeWithSignature` with arguments, `abi.encodeCall`, `abi.decode`, more arguments than above"
+status = "fails"
+notes = '''The function is not defined in the translation.'''
+witness = [
+  { fixture = "gap_abi_calls", error = "'abi_encodeWithSelector3' is not defined" },
+]
+
+[[capability]]
+id = "delete"
+area = "data"
+feature = "`delete` of an integer, an address or a mapping entry"
+status = "verified"
+notes = '''Sets it to zero.'''
+witness = [
+  { fixture = "delete_values", proven = "ensures balances[a] == 0 && allowance[a][b] == 0" },
+  { fixture = "delete_values", refuted = "ensures balances[a] == old(balances[a])" },
+]
+
+[[capability]]
+id = "delete-non-integer"
+area = "data"
+feature = "`delete` of a `bool`, an array or a struct"
+status = "fails"
+notes = '''The translation assigns `0`, which has the wrong type.'''
+witness = [
+  { fixture = "gap_delete_non_integer", error = "expected 'bool', got 'int'" },
+]
+
+[[capability]]
+id = "arrays"
+area = "data"
+feature = "Fixed-size and dynamic arrays: indexing, `.length`, `push`"
+status = "verified"
+gap = "GAP-008"
+notes = '''A fixed-size array has its declared length; `push` adds one element at the
+end. A memory array is a reference, as in Solidity.'''
+witness = [
+  { fixture = "dynamic_arrays", proven = "ensures items[old(items.length)] == v" },
+  { fixture = "dynamic_arrays", refuted = "ensures items[0] == v" },
+  { fixture = "fixed_arrays", proven = "ensures r == 3" },
+  { fixture = "memory_arrays", refuted = "assert(b[0] == 0)" },
+]
+
+[[capability]]
+id = "array-index-range"
+area = "data"
+feature = "An array index out of range"
+status = "partial"
+notes = '''Not modelled as a revert: a property that relies on the index being in range
+fails with a counterexample the EVM cannot produce.'''
+witness = [
+  { fixture = "dynamic_arrays", proven = "ensures items[i] == old(items[i])" },
+  { fixture = "incomplete_assumptions", refuted = "ensures i < items.length" },
+]
+
+[[capability]]
+id = "array-pop"
+area = "data"
+feature = "`pop()`"
+status = "fails"
+gap = "GAP-008"
+notes = '''Not modelled.'''
+not_yet = "Array `pop()`"
+witness = [
+  { fixture = "gap_array_pop", error = "'pop' is not defined" },
+]
+
+[[capability]]
+id = "array-push-nested"
+area = "data"
+feature = "`push` on an array in a mapping or a struct, or through a returned storage reference"
+status = "fails"
+notes = '''Only `push` on an array state variable is modelled.'''
+witness = [
+  { fixture = "gap_array_in_mapping", error = "'array_push' is not defined" },
+]
+
+[[capability]]
+id = "new-array-length"
+area = "data"
+feature = "`.length` of a memory array created with `new`"
+status = "fails"
+notes = '''Creating it works.'''
+witness = [
+  { fixture = "gap_new_array_length", error = "'array_length' is not defined" },
+]
+
+[[capability]]
+id = "structs"
+area = "data"
+feature = "Structs"
+status = "partial"
+notes = '''Copied into storage, and from storage or calldata into memory (assignments,
+declarations, arguments, returned values), as Solidity does; a memory-to-memory
+assignment shares the struct, and a function a memory struct is passed to may
+change its fields. A function that writes a field of a struct that is not a
+fresh copy reports a spurious `heap frame` failure.'''
+witness = [
+  { fixture = "struct_copies", proven = "ensures a.value == 1 && b.value == 5" },
+  { fixture = "struct_copies", refuted = "ensures a.value == 5" },
+]
+
+[[capability]]
+id = "struct-positional"
+area = "data"
+feature = "A struct built with positional arguments (`Info(1, 2)`)"
+status = "fails"
+notes = '''The named form `Info({a: 1, b: 2})` works.'''
+witness = [
+  { fixture = "gap_struct_positional", error = "structConstructorCall 'Info' has 2 args but no names" },
+]
+
+[[capability]]
+id = "struct-mapping"
+area = "data"
+feature = "Struct-valued mappings and arrays of structs"
+status = "skipped"
+gap = "GAP-002"
+notes = '''A function or constructor that uses one is not verified, and neither is an
+annotation on a struct field through a mapping (`payments[id].amount`);
+warnings say so. Separate mappings per field work instead.'''
+not_yet = "Struct-valued mappings and arrays of structs (functions using them are not verified)"
+witness = [
+  { fixture = "inheritance_struct_mapping", warning = "is not verified: it uses the struct-valued mapping `ps`" },
+  { fixture = "inheritance_struct_mapping", proven = "ensures m == v" },
+]
+
+[[capability]]
+id = "modifier-struct-mapping"
+area = "data"
+feature = "A modifier that uses a struct-valued mapping"
+status = "fails"
+gap = "GAP-002"
+notes = '''Unlike a function, which is skipped, it stops the translation.'''
+witness = [
+  { fixture = "gap_modifier_struct_mapping", error = "'users' is not defined" },
+]
+
+[[capability]]
+id = "storage-ref-struct"
+area = "data"
+feature = "A storage reference to a struct (`Info storage d = data;`)"
+status = "partial"
+gap = "GAP-010"
+notes = '''A read through it reads the storage when it runs, so it sees later writes.
+A write through it is rejected: it would not reach the storage.'''
+witness = [
+  { fixture = "storage_reference_reads", proven = "ensures data.value == 5" },
+  { fixture = "storage_reference_reads", refuted = "ensures r == 1" },
+  { fixture = "storage_references", error = "writing through the storage reference `d`" },
+]
+
+[[capability]]
+id = "storage-ref-mapping"
+area = "data"
+feature = "A storage reference to a mapping or an array"
+status = "rejected"
+gap = "GAP-010"
+notes = '''"storage reference must have a user-defined struct type".'''
+witness = [
+  { fixture = "gap_storage_ref_mapping", error = "storage reference must have a user-defined struct type" },
+]
+
+[[capability]]
+id = "storage-params"
+area = "data"
+feature = "A mapping or array `storage` parameter"
+status = "rejected"
+notes = '''It refers to the caller's storage, and a write through it would not reach the
+variable passed in.'''
+witness = [
+  { fixture = "storage_param_mapping", error = "the mapping `storage` parameter `m`" },
+  { fixture = "storage_param_array", error = "the array `storage` parameter `a`" },
+]
+
+# ------------------------------------------------ statements and expressions
+
+[[capability]]
+id = "control-flow"
+area = "statements"
+feature = "`if`, `for`, `while`, `do`-`while`, `break`, `continue`, `return`"
+status = "verified"
+notes = '''A loop condition is evaluated before every iteration, with its effects.'''
+witness = [
+  { fixture = "control_flow", proven = "ensures n == 0 ==> total == 0" },
+  { fixture = "do_while_break", proven = "ensures result == 1" },
+  { fixture = "incr_decr", refuted = "assert(k == 0)" },
+]
+
+[[capability]]
+id = "branch-types"
+area = "statements"
+feature = "An `if`/`else` or `try`/`catch` whose branches end with assignments of different types"
+status = "fails"
+notes = '''"'if' branches have incompatible types". Branches that end with assignments
+of the same type work.'''
+witness = [
+  { fixture = "gap_branch_types", error = "'if' branches have incompatible types" },
+]
+
+[[capability]]
+id = "require-assert"
+area = "statements"
+feature = "`require`, `assert`"
+status = "verified"
+notes = '''A false `require` ends the path; its message is evaluated first, with its
+effects. `assert(c)` is an obligation.'''
+witness = [
+  { fixture = "require_message_effects", proven = "ensures notes == old(notes) + 1" },
+  { fixture = "require_message_effects", not_proven = "ensures notes == old(notes)" },
+]
+
+[[capability]]
+id = "expressions"
+area = "statements"
+feature = "Operators, `? :`, `++`, `--`, `op=`, short-circuit `&&` and &#124;&#124;"
+status = "verified"
+notes = '''As in Solidity: `i++` yields the old value, `++i` the new one, and the right
+operand of `&&` and &#124;&#124; runs only when needed.'''
+witness = [
+  { fixture = "incr_decr", proven = "ensures x == j && y == j + 2" },
+  { fixture = "incr_decr", refuted = "ensures counts[1] == old(counts[1]) + 1" },
+  { fixture = "short_circuit", proven = "ensures r == (b != 0 && a / b > 1)" },
+]
+
+[[capability]]
+id = "operand-order"
+area = "statements"
+feature = "An operand that changes a variable another operand reads (`_inc() + x`)"
+status = "rejected"
+notes = '''solc's code generators evaluate operands in different orders.'''
+witness = [
+  { fixture = "operand_order", error = "one changes a variable the other reads" },
+]
+
+[[capability]]
+id = "tuples"
+area = "statements"
+feature = "Tuple declarations, several return values"
+status = "verified"
+notes = '''`(uint256 a, uint256 b) = f();` declares both for the rest of the block.'''
+witness = [
+  { fixture = "tuple_declarations", proven = "ensures a == x && b == y" },
+  { fixture = "tuple_declarations", refuted = "ensures balances[to] == old(balances[to])" },
+]
+
+[[capability]]
+id = "tuple-assignment"
+area = "statements"
+feature = "Assigning a tuple to existing variables (`(a, b) = (b, a)`)"
+status = "rejected"
+notes = '''A tuple declaration works.'''
+witness = [
+  { fixture = "gap_tuple_assignment", error = "tuple expressions with several components are not supported here" },
+]
+
+[[capability]]
+id = "result-name"
+area = "statements"
+feature = "A parameter or local named `result` in a function whose return value is unnamed"
+status = "fails"
+notes = '''The translation names that return value `result` too. Naming the return
+value avoids it.'''
+witness = [
+  { fixture = "gap_result_name", error = "Type checking error" },
+]
+
+[[capability]]
+id = "dollar-identifiers"
+area = "statements"
+feature = "Identifiers starting with `$`"
+status = "verified"
+notes = '''As OpenZeppelin 5 uses for storage pointers.'''
+witness = [
+  { fixture = "dollar_identifiers", proven = "ensures $total == old($total) + $a" },
+  { fixture = "dollar_identifiers", refuted = "ensures $total == old($total) + 1" },
+]
+
+# ------------------------------------------------------- transaction values
+
+[[capability]]
+id = "msg-sender-value"
+area = "environment"
+feature = "`msg.sender`, `msg.value`"
+status = "verified"
+notes = '''Of type `address` and `uint256`; `msg.sender` is not the zero address. An
+internal function sees its caller's values.'''
+witness = [
+  { fixture = "internal_calls", proven = "ensures s == msg.sender" },
+  { fixture = "inheritance", refuted = "ensures msg.sender != owner" },
+]
+
+[[capability]]
+id = "constructor-sender"
+area = "environment"
+feature = "`msg.sender` in a constructor"
+status = "verified"
+gap = "GAP-006"
+notes = '''The deployer, as in any function.'''
+witness = [
+  { fixture = "constructor_sender", proven = "ensures owner == msg.sender" },
+  { fixture = "constructor_sender", refuted = "ensures owner != msg.sender" },
+]
+
+[[capability]]
+id = "msg-value-nonpayable"
+area = "environment"
+feature = "`msg.value` in a function that is not `payable`"
+status = "partial"
+notes = '''Not assumed to be 0 (Solidity reverts such a call when it carries Ether): a
+property that relies on it fails with a counterexample the EVM cannot
+produce.'''
+witness = [
+  { fixture = "forall_frame", proven = "ensures balances[msg.sender] == old(balances[msg.sender]) + msg.value" },
+  { fixture = "incomplete_assumptions", refuted = "ensures msg.value == 0" },
+]
+
+[[capability]]
+id = "block-values"
+area = "environment"
+feature = "`block.*`, `tx.*`, `msg.sig`, `msg.data`, `this`"
+status = "partial"
+gap = "GAP-005"
+notes = '''One value per transaction, of its type; `block.timestamp` and
+`block.number` are positive. Nothing relates them across transactions (time
+need not increase), and an invariant may not use them. A use may print an
+internal `BUG:` diagnostic, which does not affect the results.'''
+witness = [
+  { fixture = "environment", proven = "ensures r <= type(uint160).max" },
+  { fixture = "environment", refuted = "ensures r" },
+  { fixture = "environment", error = "BUG: static call to this_address" },
+]
+
+[[capability]]
+id = "gasleft-balances"
+area = "environment"
+feature = "`gasleft()`, `address.balance`, the result of `send`"
+status = "unknown"
+notes = '''A fresh value of the result's type at every read or call.'''
+witness = [
+  { fixture = "environment", proven = "ensures r <= type(uint256).max" },
+  { fixture = "environment", refuted = "ensures ok" },
+]
+
+# ------------------------------------------- external calls and assembly
+
+[[capability]]
+id = "external-calls"
+area = "calls"
+feature = "External calls and re-entrancy"
+status = "unknown"
+gap = "GAP-007"
+notes = '''A call of another contract (through an interface, `this.f()`, an external
+function value), a low-level `call`, or `new C(…)` may call back into the
+contract: its state is unknown after the call, except for the contract
+invariants, which an external function checks before the call and assumes
+after it. `view` calls and `staticcall` change nothing, nor do `send` and
+`transfer`; `delegatecall` may change all state, invariants included. Results
+are unknown values of their type. A constructor cannot be re-entered.
+`--assume-no-reentrancy` trusts that no call re-enters: calls other than
+`delegatecall` then change nothing (see [Contract Invariants](guide:contract_invariants.md#external-calls-and-reentrancy)).'''
+witness = [
+  { fixture = "external_calls", proven = "invariant fee <= 100 holds before the external call" },
+  { fixture = "external_calls", refuted = "ensures fee == old(fee)" },
+  { fixture = "external_calls_trusted", proven = "ensures fee == old(fee)" },
+]
+
+[[capability]]
+id = "assembly"
+area = "calls"
+feature = "Inline assembly"
+status = "unknown"
+notes = '''Not interpreted. Afterwards, unknown: the Solidity variables a block
+assigns; every memory variable if it writes memory; all contract state (of its
+type) if it may write storage (`sstore`, calls). A block that may `return` or
+`stop` ends the transaction on some paths. Rejected: assigning a storage
+reference, writing memory with a memory struct in scope, and ending a
+constructor.'''
+witness = [
+  { fixture = "assembly_havoc", proven = "ensures stored == old(stored)" },
+  { fixture = "assembly_havoc", refuted = "ensures stored == 0" },
+]
+
+# ------------------------------------------------------- results and output
+
+[[capability]]
+id = "counterexamples"
+area = "results"
+feature = "Counterexamples"
+status = "verified"
+gap = "GAP-001"
+notes = '''Printed under a refuted obligation (❌) when z3 gives a model: parameters,
+`old` state, `msg.*`, nested mapping values.'''
+works = "Plain-text, JSON and SARIF output, with counterexamples when z3 produces a model"
+witness = [
+  { test = "Tools/Solidity/test/test_counterexamples.py" },
+  { fixture = "counterexample_models", refuted = "ensures allow[b][1] == 0" },
+]
+
+[[capability]]
+id = "unknown-results"
+area = "results"
+feature = "Unknown (❓) results"
+status = "partial"
+gap = "GAP-001"
+notes = '''An obligation is unknown when its verification condition has a quantified
+assumption (`sum`, `forall`, a key-scoped `modifies` frame, a constructor that
+zero-initializes a mapping), nonlinear arithmetic, or the solver runs out of
+time (`--timeout`). Unknown is not a failure: the exit status is 0 unless
+`--strict`.'''
+not_yet = "Conclusive results for every property over `sum`, `forall` and key-scoped frames: some are ❓ unknown"
+witness = [
+  { fixture = "nonlinear", proven = "ensures x == a * b" },
+  { fixture = "require_message_effects", unknown = "ensures notes == old(notes)" },
+  { fixture = "struct_copies", unknown = "ensures a.value == 9" },
+]
+
+[[capability]]
+id = "output-formats"
+area = "results"
+feature = "Plain text, `--json`, `--sarif` (SARIF 2.1.0), `--pipeline-json`"
+status = "verified"
+notes = '''See [Output Formats](guide:output_formats.md) and [SARIF](guide:sarif.md).'''
+witness = [
+  { test = "Tools/Solidity/test/test_sarif_schema.py" },
+  { test = "StrataSolidityTest/Solidity/JsonOutputTest.lean" },
+]
+
+[[capability]]
+id = "exit-status"
+area = "results"
+feature = "Exit status"
+status = "verified"
+notes = '''1 when the file cannot be translated, in every format. In plain text, 1
+when an obligation is refuted or a verification error occurs, and 0 otherwise
+(unknown results included). With `--json`, `--sarif` or `--pipeline-json`, 0
+whatever the verdicts, which the reader of the output judges. `--strict`, in
+every format, exits 1 also when an obligation is refuted or unknown, or an
+annotation or function was not verified.'''
+witness = [
+  { test = "test/run_exit_code_tests.sh", contains = "--strict" },
+]
+
+[[capability]]
+id = "solver"
+area = "results"
+feature = "SMT solver"
+status = "partial"
+gap = "GAP-012"
+notes = '''z3, found on `PATH`; cvc5 is not supported. Results can differ between z3
+versions; the test fixtures pin only results that z3 4.8.12 and 4.15.4 agree
+on.'''
+witness = [
+  { source = "StrataSolidityMain.lean", contains = 'solver := "z3"' },
+  { source = ".github/workflows/ci.yml", contains = "z3" },
+]
+
+# ---------------------------------------------------------------- annotations
+# The annotation keywords SpecParser.lean reads (checked).
+
+[[annotation]]
+keyword = "requires"
+syntax = "requires <expr>"
+placement = "Function"
+meaning = "Precondition: assumed on entry, checked at each internal call"
+
+[[annotation]]
+keyword = "ensures"
+syntax = "ensures <expr>"
+placement = "Function"
+meaning = "Postcondition: checked on exit; `old(e)` is the value of `e` on entry"
+
+[[annotation]]
+keyword = "invariant"
+syntax = "invariant <expr>"
+placement = "Contract or state variable"
+meaning = '''Checked after the constructor and on exit of every public or external
+function that may change state, assumed on their entry and by `view` functions'''
+
+[[annotation]]
+keyword = "modifies"
+syntax = "modifies <vars>"
+placement = "Function"
+meaning = "Frame: only the listed state variables, or mapping keys, may change"
+
+[[annotation]]
+keyword = "loop-invariant"
+syntax = "loop-invariant <expr>"
+placement = "Function"
+meaning = "Holds on entry to the function's loop and is preserved by its body"
+
+# -------------------------------------------------------------------- options
+# The options and environment variables StrataSolidityMain.lean reads (checked).
+
+[[flag]]
+name = "--json"
+effect = "A flat JSON array of results (see [Output Formats](guide:output_formats.md))"
+
+[[flag]]
+name = "--sarif"
+effect = "SARIF 2.1.0, for code scanning (see [SARIF](guide:sarif.md)); takes precedence over `--json`"
+
+[[flag]]
+name = "--pipeline-json"
+effect = "One JSON object with the generated Laurel and Core programs, the obligations and their SMT files, and the warnings"
+
+[[flag]]
+name = "--strict"
+effect = "Exit 1 when an obligation is refuted or unknown, or an annotation or function was not verified, in every output format"
+
+[[flag]]
+name = "--verbose"
+effect = "Also print the generated Laurel and Core programs, to standard output (so the output of `--json` and `--sarif` is no longer valid JSON)"
+
+[[flag]]
+name = "--timeout=<s>"
+effect = "Solver time limit per obligation, in seconds (default 10; `0` means none)"
+
+[[flag]]
+name = "--assume-no-reentrancy"
+effect = "Trust that external calls do not call back into the contract, so they leave its state unchanged (see [Contract Invariants](guide:contract_invariants.md#external-calls-and-reentrancy))"
+
+[[flag]]
+name = "--no-array-theory"
+effect = "Encode mappings with quantified select/update axioms instead of SMT arrays (the default); more results are then unknown"
+
+[[flag]]
+name = "--array-theory"
+effect = "Accepted for compatibility; has no effect"
+
+[[flag]]
+name = "--dump-vc=<dir>"
+effect = "Keep the generated `.smt2` files, in `<dir>/<procedure>/`"
+
+[[flag]]
+name = "--from-sol"
+effect = "Read the input as Solidity whatever its name (a `.sol` file is read as Solidity anyway)"
+
+[[flag]]
+name = "--sol-source=<file>"
+effect = "Take source positions and annotation text from `<file>`, for an input that is not the source file itself (the legacy `.solidity.st.ion` input)"
+
+[[flag]]
+name = "STRATA_SMT_DIR=<dir>"
+effect = '''Environment variable: write the SMT files to `<dir>` (`--pipeline-json`
+uses `/tmp/strata-pipeline-smt`). Each run first deletes every `.smt2` file
+and every subdirectory in it: give it a directory of its own.'''
+
+# ----------------------------------------------------------------------- gaps
+# The gaps of the baseline (.kiro/specs/strata-solidity-baseline/requirements.md
+# §12). `now` is their status on this branch; the entries citing a gap must
+# agree with its status (checked).
+
+[[gap]]
+id = "GAP-001"
+baseline = "No counterexample generation"
+status = "narrowed"
+now = '''A refuted obligation is reported failed, with a counterexample when z3
+gives a model. Unknown results remain for quantified assumptions, nonlinear
+arithmetic and timeouts.'''
+
+[[gap]]
+id = "GAP-002"
+baseline = "Struct fields through mappings"
+status = "open"
+now = '''A function using a struct-valued mapping (or an array of structs) is not
+verified, with a warning; a modifier using one stops the translation.'''
+
+[[gap]]
+id = "GAP-003"
+baseline = "`old()` in loop invariants"
+status = "closed"
+now = '''`old(e)` in a loop invariant is the value at the function's entry.'''
+
+[[gap]]
+id = "GAP-004"
+baseline = "`@custom:strata lemma` is not supported"
+status = "open"
+now = '''Reported as an unrecognized annotation, and ignored.'''
+
+[[gap]]
+id = "GAP-005"
+baseline = "`block.timestamp` modeling"
+status = "open"
+now = '''One positive value per transaction; nothing relates transactions.'''
+
+[[gap]]
+id = "GAP-006"
+baseline = "`msg.sender` in constructors"
+status = "closed"
+now = '''`msg.sender` in a constructor is the deployer, and is verified as in any
+function.'''
+
+[[gap]]
+id = "GAP-007"
+baseline = "External calls, reentrancy, cross-contract reasoning"
+status = "narrowed"
+now = '''A call that may re-enter makes the contract's state unknown except for its
+invariants, which are checked before the call; `--assume-no-reentrancy`
+trusts calls not to re-enter. Results of calls are unknown.'''
+
+[[gap]]
+id = "GAP-008"
+baseline = "Dynamic array `push`/`pop`"
+status = "narrowed"
+now = '''`push` on an array state variable is modelled; `pop` stops the translation.'''
+
+[[gap]]
+id = "GAP-009"
+baseline = "Full multi-contract inheritance with virtual dispatch"
+status = "narrowed"
+now = '''Closed by Requirement 1 above, except for bases in another file, arguments
+in inheritance specifiers, `super` of an overloaded function and redeclared
+private state variables.'''
+
+[[gap]]
+id = "GAP-010"
+baseline = "Storage references to struct-through-mapping and to mappings"
+status = "open"
+now = '''A reference to a struct state variable can be read (writes through it are
+rejected); one to a struct in a mapping is not verified, as GAP-002; one to a
+mapping or an array is rejected.'''
+
+[[gap]]
+id = "GAP-011"
+baseline = "XFAIL tests"
+status = "obsolete"
+now = '''The XFAIL registry and its harness were removed. Known failures are pinned
+instead by `test/examples/gap_*.sol`, whose golden files hold the current
+error.'''
+
+[[gap]]
+id = "GAP-012"
+baseline = "Only z3 wired into the CLI"
+status = "open"
+now = '''Unchanged: the solver is z3; the documentation no longer mentions cvc5.'''
