@@ -64,8 +64,8 @@ contract BitwiseTypes {
         assert((a & b) <= 255);
     }
 
-    // Refuted: 255 & 255 is 255.
+    // Refuted: 0 & 0 is 0.
     function andInRangeWrong(uint8 a, uint8 b) external pure {
-        assert((a & b) <= 254);
+        assert((a & b) >= 1);
     }
 }

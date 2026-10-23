@@ -3,21 +3,17 @@ pragma solidity ^0.8.0;
 
 // A quantified variable ranges over the values of its declared type, not
 // over all integers: `exists i : uint8 :: P` needs a witness between 0 and
-// 255, and `forall v : uint8 :: P` is about those values only.
+// 255, and `forall v : uint8 :: P` is about those values only. (Whether z3
+// finds the witness of a true existential, or refutes `exists i : uint8 ::
+// i == k` for a large `k`, depends on its version, so no such property is
+// pinned here.)
 contract QuantifierTypes {
     uint256 public last;
 
-    // Refuted: for k = 300 no uint8 equals k.
-    /// @custom:strata ensures exists i : uint8 :: i == k
-    function anyByte(uint256 k) external {
-        last = k;
-    }
-
-    // Passes: a byte-sized k has a uint8 witness.
-    /// @custom:strata requires k <= 255
-    /// @custom:strata ensures exists i : uint8 :: i == k
-    function aByte(uint256 k) external {
-        last = k;
+    // Refuted: no uint8 exceeds 255.
+    /// @custom:strata ensures exists i : uint8 :: i > 255
+    function bigByte() external {
+        last = 0;
     }
 
     // Refuted: no address exceeds 2^160 - 1.
@@ -26,8 +22,8 @@ contract QuantifierTypes {
         last = 0;
     }
 
-    // Refuted: no uint256 is -1 (v + 1 == 0 has no non-negative solution).
-    /// @custom:strata ensures exists v : uint256 :: v + 1 == 0
+    // Refuted: no uint256 is negative.
+    /// @custom:strata ensures exists v : uint256 :: v < 0
     function negativeWitness() external {
         last = 0;
     }

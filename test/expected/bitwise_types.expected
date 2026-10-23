@@ -8,5 +8,5 @@
 ❌ 54: assert(a >= 0)
 ✅ 59: assert((a & b) >= -128 && (a & b) <= 127)
 ✅ 64: assert((a & b) <= 255)
-❌ 69: assert((a & b) <= 254)
+❌ 69: assert((a & b) >= 1)
 4 passed, 7 failed, 0 unknown out of 11 total
