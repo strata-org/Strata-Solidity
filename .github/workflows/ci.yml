@@ -204,6 +204,6 @@ jobs:
         env:
           LEAN_ABORT_ON_PANIC: '1'
         run: |
-          python3 -m pip install markdown pygments
+          python3 -m pip install -r docs/site/requirements.txt
           python3 docs/site/_src/capture_outputs.py
           python3 docs/site/_src/build.py

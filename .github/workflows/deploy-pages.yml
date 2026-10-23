@@ -1,15 +1,31 @@
 name: Deploy site to Pages
 
-# Disabled: GitHub Pages is not enabled for this repository.
-# Re-enable by restoring the `push` trigger once Pages is configured.
+# Builds docs/site (the landing page, plus the guide rendered from
+# docs/guide/src) and publishes it to
+# https://strata-org.github.io/Strata-Solidity/.
+#
+# The repository's Pages source must be "GitHub Actions" (Settings → Pages),
+# not a branch. With a branch source, GitHub's built-in
+# `pages-build-deployment` also runs on every push and publishes a Jekyll
+# render of the branch folder. That render has no root index.html (the
+# generated site is gitignored), so it would replace this deployment with
+# a site whose root is a 404.
 on:
+  push:
+    branches: [main]
+    # Everything build.py reads. A push that touches none of these leaves
+    # the site unchanged.
+    paths:
+      - 'docs/site/**'
+      - 'docs/guide/src/**'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# One deployment at a time; a newer push waits for the current one rather
+# than cancelling it half-way.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -20,36 +36,58 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
     permissions:
-      contents: read    # to checkout the repository
+      contents: read    # to check out the repository
       pages: write      # to deploy to Pages
-      id-token: write   # to verify the deployment originates from an appropriate source
+      id-token: write   # to verify the deployment originates from this workflow
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Install site build dependencies
-        run: pip install markdown pygments
+        run: python3 -m pip install -r docs/site/requirements.txt
 
       - name: Build site
-        run: python3 docs/site/_src/build.py
+        run: |
+          python3 docs/site/_src/build.py
+          # The commit this deployment is built from, served at /build.txt,
+          # so the check below (and anyone) can tell which commit is live.
+          echo "$GITHUB_SHA" > docs/site/build.txt
 
       - name: Setup Pages
-        uses: actions/configure-pages@v3
+        uses: actions/configure-pages@v6
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: './docs/site'
-          name: "github-pages"
+          path: ./docs/site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
-        with:
-          artifact_name: "github-pages"
+        uses: actions/deploy-pages@v5
+
+      # Fail the run unless this deployment is the one being served and its
+      # root and guide index are the site (a branch-source rebuild publishes
+      # a root that is a 404).
+      - name: Check the published site
+        env:
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          base="${SITE_URL%/}/"
+          for _ in $(seq 1 24); do
+            live=$(curl -fsS "${base}build.txt" 2>/dev/null || true)
+            [ "$live" = "$GITHUB_SHA" ] && break
+            sleep 10
+          done
+          if [ "$live" != "$GITHUB_SHA" ]; then
+            echo "::error::${base}build.txt serves '${live}', not this run's commit ${GITHUB_SHA}"
+            exit 1
+          fi
+          for page in "" "docs/index.html"; do
+            curl -fsS "${base}${page}" | grep -q "<title>.*StrataSolidity" \
+              || { echo "::error::${base}${page} does not serve the StrataSolidity site"; exit 1; }
+          done

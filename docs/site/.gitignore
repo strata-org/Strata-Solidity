@@ -2,3 +2,5 @@
 /index.html
 /docs/*.html
 /assets/search-index.js
+# Written by the Pages workflow: the commit a deployment is built from.
+/build.txt
