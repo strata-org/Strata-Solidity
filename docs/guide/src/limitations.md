@@ -49,6 +49,7 @@ mapping(bytes32 => bool) public paymentCaptured;
 | Pattern | Notes |
 |---|---|
 | Struct fields through mappings (GAP-002) | Blocked on Strata Core heap parameterization |
+| Mapping and array `storage` parameters | Rejected: such a parameter refers to the caller's storage, and a write through it would not reach the state variable passed in |
 | `old()` in loop invariants (GAP-003) | `__old` marker not resolved in loop context |
 | `msg.sender` in constructors (GAP-006) | Constructor handling incomplete |
 | External calls / reentrancy (GAP-007) | Not interpreted: a call that may re-enter the contract leaves its state unknown, except for the contract invariants (see [Contract Invariants](./contract_invariants.md#external-calls-and-reentrancy)); `--assume-no-reentrancy` trusts that calls do not re-enter |

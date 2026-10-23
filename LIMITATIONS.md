@@ -119,6 +119,11 @@ Storage references to struct fields through mappings (`Voter storage sender = vo
 
 Mapping storage references (`mapping(...) storage ref = stateVar`) are not supported.
 
+A mapping or array `storage` parameter (`function _credit(mapping(address => uint256) storage m, address k)`)
+is rejected: it refers to the caller's storage, and the translator models
+parameters as local copies, so a write through it would not reach the state
+variable passed in.
+
 A storage reference to a struct state variable (`Info storage d = data;`)
 can be read (its fields' values are then unknown), but writing through it
 (`d.value = 5`) is rejected: the write would not reach the storage.
